@@ -19,7 +19,7 @@ final class DeskConnection {
             new ComponentName("com.eddlai.phonedesk", DeskService.class.getName()))
             .daemon(true)
             .processNameSuffix("desk")
-            .version(12);
+            .version(13);
 
     private static final ServiceConnection CONNECTION = new ServiceConnection() {
         @Override
