@@ -1,0 +1,476 @@
+#!/usr/bin/python3
+"""Android 手機：a GNOME panel for the phones on this desk.
+
+One section per connected phone, with that phone's actions under it. A drawn silhouette
+shows the phone's state at a glance: upright = phone mode, sideways with a taskbar =
+desktop mode; a cable = USB, Wi-Fi arcs = wireless.
+"""
+import math
+import os
+import subprocess
+import threading
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib, Gtk  # noqa: E402
+
+import shutil
+
+HOME = os.path.expanduser("~")
+# Portable: everything lives next to this file, so the folder can be carried on a USB disk.
+HERE = os.path.dirname(os.path.realpath(__file__))
+ADB = os.path.join(HERE, "tools/platform-tools/adb")
+if not os.path.exists(ADB):
+    ADB = shutil.which("adb") or ADB
+SCRCPY = os.path.join(HERE, "tools/scrcpy/scrcpy")
+if not os.path.exists(SCRCPY):
+    SCRCPY = shutil.which("scrcpy") or SCRCPY
+IPFILE = f"{HOME}/.config/phone-panel/ip"
+PHONEDESK_APK = os.path.join(HERE, "apk/phonedesk.apk")
+SHIZUKU_APK = os.path.join(HERE, "apk/shizuku.apk")
+PHONEDESK = "com.eddlai.phonedesk"
+P_FIRST = "persist.wm.debug.force_desktop_first_on_default_display_for_testing"
+P_RESTRICT = "persist.wm.debug.desktop_mode_enforce_device_restrictions"
+
+DESK_BLUE = (0x1A / 255, 0x73 / 255, 0xE8 / 255)   # the 電腦模式 icon
+PHONE_GREEN = (0x18 / 255, 0x80 / 255, 0x38 / 255)  # the 手機模式 icon
+
+# Root phones: the full desktop setup and its undo (same as the old zenity panel).
+ROOT_ON = f"""resetprop -p {P_RESTRICT} false
+resetprop -p {P_FIRST} true
+mkdir -p /data/adb/service.d
+cat > /data/adb/service.d/landscape.sh <<'S'
+#!/system/bin/sh
+until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 2; done
+wm set-ignore-orientation-request true
+wm user-rotation lock 1
+S
+chmod 755 /data/adb/service.d/landscape.sh
+wm density 288
+settings put system font_scale 0.9
+settings put system accelerometer_rotation 0
+settings put global overlay_display_devices none
+"""
+ROOT_OFF = f"""resetprop -p --delete {P_FIRST}
+resetprop -p --delete {P_RESTRICT}
+rm -f /data/adb/service.d/landscape.sh
+wm density reset
+settings put system font_scale 1.0
+wm set-ignore-orientation-request false
+wm user-rotation free
+settings put system accelerometer_rotation 1
+settings put global overlay_display_devices none
+"""
+
+
+_bundled_hash = None
+
+
+def bundled_phonedesk_hash():
+    """SHA-256 of the 電腦模式 APK shipped in this folder (to spot an outdated install)."""
+    global _bundled_hash
+    if _bundled_hash is None:
+        import hashlib
+        try:
+            with open(PHONEDESK_APK, "rb") as f:
+                _bundled_hash = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            _bundled_hash = ""
+    return _bundled_hash
+
+
+def adb(serial, *args, stdin=None, timeout=20):
+    cmd = [ADB] + (["-s", serial] if serial else []) + list(args)
+    try:
+        r = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout.replace("\r", "").strip()
+    except subprocess.TimeoutExpired:
+        return 124, ""
+
+
+class Phone:
+    """Everything the panel shows about one connected phone."""
+
+    def __init__(self, serial):
+        self.serial = serial
+        self.wireless = ":" in serial
+        self.model = serial
+        self.ip = serial.split(":")[0] if self.wireless else ""
+        self.root = False
+        self.desk_native = False   # root phones: desktop is the phone screen itself
+        self.phonedesk = False     # 電腦模式 app installed
+        self.desk_app_on = False   # 電腦模式 currently showing the desk
+        self.shizuku = False
+        self.phonedesk_outdated = False  # installed, but differs from the APK in this folder
+
+    @property
+    def desk_on(self):
+        return self.desk_native if self.root else self.desk_app_on
+
+    def probe(self, root_cache):
+        # One round trip for everything that changes; root is cached per serial.
+        _, out = adb(self.serial, "shell",
+                     f"getprop ro.product.model; getprop {P_FIRST}; "
+                     "settings get global overlay_display_devices; "
+                     "settings get secure enabled_accessibility_services; "
+                     f"pm path {PHONEDESK} >/dev/null 2>&1 && echo yes || echo no; "
+                     "pidof shizuku_server >/dev/null && echo yes || echo no; "
+                     "ip -4 addr show wlan0 | grep -o 'inet [0-9.]*' | cut -d' ' -f2; "
+                     f"sha256sum $(pm path {PHONEDESK} 2>/dev/null | head -1 | cut -d: -f2) 2>/dev/null | cut -c1-64",
+                     timeout=8)
+        lines = (out.split("\n") + [""] * 8)[:8]
+        self.model = lines[0] or self.serial
+        self.desk_native = lines[1] == "true"
+        self.desk_app_on = lines[2] not in ("", "none", "null") and PHONEDESK in lines[3]
+        self.phonedesk = lines[4] == "yes"
+        self.shizuku = lines[5] == "yes"
+        self.ip = self.ip or lines[6]
+        self.phonedesk_outdated = self.phonedesk and bool(lines[7]) and lines[7] != bundled_phonedesk_hash()
+        if self.serial not in root_cache:
+            code, _ = adb(self.serial, "shell", "su -c true", timeout=5)
+            root_cache[self.serial] = code == 0
+        self.root = root_cache[self.serial]
+        return self
+
+
+class Silhouette(Gtk.DrawingArea):
+    """The phone, drawn in its current state."""
+
+    def __init__(self, phone):
+        super().__init__()
+        self.phone = phone
+        self.set_content_width(96)
+        self.set_content_height(112)
+        self.set_draw_func(self._draw)
+        self.update_property([Gtk.AccessibleProperty.LABEL], [self._describe()])
+
+    def _describe(self):
+        mode = "電腦桌面模式" if self.phone.desk_on else "手機模式"
+        link = "無線連線" if self.phone.wireless else "USB 有線連線"
+        return f"{self.phone.model}，{mode}，{link}"
+
+    def _draw(self, _area, cr, w, h):
+        fg = self.get_color()
+        color = DESK_BLUE if self.phone.desk_on else PHONE_GREEN
+        cx = w / 2
+        if self.phone.desk_on:
+            bw, bh = 78, 38          # phone lying sideways, showing a desktop
+        else:
+            bw, bh = 40, 72          # phone upright
+        x, y = cx - bw / 2, 8 + (72 - bh) / 2
+        r = 7
+        cr.new_sub_path()
+        cr.arc(x + bw - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + bw - r, y + bh - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + bh - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+        cr.set_source_rgba(*color, 0.18)
+        cr.fill_preserve()
+        cr.set_source_rgb(*color)
+        cr.set_line_width(2)
+        cr.stroke()
+        if self.phone.desk_on:
+            # taskbar and two overlapping windows
+            cr.set_source_rgb(*color)
+            cr.rectangle(x + 3, y + bh - 9, bw - 6, 6)
+            cr.fill()
+            cr.rectangle(x + 10, y + 7, 26, 16)
+            cr.stroke()
+            cr.rectangle(x + 30, y + 12, 30, 17)
+            cr.fill()
+        # connection, drawn under the phone
+        base = y + bh
+        cr.set_source_rgba(fg.red, fg.green, fg.blue, 0.7)
+        cr.set_line_width(2)
+        if self.phone.wireless:
+            for i, rad in enumerate((7, 13, 19)):
+                cr.arc(cx, 106, rad, -math.pi * 0.75, -math.pi * 0.25)
+                cr.stroke()
+            cr.arc(cx, 106, 2, 0, 2 * math.pi)
+            cr.fill()
+        else:
+            cr.move_to(cx, base + 2)
+            cr.line_to(cx, 110)
+            cr.stroke()
+            cr.rectangle(cx - 4, base + 2, 8, 6)
+            cr.fill()
+
+
+class Panel(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Android 手機")
+        self.set_default_size(460, 640)
+        self.root_cache = {}
+        self.busy = False
+        self.signature = None
+
+        self.toasts = Adw.ToastOverlay()
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="重新偵測手機")
+        refresh.connect("clicked", lambda *_: self.refresh(force=True))
+        header.pack_end(refresh)
+        view.add_top_bar(header)
+
+        self.stack = Gtk.Stack()
+        self.list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24,
+                                margin_top=12, margin_bottom=24, margin_start=12, margin_end=12)
+        clamp = Adw.Clamp(maximum_size=560, child=self.list_box)
+        self.stack.add_named(Gtk.ScrolledWindow(child=clamp, vexpand=True), "phones")
+
+        empty = Adw.StatusPage(icon_name="phone-symbolic", title="沒有偵測到手機",
+                               description="用 USB 線接上手機，或讓手機和電腦在同一個 Wi-Fi 後重新連線。")
+        again = Gtk.Button(label="重新連線無線手機", halign=Gtk.Align.CENTER)
+        again.add_css_class("pill")
+        again.connect("clicked", lambda *_: self.run(self._reconnect_wireless))
+        empty.set_child(again)
+        self.stack.add_named(empty, "empty")
+
+        view.set_content(self.stack)
+        self.toasts.set_child(view)
+        self.set_content(self.toasts)
+
+        self.refresh(force=True)
+        GLib.timeout_add_seconds(4, self._tick)
+
+    # ---------- background work ----------
+
+    def _tick(self):
+        self.refresh()
+        return True
+
+    def refresh(self, force=False):
+        if self.busy and not force:
+            return
+        threading.Thread(target=self._probe_all, daemon=True).start()
+
+    def _probe_all(self):
+        _, out = adb(None, "devices")
+        serials = [l.split()[0] for l in out.split("\n")[1:] if l.endswith("\tdevice")]
+        phones = [Phone(s).probe(self.root_cache) for s in serials]
+        GLib.idle_add(self._show, phones)
+
+    def run(self, work, *args):
+        """Runs an action off the UI thread, then re-probes."""
+        self.busy = True
+
+        def job():
+            msg = work(*args)
+            GLib.idle_add(self._done, msg)
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _done(self, msg):
+        self.busy = False
+        if msg:
+            self.toasts.add_toast(Adw.Toast(title=msg, timeout=4))
+        self.refresh(force=True)
+
+    # ---------- rendering ----------
+
+    def _show(self, phones):
+        sig = [(p.serial, p.model, p.desk_on, p.root, p.phonedesk, p.phonedesk_outdated, p.shizuku)
+               for p in phones]
+        if sig == self.signature:
+            return
+        self.signature = sig
+        while (child := self.list_box.get_first_child()) is not None:
+            self.list_box.remove(child)
+        self.stack.set_visible_child_name("phones" if phones else "empty")
+        for p in phones:
+            self.list_box.append(self._phone_section(p))
+
+    def _phone_section(self, p):
+        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+        head = Gtk.Box(spacing=16)
+        head.append(Silhouette(p))
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        name = Gtk.Label(label=p.model, xalign=0)
+        name.add_css_class("title-2")
+        text.append(name)
+        link = f"無線連線，{p.ip}" if p.wireless else "USB 有線連線"
+        text.append(self._dim(link))
+        if p.desk_on:
+            state = "電腦桌面開啟中" + ("" if p.root else "（電腦模式 App）")
+        else:
+            state = "手機模式"
+        text.append(self._dim(state + ("，已 root" if p.root else "")))
+        head.append(text)
+        section.append(head)
+
+        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        rows.add_css_class("boxed-list")
+        rows.append(self._action("用電腦鍵盤打字", "電腦的鍵盤和觸控板直接操作手機",
+                                 "input-keyboard-symbolic", self._keyboard, p))
+        rows.append(self._action("在電腦上看手機畫面", "鏡像並可用滑鼠操作",
+                                 "video-display-symbolic", self._mirror, p))
+        rows.append(self._desk_row(p))
+        if p.wireless:
+            rows.append(self._action("中斷無線連線", None, "network-wireless-offline-symbolic",
+                                     self._disconnect, p))
+        else:
+            rows.append(self._action("改用無線連線", "之後就可以拔掉 USB 線",
+                                     "network-wireless-symbolic", self._go_wireless, p))
+        section.append(rows)
+        return section
+
+    @staticmethod
+    def _dim(text):
+        label = Gtk.Label(label=text, xalign=0, wrap=True)
+        label.add_css_class("dim-label")
+        return label
+
+    def _action(self, title, subtitle, icon, handler, p):
+        row = Adw.ActionRow(title=title, activatable=True)
+        if subtitle:
+            row.set_subtitle(subtitle)
+        row.add_prefix(Gtk.Image(icon_name=icon))
+        row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        row.connect("activated", lambda *_: handler(p))
+        return row
+
+    def _desk_row(self, p):
+        if not p.root and not p.phonedesk:
+            row = Adw.ActionRow(title="電腦桌面", subtitle="這支手機沒有 root，需要先安裝「電腦模式」App（不會清除資料）")
+            row.add_prefix(Gtk.Image(icon_name="computer-symbolic"))
+            install = Gtk.Button(label="安裝", valign=Gtk.Align.CENTER)
+            install.add_css_class("suggested-action")
+            install.connect("clicked", lambda *_: self.run(self._install_phonedesk, p))
+            row.add_suffix(install)
+            return row
+        if p.root:
+            sub = "原生設定，切換後要重新開機"
+        elif not p.shizuku:
+            sub = "Shizuku 沒有在執行，開啟時會先幫你啟動"
+        else:
+            sub = "由「電腦模式」App 在手機螢幕上顯示"
+        if not p.root and p.phonedesk_outdated:
+            sub = "手機上的「電腦模式」App 不是最新版，建議先更新"
+        row = Adw.SwitchRow(title="電腦桌面", subtitle=sub, active=p.desk_on)
+        row.add_prefix(Gtk.Image(icon_name="computer-symbolic"))
+        if not p.root and p.phonedesk_outdated:
+            update = Gtk.Button(label="更新", valign=Gtk.Align.CENTER)
+            update.add_css_class("suggested-action")
+            update.connect("clicked", lambda *_: self.run(self._install_phonedesk, p))
+            row.add_suffix(update)
+        row.connect("notify::active", lambda r, _: self._toggle_desk(p, r.get_active()))
+        return row
+
+    # ---------- actions ----------
+
+    def _keyboard(self, p):
+        self._scrcpy(p, ["--no-video", "--no-audio", "--keyboard=uhid", "--mouse=uhid",
+                         "--window-title=手機鍵盤"])
+        self.toasts.add_toast(Adw.Toast(title="點一下「手機鍵盤」視窗後就能打字", timeout=4))
+
+    def _mirror(self, p):
+        self._scrcpy(p, ["--keyboard=uhid", f"--window-title={p.model}"])
+
+    @staticmethod
+    def _scrcpy(p, args):
+        env = dict(os.environ, ADB=ADB)
+        subprocess.Popen([SCRCPY, "-s", p.serial] + args, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    def _toggle_desk(self, p, on):
+        if on == p.desk_on:
+            return
+        if p.root:
+            dialog = Adw.AlertDialog(
+                heading="要" + ("開啟" if on else "關閉") + f" {p.model} 的電腦桌面嗎？",
+                body="會套用整組設定（顯示大小、字型、橫向），重新開機後生效。")
+            dialog.add_response("cancel", "取消")
+            dialog.add_response("later", "稍後自己重開")
+            dialog.add_response("reboot", "套用並重新開機")
+            dialog.set_response_appearance("reboot", Adw.ResponseAppearance.SUGGESTED)
+
+            def answered(_d, response):
+                if response == "cancel":
+                    self.signature = None  # redraw to put the switch back
+                    self.refresh(force=True)
+                else:
+                    self.run(self._root_desk, p, on, response == "reboot")
+
+            dialog.connect("response", answered)
+            dialog.present(self)
+        else:
+            self.run(self._app_desk, p, on)
+
+    def _root_desk(self, p, on, reboot):
+        adb(p.serial, "shell", "su", stdin=ROOT_ON if on else ROOT_OFF, timeout=30)
+        # drop only 電腦模式's accessibility entry, keep any other services
+        adb(p.serial, "shell", 'v=$(settings get secure enabled_accessibility_services); '
+            'n=$(echo "$v" | tr ":" "\\n" | grep -v "^com.eddlai.phonedesk/" | paste -sd:); '
+            '[ "$v" != "$n" ] && settings put secure enabled_accessibility_services "$n"')
+        if reboot:
+            adb(p.serial, "reboot")
+            return f"{p.model} 正在重新開機"
+        return "設定已套用，重新開機後生效"
+
+    def _start_shizuku(self, p):
+        _, path = adb(p.serial, "shell", "pm path moe.shizuku.privileged.api")
+        lib = path.replace("package:", "").replace("base.apk", "lib/arm64/libshizuku.so")
+        adb(p.serial, "shell", lib, timeout=60)
+
+    def _app_desk(self, p, on):
+        if on and not p.shizuku:
+            self._start_shizuku(p)
+        # Launching 電腦模式 enters the desk; launching it again while the desk runs exits.
+        adb(p.serial, "shell", f"am start -n {PHONEDESK}/.MainActivity")
+        return "正在開啟電腦桌面，請看手機畫面" if on else "已切回手機模式"
+
+    def _install_phonedesk(self, p):
+        if not os.path.exists(PHONEDESK_APK):
+            return "找不到電腦模式 App 的安裝檔"
+        code, _ = adb(p.serial, "shell", "pm path moe.shizuku.privileged.api")
+        if code != 0 and adb(p.serial, "install", SHIZUKU_APK, timeout=180)[0] != 0:
+            return "Shizuku 安裝失敗"
+        if p.desk_app_on:  # updating kills the running desk; leave it cleanly first
+            adb(p.serial, "shell", f"am start -n {PHONEDESK}/.MainActivity")
+            GLib.usleep(3_000_000)
+        if adb(p.serial, "install", "-r", PHONEDESK_APK, timeout=180)[0] != 0:
+            return "電腦模式 App 安裝失敗"
+        adb(p.serial, "shell", f"pm enable {PHONEDESK}")
+        self._start_shizuku(p)
+        return f"「電腦模式」已裝到 {p.model}（第一次開啟時請在手機上允許 Shizuku）"
+
+    def _go_wireless(self, p):
+        if not p.ip:
+            return "手機沒有連上 Wi-Fi"
+        adb(p.serial, "tcpip", "5555")
+        os.makedirs(os.path.dirname(IPFILE), exist_ok=True)
+        with open(IPFILE, "w") as f:
+            f.write(p.ip)
+        GLib.usleep(2_000_000)
+        _, out = adb(None, "connect", f"{p.ip}:5555")
+        return f"已改用無線連線，現在可以拔線" if "connected" in out else f"無線連線失敗：{out}"
+
+    def _disconnect(self, p):
+        adb(None, "disconnect", p.serial)
+        return "已中斷無線連線"
+
+    def _reconnect_wireless(self):
+        # Wireless-debugging phones advertise themselves; fall back to the last saved IP.
+        _, out = adb(None, "mdns", "services")
+        targets = [l.split()[-1] for l in out.split("\n") if "_adb-tls-connect" in l]
+        if not targets and os.path.exists(IPFILE):
+            targets = [open(IPFILE).read().strip() + ":5555"]
+        connected = [t for t in targets if "connected" in adb(None, "connect", t)[1]]
+        return f"已連上 {len(connected)} 支手機" if connected else "找不到可以無線連線的手機"
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="com.eddlai.PhonePanel")
+
+    def do_activate(self):
+        Gtk.Window.set_default_icon_name("com.eddlai.PhonePanel")
+        (self.props.active_window or Panel(self)).present()
+
+
+if __name__ == "__main__":
+    App().run(None)
