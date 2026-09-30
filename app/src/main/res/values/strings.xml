@@ -2,5 +2,12 @@
 <resources>
     <string name="app_name">電腦模式</string>
     <string name="a11y_description">電腦模式用它在螢幕最上層顯示桌面，並把鍵盤輸入轉給桌面。只在電腦模式開啟時啟用。</string>
+    <string name="status_entering">Entering desktop mode…</string>
+    <string name="status_need_permission">Shizuku permission is required</string>
+    <string name="status_shizuku_not_running">Shizuku is not running.\nStart it in the Shizuku app first.</string>
+    <string name="status_shizuku_too_old">Shizuku is too old</string>
+    <string name="status_timeout">Desktop mode did not start.\nShizuku may be unresponsive: restart it in the Shizuku app and try again.\n\nPress Back to leave.</string>
+    <string name="status_failed">Desktop mode failed to start: %1$s</string>
+    <string name="exit_dot">Switch to phone mode</string>
     <color name="desk_blue">#1A73E8</color>
 </resources>

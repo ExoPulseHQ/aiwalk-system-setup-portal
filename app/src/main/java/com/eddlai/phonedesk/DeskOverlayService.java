@@ -175,7 +175,7 @@ public class DeskOverlayService extends AccessibilityService {
         dot.setShape(GradientDrawable.OVAL);
         dot.setColor(0x80FFFFFF);
         back.setBackground(dot);
-        back.setContentDescription("切換回手機模式");
+        back.setContentDescription(getString(R.string.exit_dot));
         back.setOnClickListener(v -> {
             Log.i(TAG, "exit dot tapped");
             exit();

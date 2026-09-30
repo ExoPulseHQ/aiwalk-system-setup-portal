@@ -34,11 +34,11 @@ public class MainActivity extends Activity {
 
     private final Shizuku.OnRequestPermissionResultListener permissionListener = (code, result) -> {
         if (result == PackageManager.PERMISSION_GRANTED) act();
-        else show("需要授權 Shizuku 權限");
+        else show(getString(R.string.status_need_permission));
     };
     private final Shizuku.OnBinderReceivedListener binderListener = this::connectShizuku;
     private final Shizuku.OnBinderDeadListener binderDeadListener =
-            () -> runOnUiThread(() -> show("Shizuku 沒有在執行\n請先在 Shizuku 裡啟動"));
+            () -> runOnUiThread(() -> show(getString(R.string.status_shizuku_not_running)));
 
     /** Called by the overlay when the desk closes. */
     static void finishHost() {
@@ -71,7 +71,7 @@ public class MainActivity extends Activity {
         }
         host = this;
         offerHomeShortcut();
-        show("進入電腦模式…");
+        show(getString(R.string.status_entering));
         Shizuku.addRequestPermissionResultListener(permissionListener);
         Shizuku.addBinderDeadListener(binderDeadListener);
         Shizuku.addBinderReceivedListenerSticky(binderListener);
@@ -105,7 +105,7 @@ public class MainActivity extends Activity {
 
     private void connectShizuku() {
         if (Shizuku.isPreV11()) {
-            show("Shizuku 版本太舊");
+            show(getString(R.string.status_shizuku_too_old));
         } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
             act();
         } else {
@@ -131,7 +131,7 @@ public class MainActivity extends Activity {
         }
         status.postDelayed(() -> {
             if (host == this && DeskOverlayService.instance == null) {
-                show("電腦模式沒有啟動\nShizuku 可能沒有回應，請在 Shizuku 裡重新啟動後再試\n\n按返回鍵離開");
+                show(getString(R.string.status_timeout));
             }
         }, 10000);
         String component = getPackageName() + "/" + DeskOverlayService.class.getName();
@@ -139,7 +139,7 @@ public class MainActivity extends Activity {
             try {
                 DeskConnection.get().setAccessibility(true, component);
             } catch (Exception e) {
-                runOnUiThread(() -> show("電腦模式啟動失敗：" + e.getMessage()));
+                runOnUiThread(() -> show(getString(R.string.status_failed, e.getMessage())));
             }
         }).start());
     }
