@@ -21,10 +21,12 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 import shutil
+import sys
 
 HOME = os.path.expanduser("~")
 # Portable: everything lives next to this file, so the folder can be carried on a USB disk.
 HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(HERE, "lib"))  # bundled pure-Python libraries (python-fido2)
 ADB = os.path.join(HERE, "tools/platform-tools/adb")
 if not os.path.exists(ADB):
     ADB = shutil.which("adb") or ADB
@@ -1248,6 +1250,67 @@ def security_keys():
     return names
 
 
+SK_KEY = os.path.expanduser("~/.ssh/id_ecdsa_sk_aiwalk")  # private half is only a handle; the secret stays in the key
+
+
+def fido_info():
+    """(PIN is set, minimum PIN length) of the first plugged-in FIDO key, or None."""
+    from fido2.hid import CtapHidDevice
+    from fido2.ctap2 import Ctap2
+    dev = next(CtapHidDevice.list_devices(), None)
+    if dev is None:
+        return None
+    try:
+        info = Ctap2(dev).info
+        return bool(info.options.get("clientPin")), info.min_pin_length or 4
+    finally:
+        dev.close()
+
+
+def fido_set_pin(pin):
+    from fido2.hid import CtapHidDevice
+    from fido2.ctap2 import Ctap2, ClientPin
+    dev = next(CtapHidDevice.list_devices())
+    try:
+        ClientPin(Ctap2(dev)).set_pin(pin)
+    finally:
+        dev.close()
+
+
+def set_up_key(user, pin):
+    """Creates an ecdsa-sk SSH key on the security key (PIN + touch) and registers it on GitHub for
+    sign-in and commit signing. Returns an error message, or None."""
+    import socket
+    import tempfile
+    if not os.path.exists(SK_KEY):
+        with tempfile.TemporaryDirectory() as tmp:
+            # ssh-keygen asks for the PIN through SSH_ASKPASS since there is no terminal
+            askpass = os.path.join(tmp, "askpass")
+            with open(askpass, "w") as f:
+                f.write('#!/bin/sh\nprintf "%s\\n" "$AIWALK_PIN"\n')
+            os.chmod(askpass, 0o700)
+            env = {**os.environ, "SSH_ASKPASS": askpass, "SSH_ASKPASS_REQUIRE": "force", "AIWALK_PIN": pin,
+                   "DISPLAY": os.environ.get("DISPLAY", ":0")}
+            os.makedirs(os.path.dirname(SK_KEY), mode=0o700, exist_ok=True)
+            r = subprocess.run(["ssh-keygen", "-t", "ecdsa-sk", "-O", "resident", "-O", "verify-required",
+                                "-O", "application=ssh:aiwalk", "-C", f"{user} aIwalk security key",
+                                "-N", "", "-f", SK_KEY], env=env, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=90)
+            if r.returncode != 0:
+                out = (r.stdout + r.stderr).strip()
+                if "PIN" in out and ("incorrect" in out or "invalid" in out.lower()):
+                    return "Wrong PIN"
+                return "The key did not create a login key: " + (out.splitlines()[-1] if out else "no answer")
+    title = f"aIwalk security key ({socket.gethostname()})"
+    for kind in ("authentication", "signing"):
+        code, out = sh("gh", "ssh-key", "add", SK_KEY + ".pub", "--title", title, "--type", kind, timeout=30)
+        if code != 0 and "already" not in out:
+            if "admin:public_key" in out or "scope" in out:
+                return "GitHub needs one more permission: run  gh auth refresh -s admin:public_key,admin:ssh_signing_key"
+            return f"Could not register the key on GitHub: {out[-120:]}"
+    return None
+
+
 def account_has_key_login():
     """True when the GitHub account has a security-key SSH key (sk-...) registered."""
     code, out = sh("gh", "api", "user/keys", "--jq", ".[].key", timeout=15)
@@ -1336,6 +1399,11 @@ ACCESS_CSS = """
 .perm-admin { background: #8C54D9; color: white; }
 .perm-write { background: #F5843C; color: #1d1d1d; }
 .perm-read { background: #F9C29B; color: #1d1d1d; }
+.method-pill { border-radius: 999px; padding: 3px 12px; font-weight: 600; font-size: 0.9em; }
+.m-key { background: #8C54D9; color: white; }
+.m-account { background: #F5843C; color: #1d1d1d; }
+.m-temp { background: #F9C29B; color: #1d1d1d; }
+.state-off { border: 1px dashed alpha(currentColor, 0.35); color: alpha(currentColor, 0.55); font-weight: normal; }
 .perm-none { border: 1px dashed alpha(currentColor, 0.35); color: alpha(currentColor, 0.5); font-weight: normal; }
 """
 
@@ -1431,20 +1499,46 @@ class SignInPage(Adw.NavigationPage, Busy):
             self.body.append(page)
             return
 
-        head = Gtk.Label(label=f"Signed in as {user}", xalign=0)
-        head.add_css_class("title-2")
+        plugged, registered = access["keys"], access["key_login"]
+        # (name, css, active, state text, detail, icon)
+        methods = [
+            ("GitHub account", "m-account", True, "Active",
+             f"Signed in on this computer as {user}", "avatar-default-symbolic"),
+            ("Security key", "m-key", bool(plugged and registered),
+             "Active" if plugged and registered else "Not plugged in" if registered else
+             "Not set up" if plugged else "None",
+             (f"{plugged[0]}, registered for sign-in and commit signing" if plugged else
+              "Registered on GitHub. Plug it in to use it.") if registered else
+             (f"{plugged[0]} is plugged in but not registered yet" if plugged else
+              "A FIDO key: a YubiKey, or the team's Pico key"), "auth-fingerprint-symbolic"),
+            ("Temporary credential", "m-temp", False, "Not issued",
+             "Time-limited access for people without a key. Being designed.", "alarm-symbolic"),
+        ]
+
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        title = Gtk.Label(label=f"Signed in as {user}", xalign=0)
+        title.add_css_class("title-2")
+        head.append(title)
+        chips = Gtk.Box(spacing=8)
+        for name, css, active, *_ in methods:
+            if active:
+                chips.append(self._pill(name, css))
+        head.append(chips)
         self.body.append(head)
 
-        keys = Adw.PreferencesGroup(title="Security key")
-        plugged = access["keys"]
-        row = Adw.ActionRow(title=plugged[0] if plugged else "No security key plugged in",
-                            subtitle=("Registered on this GitHub account" if access["key_login"] else
-                                      "Not registered on this GitHub account yet, so it does not sign you "
-                                      "in. Until it is, the tree shows what the account can open.")
-                            if plugged else "Plug in your key to see what it opens")
-        row.add_prefix(Gtk.Image(icon_name="auth-fingerprint-symbolic" if plugged else "dialog-password-symbolic"))
-        keys.add(row)
-        self.body.append(keys)
+        group = Adw.PreferencesGroup(title="Sign-in methods",
+                                     description="Several can be active at once")
+        for name, css, active, state, detail, icon in methods:
+            row = Adw.ActionRow(title=name, subtitle=detail, sensitive=name != "Temporary credential")
+            row.add_prefix(Gtk.Image(icon_name=icon))
+            if name == "Security key" and plugged and not registered:
+                setup = Gtk.Button(label="Set up", valign=Gtk.Align.CENTER)
+                setup.add_css_class("suggested-action")
+                setup.connect("clicked", lambda *_: self._set_up_key(user))
+                row.add_suffix(setup)
+            row.add_suffix(self._pill(state, css if active else "state-off"))
+            group.add(row)
+        self.body.append(group)
 
         # the access tree describes one vault, so it opens under that vault's row
         self.vaults.set_extras({vault: (lambda v=v: self._tree_rows(user, v))
@@ -1456,6 +1550,63 @@ class SignInPage(Adw.NavigationPage, Busy):
         row.connect("activated", lambda *_: self._sign_out())
         out.add(row)
         self.body.append(out)
+
+    @staticmethod
+    def _pill(text, css):
+        pill = Gtk.Label(label=text, valign=Gtk.Align.CENTER)
+        pill.add_css_class("method-pill")
+        pill.add_css_class(css)
+        return pill
+
+    def _set_up_key(self, user):
+        info = fido_info()
+        if info is None:
+            self.toasts.add_toast(Adw.Toast(title="Plug in the security key first", timeout=4))
+            return
+        has_pin, min_len = info
+        first, again = Gtk.PasswordEntry(show_peek_icon=True), Gtk.PasswordEntry(show_peek_icon=True)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.append(first)
+        if not has_pin:
+            first.set_property("placeholder-text", f"New PIN, at least {min_len} characters")
+            again.set_property("placeholder-text", "The same PIN again")
+            box.append(again)
+        dialog = Adw.AlertDialog(
+            heading="Set up the security key" if has_pin else "Give the key a PIN",
+            body="Enter the key's PIN. Then touch the key when it blinks." if has_pin else
+                 "The key has no PIN yet, so anyone holding it could use it. The PIN stays on the key; "
+                 "5 wrong tries in a row lock it. Then touch the key when it blinks.")
+        dialog.set_extra_child(box)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", "Continue")
+        dialog.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
+
+        def answered(_d, response):
+            pin = first.get_text()
+            if response != "go":
+                return
+            if not has_pin and (pin != again.get_text() or len(pin) < min_len):
+                self.toasts.add_toast(Adw.Toast(title=f"The PINs must match and have at least {min_len} "
+                                                      "characters", timeout=5))
+                return
+            wait = Adw.AlertDialog(heading="Touch your security key",
+                                   body="Touch the key when it blinks. This takes up to a minute.")
+            wait.present(self)
+
+            def work():
+                try:
+                    if not has_pin:
+                        fido_set_pin(pin)
+                    error = set_up_key(user, pin)
+                except Exception as e:  # device errors come as many types; show them, never crash the page
+                    error = f"The key refused: {e}"
+                GLib.idle_add(wait.force_close)
+                return error or "Security key set up and registered on GitHub"
+
+            self.run(work)
+
+        dialog.connect("response", answered)
+        dialog.present(self)
 
     @staticmethod
     def _tree_rows(user, v):
