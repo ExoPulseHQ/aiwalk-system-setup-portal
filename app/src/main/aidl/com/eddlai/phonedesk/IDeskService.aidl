@@ -14,7 +14,8 @@ interface IDeskService {
     int enterDisplay(int width, int height, int dpi) = 1;
 
     // Mirrors the overlay display into surface (drawn by our accessibility overlay window).
-    void mirror(in Surface surface, int width, int height) = 2;
+    // Returns false if the mirror could not be created.
+    boolean mirror(in Surface surface, int width, int height) = 2;
 
     // Removes the overlay display and restores rotation.
     void exitDisplay() = 3;

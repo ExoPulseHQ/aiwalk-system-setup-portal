@@ -119,6 +119,11 @@ public class MainActivity extends Activity {
             DeskOverlayService.instance.start();
             return;
         }
+        status.postDelayed(() -> {
+            if (host == this && DeskOverlayService.instance == null) {
+                show("電腦模式沒有啟動\nShizuku 可能沒有回應，請在 Shizuku 裡重新啟動後再試\n\n按返回鍵離開");
+            }
+        }, 10000);
         String component = getPackageName() + "/" + DeskOverlayService.class.getName();
         DeskConnection.whenReady(() -> new Thread(() -> {
             try {

@@ -48,6 +48,7 @@ public class DeskService extends IDeskService.Stub {
         HiddenApiBypass.addHiddenApiExemptions("");
         base = context;
         shell = new ShellContext(context);
+        log("service started, pid " + android.os.Process.myPid());
     }
 
     @Override
@@ -64,34 +65,40 @@ public class DeskService extends IDeskService.Stub {
         sh("settings put system accelerometer_rotation 0");
         sh("settings put system user_rotation 1");
         sh("settings put global force_desktop_mode_on_external_displays 1");
-        sh("settings put global overlay_display_devices " + width + "x" + height + "/" + dpi);
+        // should_show_system_decorations: run a launcher/taskbar on it instead of mirroring display 0
+        sh("settings put global overlay_display_devices " + width + "x" + height + "/" + dpi
+                + ",should_show_system_decorations");
         int id = waitForOverlayDisplay();
         if (id < 0) {
-            Log.e(TAG, "overlay display did not appear");
+            log("overlay display did not appear");
             exitDisplay();
             return -1;
         }
         overlayId = id;
         setImePolicyLocal(id);
-        Log.i(TAG, "overlay display " + id + " " + width + "x" + height + "/" + dpi);
+        log("overlay display " + id + " " + width + "x" + height + "/" + dpi);
         return id;
     }
 
     @Override
-    public synchronized void mirror(Surface surface, int width, int height) {
+    public synchronized boolean mirror(Surface surface, int width, int height) {
         releaseMirror();
-        if (overlayId < 0 || surface == null) return;
+        if (overlayId < 0 || surface == null) return false;
         try {
             Method m = DisplayManager.class.getMethod("createVirtualDisplay",
                     String.class, int.class, int.class, int.class, Surface.class);
             mirror = (VirtualDisplay) m.invoke(null, "PhoneDeskMirror", width, height, overlayId, surface);
+            log("mirror " + width + "x" + height + " of display " + overlayId + " -> " + (mirror != null));
+            return mirror != null;
         } catch (Exception e) {
-            Log.e(TAG, "mirror failed", e);
+            log("mirror failed: " + e + " / " + e.getCause());
+            return false;
         }
     }
 
     @Override
     public synchronized void exitDisplay() {
+        log("exitDisplay");
         releaseMirror();
         overlayId = -1;
         sh("settings put global overlay_display_devices none");
@@ -121,6 +128,7 @@ public class DeskService extends IDeskService.Stub {
 
     @Override
     public synchronized void setAccessibility(boolean enabled, String component) {
+        log("setAccessibility " + enabled);
         if (enabled) {
             savedA11y = sh("settings get secure enabled_accessibility_services");
             savedA11yOn = sh("settings get secure accessibility_enabled");
@@ -176,7 +184,7 @@ public class DeskService extends IDeskService.Stub {
             setDisplayIdMethod.invoke(event, id);
             injectMethod.invoke(input, event, 0); // INJECT_INPUT_EVENT_MODE_ASYNC
         } catch (Exception e) {
-            Log.e(TAG, "inject failed", e);
+            log("inject failed: " + e + " / " + e.getCause());
         }
     }
 
@@ -191,6 +199,16 @@ public class DeskService extends IDeskService.Stub {
                     .invoke(wm, id, 0); // DISPLAY_IME_POLICY_LOCAL
         } catch (Exception e) {
             Log.e(TAG, "setDisplayImePolicy failed", e);
+        }
+    }
+
+    /** Survives logcat rotation: /data/local/tmp is writable by shell and readable over adb. */
+    private static synchronized void log(String msg) {
+        Log.i(TAG, msg);
+        try (java.io.FileWriter w = new java.io.FileWriter("/data/local/tmp/phonedesk.log", true)) {
+            w.write(new java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+                    .format(new java.util.Date()) + " " + msg + "\n");
+        } catch (Exception ignored) {
         }
     }
 
