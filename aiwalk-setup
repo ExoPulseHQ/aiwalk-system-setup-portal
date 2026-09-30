@@ -11,6 +11,7 @@ import math
 import os
 import subprocess
 import threading
+import re
 import time
 
 import gi
@@ -1156,50 +1157,72 @@ def github_user():
 # ---------------------------------------------------------------- access tree
 
 ORG = "ExoPulseHQ"
-# ponytail: hand copy of the "repos" routes in ExoPulse_docs/Project_Management/vault_rules.json;
-# read that file instead once exo_repos.py ships the split vault.
-ACCESS_TREE = ("main", "exo-book", "Primary logs, guides and templates", [
-    ("Layers", None, "Detail repos, one per domain", [
-        ("L1 Sensing", "exo-l1", "L1_Sensing/", []),
-        ("L2 Platform", "exo-l2", "L2_Platform/", []),
-        ("L3 Simulation and AI", "exo-l3", "L3_Simulation_AI/", []),
-        ("L4 Deployment", "exo-l4", "L4_Deployment/", []),
-        ("L5 Human-machine interaction", "exo-l5", "L5_HMInteraction/", []),
-        ("L6 Clinical", "exo-l6", "L6_Clinical/", []),
-        ("Trailforge", "exo-trailforge", "Trailforge/", []),
-    ]),
-    ("Team shared", None, "Everyone on the team", [
-        ("Presentations and training", "exo-shared", "Presentations/  Training Program/", []),
-        ("Assets", "exo-assets", "Assets/", []),
-        ("Papers", "exo-papers", "Papers/", []),
-    ]),
-    ("Founders", None, "Core only", [
-        ("Management", "exo-mgmt", "Proposals/  Reports/  Project_Management/", []),
-        ("Secrets", "exo-secrets", "Passwords, access roster", []),
-    ]),
-])
+# The vault's own routing file says which repo owns which folder; the book repo holds it once the
+# vault is split, the old single repo until then.
+RULES_SOURCES = [(f"{ORG}/exo-book", "Project_Management/vault_rules.json"),
+                 ("eddLai/ExoPulse_docs", "Project_Management/vault_rules.json")]
 PERM_RANK = {"ADMIN": 4, "MAINTAIN": 3, "WRITE": 2, "TRIAGE": 1, "READ": 1}
 PERM_LABEL = {4: ("Admin", "perm-admin"), 3: ("Write", "perm-write"), 2: ("Write", "perm-write"),
               1: ("Read", "perm-read"), 0: ("No access", "perm-none")}
 PURPLE = (0x8C / 255, 0x54 / 255, 0xD9 / 255)
 
 
+def vault_repos():
+    """(source repo, book, [(repo, [routed folders])]) from the vault's vault_rules.json, in routing order."""
+    import json
+    for repo, path in RULES_SOURCES:
+        code, out = sh("gh", "api", f"repos/{repo}/contents/{path}", "-H", "Accept: application/vnd.github.raw",
+                       timeout=20)
+        if code == 0:
+            break
+    else:
+        return None, None, []
+    rules = json.loads(out)["repos"]
+    folders = {}
+    for route in rules["routes"]:
+        prefix = route["prefix"]
+        entry = folders.setdefault(route["repo"], [])
+        # folders as routed (Papers/Strategy_IP_Market/), or the file itself when only files are routed
+        shown = prefix if prefix.endswith("/") else prefix.rsplit("/", 1)[-1]
+        if not prefix.startswith(".") and shown not in entry:
+            entry.append(shown)
+    return repo, rules["book"], [(r, f) for r, f in folders.items() if r != rules["book"]]
+
+
+def build_tree(book, repos, repo_teams):
+    """Groups the vault's repos by who GitHub grants them to: the whole team, only core, or a domain team."""
+    groups = {"Layers": [], "Team shared": [], "Founders": []}
+    for repo, folders in repos:
+        layer = next((f.rstrip("/") for f in folders if re.match(r"L\d_", f)), None)
+        title = layer.replace("_", " ") if layer else repo.removeprefix("exo-").capitalize()
+        teams = repo_teams.get(repo, set()) - {"core"}
+        group = "Team shared" if "members" in teams else "Layers" if teams or layer else "Founders"
+        groups[group].append((title, repo, "  ".join(folders) or repo, []))
+    about = {"Layers": "Detail repos, one per domain", "Team shared": "Everyone on the team",
+             "Founders": "Core only"}
+    return ("main", book, "Primary logs, guides and templates",
+            [(g, None, about[g], sorted(items)) for g, items in groups.items() if items])
+
+
 def org_access():
-    """{login: (name, {repo: rank})} for every ExoPulseHQ member, from org role and team grants."""
+    """({login: (name, {repo: rank} or None for owners)}, {repo: {team slugs}}) for ExoPulseHQ."""
     import json
     code, out = sh("gh", "api", "graphql", "-f", "query={ organization(login:\"%s\") {"
                    " membersWithRole(first:100) { edges { role node { login name } } }"
-                   " teams(first:50) { nodes { members(first:100) { nodes { login } }"
+                   " teams(first:50) { nodes { slug members(first:100) { nodes { login } }"
                    " repositories(first:50) { edges { permission node { name } } } } } } }" % ORG, timeout=20)
     if code != 0:
-        return {}
+        return {}, {}
     org = json.loads(out)["data"]["organization"]
     people = {}
     for edge in org["membersWithRole"]["edges"]:
         login = edge["node"]["login"]
         # org owners are admins of every repo
         people[login] = (edge["node"]["name"] or login, {} if edge["role"] != "ADMIN" else None)
+    repo_teams = {}
     for team in org["teams"]["nodes"]:
+        for edge in team["repositories"]["edges"]:
+            repo_teams.setdefault(edge["node"]["name"], set()).add(team["slug"])
         for member in team["members"]["nodes"]:
             grants = people.get(member["login"], (None, {}))[1]
             if grants is None:
@@ -1207,7 +1230,7 @@ def org_access():
             for edge in team["repositories"]["edges"]:
                 repo = edge["node"]["name"]
                 grants[repo] = max(grants.get(repo, 0), PERM_RANK.get(edge["permission"], 0))
-    return people
+    return people, repo_teams
 
 
 def security_keys():
@@ -1273,7 +1296,7 @@ class TreeGutter(Gtk.DrawingArea):
             cr.fill()
 
 
-def access_tree(grants):
+def access_tree(tree, grants):
     """The ExoPulse vault as a tree of repos, each with the permission `grants` gives (None = admin)."""
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
     box.add_css_class("access-tree")
@@ -1301,7 +1324,7 @@ def access_tree(grants):
         for i, child in enumerate(children):
             add(child, depth + 1, lasts + [i == len(children) - 1])
 
-    add(ACCESS_TREE, 0, [True])
+    add(tree, 0, [True])
     return box
 
 
@@ -1359,9 +1382,10 @@ class SignInPage(Adw.NavigationPage, Busy):
     """Module: the team member's GitHub account, which unlocks the company repositories."""
 
     def __init__(self, toasts):
-        super().__init__(title="Sign in", tag="signin")
+        super().__init__(title="Team access", tag="team")
         self.toasts, self.busy = toasts, False
         self.body = module_page(self)
+        self.vaults = VaultSection(toasts)
         self.refresh()
 
     def refresh(self):
@@ -1369,6 +1393,7 @@ class SignInPage(Adw.NavigationPage, Busy):
             return
         self.clear()
         self.body.append(Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True))
+        self.vaults.refresh()
         threading.Thread(target=lambda: GLib.idle_add(self._show, *self._probe()), daemon=True).start()
 
     @staticmethod
@@ -1378,7 +1403,11 @@ class SignInPage(Adw.NavigationPage, Busy):
         user = github_user()
         if not user:
             return user, {}
-        return user, {"people": org_access(), "keys": security_keys(), "key_login": account_has_key_login()}
+        people, repo_teams = org_access()
+        source, book, repos = vault_repos()
+        return user, {"people": people, "tree": build_tree(book, repos, repo_teams) if book else None,
+                      "source": source,
+                      "keys": security_keys(), "key_login": account_has_key_login()}
 
     def _show(self, user, access):
         self.clear()
@@ -1414,32 +1443,33 @@ class SignInPage(Adw.NavigationPage, Busy):
         keys.add(row)
         self.body.append(keys)
 
-        people = access["people"]
-        group = Adw.PreferencesGroup(title="What it opens",
-                                     description=f"{ORG} repositories and this account's permission")
-        frame = Gtk.Frame()
-        frame.add_css_class("card")
-        if user not in people:
-            frame.set_child(access_tree({}))
-        elif people[user][1] is None:
-            # owners may preview any member's view
-            logins = sorted(people, key=lambda l: (l != user, people[l][0].lower()))
-            view_as = Adw.ComboRow(title="View as", model=Gtk.StringList.new(
-                [f"{people[l][0]} ({l})" if people[l][0] != l else l for l in logins]))
-            view_as.connect("notify::selected", lambda r, _: frame.set_child(
-                access_tree(people[logins[r.get_selected()]][1])))
-            group.add(view_as)
-            frame.set_child(access_tree(None))
-        else:
-            frame.set_child(access_tree(people[user][1]))
-        group.add(frame)
-        self.body.append(group)
+        # the access tree describes one vault, so it opens under that vault's row
+        self.vaults.set_extras({access["source"]: lambda: self._tree_rows(user, access)} if access["tree"] else {})
+        self.body.append(self.vaults)
         out = Adw.PreferencesGroup()
         row = Adw.ActionRow(title="Sign out", subtitle="Removes this computer's GitHub sign-in", activatable=True)
         row.add_prefix(Gtk.Image(icon_name="system-log-out-symbolic"))
         row.connect("activated", lambda *_: self._sign_out())
         out.add(row)
         self.body.append(out)
+
+    @staticmethod
+    def _tree_rows(user, access):
+        """Rows for the vault's expander: an optional View as picker, then the tree of its repos."""
+        people, tree = access["people"], access["tree"]
+        frame = Gtk.Frame(margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
+        frame.add_css_class("card")
+        rows = []
+        if user in people and people[user][1] is None:
+            # owners may preview any member's view
+            logins = sorted(people, key=lambda l: (l != user, people[l][0].lower()))
+            view_as = Adw.ComboRow(title="View as", model=Gtk.StringList.new(
+                [f"{people[l][0]} ({l})" if people[l][0] != l else l for l in logins]))
+            view_as.connect("notify::selected", lambda r, _: frame.set_child(
+                access_tree(tree, people[logins[r.get_selected()]][1])))
+            rows.append(view_as)
+        frame.set_child(access_tree(tree, people.get(user, (None, {}))[1]))
+        return rows + [frame]
 
     def _sign_in(self):
         """GitHub device login: show the one-time code, the browser does the rest."""
@@ -1534,15 +1564,22 @@ def register_vault(path):
             json.dump(config, f)
 
 
-class VaultPage(Adw.NavigationPage, Busy):
-    """Module: download the team's Obsidian vaults and keep them up to date."""
+class VaultSection(Gtk.Box, Busy):
+    """Part of the Team access page: download the team's Obsidian vaults and keep them up to date."""
 
     def __init__(self, toasts):
-        super().__init__(title="Document vault", tag="vault")
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=24)
         self.toasts, self.busy = toasts, False
-        self.body = module_page(self)
+        self.body = self
         self.progress = {}
+        self.extras, self.data = {}, None
         self.refresh()
+
+    def set_extras(self, extras):
+        """{repo: () -> [widgets]} shown when that vault's row is expanded."""
+        self.extras = extras
+        if self.data:
+            self._show(*self.data)
 
     def refresh(self):
         if self.busy:
@@ -1551,11 +1588,20 @@ class VaultPage(Adw.NavigationPage, Busy):
             self._show, {repo: find_vault(repo) for _, repo, _ in VAULTS}, obsidian_app()), daemon=True).start()
 
     def _show(self, found, obsidian):
+        self.data = (found, obsidian)
         self.clear()
-        group = Adw.PreferencesGroup(title="Vaults", description="Opened with Obsidian")
+        group = Adw.PreferencesGroup(title="Document vault",
+                                     description="Opened with Obsidian. Expand a vault to see what each "
+                                                 "account can open in it.")
         for name, repo, about in VAULTS:
             path = found[repo]
-            row = Adw.ActionRow(title=name, subtitle=f"{about}\n" + (path or "Not downloaded yet"))
+            subtitle = f"{about}\n" + (path or "Not downloaded yet")
+            if repo in self.extras:
+                row = Adw.ExpanderRow(title=name, subtitle=subtitle)
+                for extra in self.extras[repo]():
+                    row.add_row(extra)
+            else:
+                row = Adw.ActionRow(title=name, subtitle=subtitle)
             row.add_prefix(Gtk.Image(icon_name="folder-documents-symbolic"))
             if path:
                 update = Gtk.Button(icon_name="emblem-synchronizing-symbolic", tooltip_text="Get the latest changes",
@@ -1634,10 +1680,9 @@ class VaultPage(Adw.NavigationPage, Busy):
 # ---------------------------------------------------------------- app shell
 
 MODULES = [  # (page class, sidebar icon)
-    (lambda t: SignInPage(t), "avatar-default-symbolic"),
+    (lambda t: SignInPage(t), "system-users-symbolic"),
     (lambda t: AndroidPage(t), "phone-symbolic"),
     (lambda t: WindowsVmPage(t), "computer-symbolic"),
-    (lambda t: VaultPage(t), "folder-documents-symbolic"),
 ]
 
 
