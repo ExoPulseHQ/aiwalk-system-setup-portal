@@ -1156,28 +1156,28 @@ def github_user():
 
 # ---------------------------------------------------------------- access tree
 
-ORG = "ExoPulseHQ"
-# The vault's own routing file says which repo owns which folder; the book repo holds it once the
-# vault is split, the old single repo until then.
-RULES_SOURCES = [(f"{ORG}/exo-book", "Project_Management/vault_rules.json"),
-                 ("eddLai/ExoPulse_docs", "Project_Management/vault_rules.json")]
+# A vault that is split into repos says so in its own routing file: which repo owns which folder,
+# and the GitHub organisation that grants them. Any vault with one gets an access tree.
+RULES_PATHS = ["Project_Management/vault_rules.json", "vault_rules.json"]
 PERM_RANK = {"ADMIN": 4, "MAINTAIN": 3, "WRITE": 2, "TRIAGE": 1, "READ": 1}
 PERM_LABEL = {4: ("Admin", "perm-admin"), 3: ("Write", "perm-write"), 2: ("Write", "perm-write"),
               1: ("Read", "perm-read"), 0: ("No access", "perm-none")}
 PURPLE = (0x8C / 255, 0x54 / 255, 0xD9 / 255)
 
 
-def vault_repos():
-    """(source repo, book, [(repo, [routed folders])]) from the vault's vault_rules.json, in routing order."""
+def vault_repos(vault):
+    """(org, book, [(repo, [routed folders])]) from the vault's routing file, or None when it has none."""
     import json
-    for repo, path in RULES_SOURCES:
-        code, out = sh("gh", "api", f"repos/{repo}/contents/{path}", "-H", "Accept: application/vnd.github.raw",
+    for path in RULES_PATHS:
+        code, out = sh("gh", "api", f"repos/{vault}/contents/{path}", "-H", "Accept: application/vnd.github.raw",
                        timeout=20)
         if code == 0:
             break
     else:
-        return None, None, []
-    rules = json.loads(out)["repos"]
+        return None
+    rules = json.loads(out).get("repos")
+    if not rules or not rules.get("org"):
+        return None
     folders = {}
     for route in rules["routes"]:
         prefix = route["prefix"]
@@ -1186,7 +1186,7 @@ def vault_repos():
         shown = prefix if prefix.endswith("/") else prefix.rsplit("/", 1)[-1]
         if not prefix.startswith(".") and shown not in entry:
             entry.append(shown)
-    return repo, rules["book"], [(r, f) for r, f in folders.items() if r != rules["book"]]
+    return rules["org"], rules["book"], [(r, f) for r, f in folders.items() if r != rules["book"]]
 
 
 def build_tree(book, repos, repo_teams):
@@ -1204,13 +1204,13 @@ def build_tree(book, repos, repo_teams):
             [(g, None, about[g], sorted(items)) for g, items in groups.items() if items])
 
 
-def org_access():
+def org_access(org):
     """({login: (name, {repo: rank} or None for owners)}, {repo: {team slugs}}) for ExoPulseHQ."""
     import json
     code, out = sh("gh", "api", "graphql", "-f", "query={ organization(login:\"%s\") {"
                    " membersWithRole(first:100) { edges { role node { login name } } }"
                    " teams(first:50) { nodes { slug members(first:100) { nodes { login } }"
-                   " repositories(first:50) { edges { permission node { name } } } } } } }" % ORG, timeout=20)
+                   " repositories(first:50) { edges { permission node { name } } } } } } }" % org, timeout=20)
     if code != 0:
         return {}, {}
     org = json.loads(out)["data"]["organization"]
@@ -1296,8 +1296,8 @@ class TreeGutter(Gtk.DrawingArea):
             cr.fill()
 
 
-def access_tree(tree, grants):
-    """The ExoPulse vault as a tree of repos, each with the permission `grants` gives (None = admin)."""
+def access_tree(tree, grants, org):
+    """A split vault as a tree of repos, each with the permission `grants` gives (None = admin)."""
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
     box.add_css_class("access-tree")
 
@@ -1318,7 +1318,7 @@ def access_tree(tree, grants):
             pill = Gtk.Label(label=text, valign=Gtk.Align.CENTER, width_chars=9)
             pill.add_css_class("perm")
             pill.add_css_class(css)
-            pill.set_tooltip_text(f"{ORG}/{repo}")
+            pill.set_tooltip_text(f"{org}/{repo}")
             row.append(pill)
         box.append(row)
         for i, child in enumerate(children):
@@ -1403,11 +1403,14 @@ class SignInPage(Adw.NavigationPage, Busy):
         user = github_user()
         if not user:
             return user, {}
-        people, repo_teams = org_access()
-        source, book, repos = vault_repos()
-        return user, {"people": people, "tree": build_tree(book, repos, repo_teams) if book else None,
-                      "source": source,
-                      "keys": security_keys(), "key_login": account_has_key_login()}
+        vaults, orgs = {}, {}
+        for _, vault, _ in VAULTS:
+            layout = vault_repos(vault)
+            if layout:
+                org, book, repos = layout
+                people, repo_teams = orgs.setdefault(org, org_access(org))
+                vaults[vault] = {"org": org, "people": people, "tree": build_tree(book, repos, repo_teams)}
+        return user, {"vaults": vaults, "keys": security_keys(), "key_login": account_has_key_login()}
 
     def _show(self, user, access):
         self.clear()
@@ -1444,7 +1447,8 @@ class SignInPage(Adw.NavigationPage, Busy):
         self.body.append(keys)
 
         # the access tree describes one vault, so it opens under that vault's row
-        self.vaults.set_extras({access["source"]: lambda: self._tree_rows(user, access)} if access["tree"] else {})
+        self.vaults.set_extras({vault: (lambda v=v: self._tree_rows(user, v))
+                                for vault, v in access["vaults"].items()})
         self.body.append(self.vaults)
         out = Adw.PreferencesGroup()
         row = Adw.ActionRow(title="Sign out", subtitle="Removes this computer's GitHub sign-in", activatable=True)
@@ -1454,9 +1458,9 @@ class SignInPage(Adw.NavigationPage, Busy):
         self.body.append(out)
 
     @staticmethod
-    def _tree_rows(user, access):
-        """Rows for the vault's expander: an optional View as picker, then the tree of its repos."""
-        people, tree = access["people"], access["tree"]
+    def _tree_rows(user, v):
+        """Rows for a vault's expander: an optional View as picker, then the tree of its repos."""
+        people, tree, org = v["people"], v["tree"], v["org"]
         frame = Gtk.Frame(margin_top=6, margin_bottom=6, margin_start=6, margin_end=6)
         frame.add_css_class("card")
         rows = []
@@ -1466,9 +1470,9 @@ class SignInPage(Adw.NavigationPage, Busy):
             view_as = Adw.ComboRow(title="View as", model=Gtk.StringList.new(
                 [f"{people[l][0]} ({l})" if people[l][0] != l else l for l in logins]))
             view_as.connect("notify::selected", lambda r, _: frame.set_child(
-                access_tree(tree, people[logins[r.get_selected()]][1])))
+                access_tree(tree, people[logins[r.get_selected()]][1], org)))
             rows.append(view_as)
-        frame.set_child(access_tree(tree, people.get(user, (None, {}))[1]))
+        frame.set_child(access_tree(tree, people.get(user, (None, {}))[1], org))
         return rows + [frame]
 
     def _sign_in(self):
