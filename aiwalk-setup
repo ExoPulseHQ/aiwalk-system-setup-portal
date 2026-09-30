@@ -1138,8 +1138,12 @@ def shortcut_main(flag):
 
 # ---------------------------------------------------------------- sign in
 
-# ponytail: one hard-coded company vault; move to a config file when there are several
-VAULTS = [("aIwalk Corp", "eddLai/aIwalk_Corp", "Company overview, setup log and writing guidelines")]
+# ponytail: vault list is hard-coded; move to a config file when teams need different lists
+VAULTS = [
+    ("ExoPulse docs", "eddLai/ExoPulse_docs", "The team's technical documents, papers and progress notes"),
+    # ponytail: gated by GitHub access only (founders); the admin security key check comes with Sign in
+    ("aIwalk Corp", "eddLai/aIwalk_Corp", "Company records, founders only (needs the admin security key)"),
+]
 GH_HELPER = "!gh auth git-credential"  # lets git use the GitHub sign-in, no SSH key needed
 
 
