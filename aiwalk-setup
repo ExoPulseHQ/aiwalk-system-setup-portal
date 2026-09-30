@@ -1150,10 +1150,31 @@ VAULTS = [
 GH_HELPER = "!gh auth git-credential"  # lets git use the GitHub sign-in, no SSH key needed
 
 
-def github_user():
-    """Signed-in GitHub login, or None."""
-    code, out = sh("gh", "api", "user", "--jq", ".login", timeout=15)
-    return out if code == 0 and out else None
+def gh_auth_accounts():
+    """github.com accounts gh auth is signed in to, parsed from `gh auth status`:
+    [{"login", "active", "protocol", "token" (masked, prefix tells the kind), "scopes"}]."""
+    _code, out = sh("gh", "auth", "status", "--hostname", "github.com", timeout=15)
+    accounts = []
+    for line in out.splitlines():
+        m = re.search(r"Logged in to github\.com account (\S+)", line)
+        if m:
+            accounts.append({"login": m.group(1), "active": False, "protocol": "", "token": "", "scopes": []})
+            continue
+        if not accounts:
+            continue
+        key, _, value = line.strip().lstrip("- ").partition(": ")
+        if key == "Active account":
+            accounts[-1]["active"] = value == "true"
+        elif key == "Git operations protocol":
+            accounts[-1]["protocol"] = value
+        elif key == "Token":
+            accounts[-1]["token"] = value
+        elif key == "Token scopes":
+            accounts[-1]["scopes"] = re.findall(r"'([^']+)'", value)
+    return accounts
+
+
+KEY_SCOPES = ["admin:public_key", "admin:ssh_signing_key"]  # to register the security key on GitHub
 
 
 # ---------------------------------------------------------------- access tree
@@ -1277,10 +1298,8 @@ def fido_set_pin(pin):
         dev.close()
 
 
-def set_up_key(user, pin):
-    """Creates an ecdsa-sk SSH key on the security key (PIN + touch) and registers it on GitHub for
-    sign-in and commit signing. Returns an error message, or None."""
-    import socket
+def create_key(user, pin):
+    """Creates an ecdsa-sk SSH key on the security key (PIN + touch). Returns an error message, or None."""
     import tempfile
     if not os.path.exists(SK_KEY):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1301,14 +1320,20 @@ def set_up_key(user, pin):
                 if "PIN" in out and ("incorrect" in out or "invalid" in out.lower()):
                     return "Wrong PIN"
                 return "The key did not create a login key: " + (out.splitlines()[-1] if out else "no answer")
+    return None
+
+
+def register_key():
+    """Registers the key's SSH key on GitHub through gh, for sign-in and commit signing, and has gh
+    use SSH for git. Returns the message to show."""
+    import socket
     title = f"aIwalk security key ({socket.gethostname()})"
     for kind in ("authentication", "signing"):
         code, out = sh("gh", "ssh-key", "add", SK_KEY + ".pub", "--title", title, "--type", kind, timeout=30)
         if code != 0 and "already" not in out:
-            if "admin:public_key" in out or "scope" in out:
-                return "GitHub needs one more permission: run  gh auth refresh -s admin:public_key,admin:ssh_signing_key"
             return f"Could not register the key on GitHub: {out[-120:]}"
-    return None
+    sh("gh", "config", "set", "--host", "github.com", "git_protocol", "ssh")
+    return "Security key set up and registered on GitHub"
 
 
 def account_has_key_login():
@@ -1468,7 +1493,9 @@ class SignInPage(Adw.NavigationPage, Busy):
     def _probe():
         if not shutil.which("gh"):
             return None, None
-        user = github_user()
+        accounts = gh_auth_accounts()
+        active = next((a for a in accounts if a["active"]), None)
+        user = active["login"] if active else None
         if not user:
             return user, {}
         vaults, orgs = {}, {}
@@ -1478,7 +1505,8 @@ class SignInPage(Adw.NavigationPage, Busy):
                 org, book, repos = layout
                 people, repo_teams = orgs.setdefault(org, org_access(org))
                 vaults[vault] = {"org": org, "people": people, "tree": build_tree(book, repos, repo_teams)}
-        return user, {"vaults": vaults, "keys": security_keys(), "key_login": account_has_key_login()}
+        return user, {"vaults": vaults, "keys": security_keys(), "key_login": account_has_key_login(),
+                      "accounts": accounts, "active": active}
 
     def _show(self, user, access):
         self.clear()
@@ -1499,19 +1527,27 @@ class SignInPage(Adw.NavigationPage, Busy):
             self.body.append(page)
             return
 
-        plugged, registered = access["keys"], access["key_login"]
+        plugged, registered, active = access["keys"], access["key_login"], access["active"]
+        others = [a["login"] for a in access["accounts"] if not a["active"]]
+        # gh auth's token prefix tells how it was signed in: gho_ browser sign-in, github_pat_ a
+        # fine-grained token, which always has an expiry date
+        browser = active["token"].startswith("gho_")
+        temporary = active["token"].startswith("github_pat_")
+        ssh_git = active["protocol"] == "ssh"
         # (name, css, active, state text, detail, icon)
         methods = [
-            ("GitHub account", "m-account", True, "Active",
-             f"Signed in on this computer as {user}", "avatar-default-symbolic"),
-            ("Security key", "m-key", bool(plugged and registered),
-             "Active" if plugged and registered else "Not plugged in" if registered else
-             "Not set up" if plugged else "None",
+            ("GitHub account", "m-account", browser, "Active" if browser else "Not used",
+             f"gh auth browser sign-in as {user}, git over {active['protocol'] or 'https'}" +
+             (f". Also signed in: {', '.join(others)}" if others else ""), "avatar-default-symbolic"),
+            ("Security key", "m-key", bool(plugged and registered and ssh_git),
+             ("Active" if ssh_git else "Not in use") if plugged and registered else
+             "Not plugged in" if registered else "Not set up" if plugged else "None",
              (f"{plugged[0]}, registered for sign-in and commit signing" if plugged else
               "Registered on GitHub. Plug it in to use it.") if registered else
              (f"{plugged[0]} is plugged in but not registered yet" if plugged else
               "A FIDO key: a YubiKey, or the team's Pico key"), "auth-fingerprint-symbolic"),
-            ("Temporary credential", "m-temp", False, "Not issued",
+            ("Temporary credential", "m-temp", temporary, "Active" if temporary else "Not issued",
+             "gh auth with a time-limited token" if temporary else
              "Time-limited access for people without a key. Being designed.", "alarm-symbolic"),
         ]
 
@@ -1529,12 +1565,12 @@ class SignInPage(Adw.NavigationPage, Busy):
         group = Adw.PreferencesGroup(title="Sign-in methods",
                                      description="Several can be active at once")
         for name, css, active, state, detail, icon in methods:
-            row = Adw.ActionRow(title=name, subtitle=detail, sensitive=name != "Temporary credential")
+            row = Adw.ActionRow(title=name, subtitle=detail, sensitive=name != "Temporary credential" or temporary)
             row.add_prefix(Gtk.Image(icon_name=icon))
             if name == "Security key" and plugged and not registered:
                 setup = Gtk.Button(label="Set up", valign=Gtk.Align.CENTER)
                 setup.add_css_class("suggested-action")
-                setup.connect("clicked", lambda *_: self._set_up_key(user))
+                setup.connect("clicked", lambda *_: self._set_up_key(user, active["scopes"]))
                 row.add_suffix(setup)
             row.add_suffix(self._pill(state, css if active else "state-off"))
             group.add(row)
@@ -1558,7 +1594,7 @@ class SignInPage(Adw.NavigationPage, Busy):
         pill.add_css_class(css)
         return pill
 
-    def _set_up_key(self, user):
+    def _set_up_key(self, user, scopes):
         info = fido_info()
         if info is None:
             self.toasts.add_toast(Adw.Toast(title="Plug in the security key first", timeout=4))
@@ -1597,11 +1633,22 @@ class SignInPage(Adw.NavigationPage, Busy):
                 try:
                     if not has_pin:
                         fido_set_pin(pin)
-                    error = set_up_key(user, pin)
+                    error = create_key(user, pin)
                 except Exception as e:  # device errors come as many types; show them, never crash the page
                     error = f"The key refused: {e}"
                 GLib.idle_add(wait.force_close)
-                return error or "Security key set up and registered on GitHub"
+                if error:
+                    return error
+                missing = [s for s in KEY_SCOPES if s not in scopes]
+                if missing:
+                    # gh auth has to be allowed to add keys first; same browser approval as signing in
+                    GLib.idle_add(self._gh_device, ["gh", "auth", "refresh", "--hostname", "github.com",
+                                                    "--scopes", ",".join(missing)],
+                                  "Allow adding the key to GitHub",
+                                  lambda ok: self.run(register_key) if ok else
+                                  self._done("GitHub did not allow adding the key"))
+                    return None
+                return register_key()
 
             self.run(work)
 
@@ -1627,11 +1674,19 @@ class SignInPage(Adw.NavigationPage, Busy):
         return rows + [frame]
 
     def _sign_in(self):
-        """GitHub device login: show the one-time code, the browser does the rest."""
-        proc = subprocess.Popen(["gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"],
+        def signed_in(ok):
+            if ok:
+                sh("gh", "auth", "setup-git")
+            self._done("Signed in" if ok else "Sign-in was not completed")
+
+        self._gh_device(["gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"],
+                        "Sign in with GitHub", signed_in)
+
+    def _gh_device(self, command, heading, then):
+        """Runs a gh auth browser flow: shows its one-time code, then calls then(ok) on the main thread."""
+        proc = subprocess.Popen(command,
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        dialog = Adw.AlertDialog(heading="Sign in with GitHub",
-                                 body="Waiting for GitHub…")
+        dialog = Adw.AlertDialog(heading=heading, body="Waiting for GitHub…")
         dialog.add_response("cancel", "Cancel")
         dialog.connect("response", lambda *_: proc.poll() is None and proc.terminate())
         dialog.present(self)
@@ -1647,9 +1702,7 @@ class SignInPage(Adw.NavigationPage, Busy):
                     proc.stdin.flush()
             ok = proc.wait() == 0
             GLib.idle_add(dialog.close)
-            if ok:
-                sh("gh", "auth", "setup-git")
-            GLib.idle_add(self._done, "Signed in" if ok else "Sign-in was not completed")
+            GLib.idle_add(then, ok)
 
         threading.Thread(target=read, daemon=True).start()
 
