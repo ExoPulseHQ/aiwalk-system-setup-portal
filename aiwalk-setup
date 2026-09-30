@@ -1,5 +1,7 @@
 #!/usr/bin/python3
-"""Android Phone: a GNOME panel for the phones on this desk.
+"""aIwalk System Setup: gets a new team member's computer and phones ready.
+
+Module Android Phone: a GNOME panel for the phones on this desk.
 
 One section per connected phone, with that phone's actions under it. A drawn silhouette
 shows the phone's state at a glance: upright = phone mode, sideways with a taskbar =
@@ -31,7 +33,7 @@ IPFILE = f"{HOME}/.config/phone-panel/ip"
 PHONEDESK_APK = os.path.join(HERE, "apk/phonedesk.apk")
 SHIZUKU_APK = os.path.join(HERE, "apk/shizuku.apk")
 PHONEDESK = "com.eddlai.phonedesk"
-APP_ID = "com.eddlai.PhonePanel"
+APP_ID = "com.aiwalk.SystemSetup"
 P_FIRST = "persist.wm.debug.force_desktop_first_on_default_display_for_testing"
 P_RESTRICT = "persist.wm.debug.desktop_mode_enforce_device_restrictions"
 
@@ -200,15 +202,16 @@ class Silhouette(Gtk.DrawingArea):
             cr.fill()
 
 
-class Panel(Adw.ApplicationWindow):
-    def __init__(self, app):
-        super().__init__(application=app, title="Android Phone")
-        self.set_default_size(460, 640)
+class AndroidPage(Adw.NavigationPage):
+    """Module: phones on this desk (desktop mode, mirroring, keyboard, USB / Wi-Fi)."""
+
+    def __init__(self, toasts):
+        super().__init__(title="Android Phone", tag="android")
         self.root_cache = {}
         self.busy = False
         self.signature = None
+        self.toasts = toasts
 
-        self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Look for phones again")
@@ -236,8 +239,7 @@ class Panel(Adw.ApplicationWindow):
         content.append(self.banner)
         content.append(self.stack)
         view.set_content(content)
-        self.toasts.set_child(view)
-        self.set_content(self.toasts)
+        self.set_child(view)
 
         self.refresh(force=True)
         GLib.timeout_add_seconds(4, self._tick)
@@ -297,7 +299,7 @@ class Panel(Adw.ApplicationWindow):
 
         head = Gtk.Box(spacing=16)
         head.append(Silhouette(p))
-        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER, hexpand=True)
         name = Gtk.Label(label=p.model, xalign=0)
         name.add_css_class("title-2")
         text.append(name)
@@ -474,13 +476,337 @@ class Panel(Adw.ApplicationWindow):
         return f"Connected {len(connected)} phone(s)" if connected else "No phone found on Wi-Fi"
 
 
+# ---------------------------------------------------------------- Windows VM
+
+CARD_READER = ("0x0ca6", "0x0010")  # Castles EZUSB PC/SC (health-insurance / citizen certificate cards)
+CARD_ARG = f'-device usb-host,bus=xhci.0,vendorid={CARD_READER[0]},productid={CARD_READER[1]}'
+SECRET_SCHEMA = None
+
+
+def secret_schema():
+    global SECRET_SCHEMA
+    if SECRET_SCHEMA is None:
+        gi.require_version("Secret", "1")
+        from gi.repository import Secret
+        SECRET_SCHEMA = Secret.Schema.new(f"{APP_ID}.WindowsVM", Secret.SchemaFlags.NONE,
+                                          {"user": Secret.SchemaAttributeType.STRING})
+    return SECRET_SCHEMA
+
+
+def load_password(user):
+    schema = secret_schema()
+    from gi.repository import Secret
+    return Secret.password_lookup_sync(schema, {"user": user}, None)
+
+
+def save_password(user, password):
+    schema = secret_schema()
+    from gi.repository import Secret
+    Secret.password_store_sync(schema, {"user": user}, Secret.COLLECTION_DEFAULT,
+                               f"Windows VM ({user})", password, None)
+
+
+def sh(*cmd, timeout=180):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return 1, str(e)
+
+
+class WindowsVm:
+    """A dockur/windows VM found on this computer, described by its compose file."""
+
+    def __init__(self, name, state, compose):
+        self.name, self.state, self.compose = name, state, compose
+        text = open(compose).read() if compose and os.path.exists(compose) else ""
+        self.text = text
+
+        def env(key, default=""):
+            for line in text.splitlines():
+                t = line.strip()
+                if t.startswith(f"{key}:"):
+                    return t.split(":", 1)[1].split("#")[0].strip().strip('"')
+            return default
+
+        self.ram, self.cpus, self.disk = env("RAM_SIZE", "?"), env("CPU_CORES", "?"), env("DISK_SIZE", "?")
+        self.user = env("USERNAME", "Docker")
+        self.card_reader = any(l.strip().startswith("ARGUMENTS:") and CARD_READER[0] in l
+                               for l in text.splitlines())
+        # host port mapped to Windows' RDP 3389, e.g. - "13389:3389/tcp"  # comment
+        import re
+        m = re.search(r'^\s*-\s*"?(\d+):3389(?:/tcp)?"?', text, re.M)
+        self.rdp_port = m.group(1) if m else "3389"
+
+    @property
+    def running(self):
+        return self.state == "running"
+
+    @staticmethod
+    def find():
+        code, out = sh("docker", "ps", "-a", "--filter", "ancestor=dockurr/windows", "--format",
+                       '{{.Names}}|{{.State}}|{{.Label "com.docker.compose.project.config_files"}}', timeout=15)
+        if code != 0 or not out:
+            return None
+        name, state, compose = (out.splitlines()[0].split("|") + ["", ""])[:3]
+        return WindowsVm(name, state, compose.split(",")[0])
+
+    def set_card_reader(self, on):
+        """Adds or comments out the USB passthrough; applied by recreating the (stopped) container."""
+        lines, out, done = self.text.splitlines(), [], False
+        for line in lines:
+            t = line.strip()
+            if CARD_READER[0] in t and t.lstrip("# ").startswith("ARGUMENTS:"):
+                indent = line[:len(line) - len(line.lstrip())]
+                body = t.lstrip("# ")
+                out.append(indent + (body if on else "# " + body))
+                done = True
+            else:
+                out.append(line)
+        if on and not done:
+            i = next(i for i, l in enumerate(out) if l.strip() == "environment:")
+            out.insert(i + 1, f'      ARGUMENTS: "{CARD_ARG}"')
+            if not any("/dev/bus/usb" in l for l in out):
+                j = next(i for i, l in enumerate(out) if l.strip() == "devices:")
+                out.insert(j + 1, "      - /dev/bus/usb")
+        with open(self.compose, "w") as f:
+            f.write("\n".join(out) + "\n")
+        return sh("docker", "compose", "-f", self.compose, "create", "--force-recreate")
+
+
+class WindowsVmPage(Adw.NavigationPage):
+    """Module: the Windows VM (dockur/windows) for Office and Windows-only tools."""
+
+    def __init__(self, toasts):
+        super().__init__(title="Windows VM", tag="windows")
+        self.toasts = toasts
+        self.vm = None
+        self.busy = False
+        self.signature = None
+
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Check the VM again")
+        refresh.connect("clicked", lambda *_: self.refresh())
+        header.pack_end(refresh)
+        view.add_top_bar(header)
+        self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24,
+                            margin_top=12, margin_bottom=24, margin_start=12, margin_end=12)
+        view.set_content(Gtk.ScrolledWindow(child=Adw.Clamp(maximum_size=560, child=self.body), vexpand=True))
+        self.set_child(view)
+        self.refresh()
+        GLib.timeout_add_seconds(5, lambda: (self.refresh(), True)[1])
+
+    def refresh(self):
+        if self.busy:
+            return
+        threading.Thread(target=lambda: GLib.idle_add(self._show, WindowsVm.find()), daemon=True).start()
+
+    def run(self, work, *args):
+        self.busy = True
+
+        def job():
+            msg = work(*args)
+            GLib.idle_add(self._done, msg)
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _done(self, msg):
+        self.busy = False
+        if msg:
+            self.toasts.add_toast(Adw.Toast(title=msg, timeout=5))
+        self.signature = None
+        self.refresh()
+
+    def _show(self, vm):
+        sig = None if vm is None else (vm.name, vm.state, vm.card_reader, vm.user)
+        if sig == self.signature and vm is not None:
+            return
+        self.signature, self.vm = sig, vm
+        while (c := self.body.get_first_child()) is not None:
+            self.body.remove(c)
+        if vm is None:
+            self.body.append(Adw.StatusPage(
+                icon_name="computer-symbolic", title="No Windows VM on this computer yet",
+                description="Creating one from here is the next step of aIwalk System Setup."))
+            return
+
+        head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        title = Gtk.Label(label="Windows is running" if vm.running else "Windows is off", xalign=0)
+        title.add_css_class("title-2")
+        head.append(title)
+        info = Gtk.Label(label=f"{vm.ram} memory, {vm.cpus} CPU cores, {vm.disk} disk", xalign=0)
+        info.add_css_class("dim-label")
+        head.append(info)
+        self.body.append(head)
+
+        actions = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        actions.add_css_class("boxed-list")
+        open_row = Adw.ActionRow(title="Open Windows", activatable=True,
+                                 subtitle="Opens the Windows desktop in a window" +
+                                 ("" if vm.running else ", starting it first (1–2 minutes)"))
+        open_row.add_prefix(Gtk.Image(icon_name="computer-symbolic"))
+        open_row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        open_row.connect("activated", lambda *_: self._open())
+        actions.append(open_row)
+        if vm.running:
+            stop = Adw.ActionRow(title="Shut down Windows", subtitle="Frees its memory; takes up to 2 minutes",
+                                 activatable=True)
+            stop.add_prefix(Gtk.Image(icon_name="system-shutdown-symbolic"))
+            stop.connect("activated", lambda *_: self.run(self._stop))
+            actions.append(stop)
+        self.body.append(actions)
+
+        settings = Adw.PreferencesGroup(title="Settings")
+        card = Adw.SwitchRow(title="Card reader",
+                             subtitle="Pass the USB card reader (health-insurance / citizen certificate) to "
+                                      "Windows. Windows will not start while it is on and the reader is unplugged.",
+                             active=vm.card_reader)
+        card.add_prefix(Gtk.Image(icon_name="media-flash-symbolic"))
+        card.connect("notify::active", lambda r, _: self._toggle_card(r.get_active()))
+        settings.add(card)
+        account = Adw.ActionRow(title="Windows account", subtitle=vm.user)
+        account.add_prefix(Gtk.Image(icon_name="avatar-default-symbolic"))
+        change = Gtk.Button(label="Change password", valign=Gtk.Align.CENTER)
+        change.connect("clicked", lambda *_: self._ask_password(vm.user, None))
+        account.add_suffix(change)
+        settings.add(account)
+        folder = Adw.ActionRow(title="VM folder", subtitle=os.path.dirname(vm.compose))
+        folder.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
+        settings.add(folder)
+        self.body.append(settings)
+
+    # ---------- actions ----------
+
+    def _toggle_card(self, on):
+        vm = self.vm
+        if vm is None or on == vm.card_reader:
+            return
+        if vm.running:
+            dialog = Adw.AlertDialog(heading="Shut down Windows first?",
+                                     body="The card reader setting applies to the VM while it is off. "
+                                          "Windows will shut down, then the change is applied.")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("apply", "Shut down and apply")
+            dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
+
+            def answered(_d, response):
+                if response == "apply":
+                    self.run(lambda: (self._stop(), self._apply_card(on))[1])
+                else:
+                    self._done(None)
+
+            dialog.connect("response", answered)
+            dialog.present(self)
+        else:
+            self.run(self._apply_card, on)
+
+    def _apply_card(self, on):
+        code, out = self.vm.set_card_reader(on)
+        if code != 0:
+            return f"Could not apply the card reader setting: {out[-120:]}"
+        return "Card reader passthrough is " + ("on" if on else "off")
+
+    def _stop(self):
+        code, out = sh("docker", "compose", "-f", self.vm.compose, "stop", timeout=180)
+        return "Windows is shut down" if code == 0 else f"Could not shut down Windows: {out[-120:]}"
+
+    def _ask_password(self, user, then):
+        entry = Gtk.PasswordEntry(show_peek_icon=True, activates_default=True)
+        dialog = Adw.AlertDialog(heading=f"Password for {user}",
+                                 body="Saved in this computer's keyring, used to sign in to Windows.")
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("save", "Save")
+        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("save")
+
+        def answered(_d, response):
+            if response == "save" and entry.get_text():
+                save_password(user, entry.get_text())
+                if then:
+                    then()
+
+        dialog.connect("response", answered)
+        dialog.present(self)
+
+    def _open(self):
+        vm = self.vm
+        password = load_password(vm.user)
+        if not password:
+            self._ask_password(vm.user, self._open)
+            return
+        self.toasts.add_toast(Adw.Toast(title="Opening Windows…" if vm.running
+                                        else "Starting Windows, this takes 1–2 minutes…", timeout=5))
+        self.run(self._connect, vm, password)
+
+    def _connect(self, vm, password):
+        if not vm.running:
+            code, out = sh("docker", "compose", "-f", vm.compose, "start", timeout=120)
+            if code != 0:
+                return f"Could not start Windows: {out[-120:]}"
+        # Windows drops the connection until it has booted; retry for about 3 minutes.
+        for _ in range(18):
+            rdp = subprocess.Popen(
+                ["flatpak", "run", "--command=sdl-freerdp", "com.freerdp.FreeRDP", "/cert:ignore",
+                 "+home-drive", "+clipboard", f"/u:{vm.user}", f"/p:{password}", "/scale:100",
+                 "/dynamic-resolution", f"/v:127.0.0.1:{vm.rdp_port}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                rdp.wait(timeout=7)
+            except subprocess.TimeoutExpired:
+                return None  # still connected: Windows is on screen
+            GLib.usleep(8_000_000)
+        return "Windows did not answer in time, try Open Windows again"
+
+
+# ---------------------------------------------------------------- app shell
+
+MODULES = [  # (page class, sidebar icon)
+    (lambda t: AndroidPage(t), "phone-symbolic"),
+    (lambda t: WindowsVmPage(t), "computer-symbolic"),
+]
+
+
+class MainWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="aIwalk System Setup")
+        self.set_default_size(960, 680)
+        toasts = Adw.ToastOverlay()
+        split = Adw.NavigationSplitView()
+        self.pages = [make(toasts) for make, _ in MODULES]
+
+        sidebar_list = Gtk.ListBox()
+        sidebar_list.add_css_class("navigation-sidebar")
+        for page, (_, icon) in zip(self.pages, MODULES):
+            row = Gtk.Box(spacing=12, margin_top=6, margin_bottom=6, margin_start=6)
+            row.append(Gtk.Image(icon_name=icon))
+            row.append(Gtk.Label(label=page.get_title(), xalign=0))
+            sidebar_list.append(row)
+        def show(_list, row):
+            if row and split.get_content() is not self.pages[row.get_index()]:
+                split.set_content(self.pages[row.get_index()])
+
+        sidebar_list.connect("row-selected", show)
+
+        side_view = Adw.ToolbarView()
+        side_view.add_top_bar(Adw.HeaderBar())
+        side_view.set_content(sidebar_list)
+        split.set_sidebar(Adw.NavigationPage(title="aIwalk System Setup", child=side_view))
+        split.set_content(self.pages[0])
+        sidebar_list.select_row(sidebar_list.get_row_at_index(0))
+
+        toasts.set_child(split)
+        self.set_content(toasts)
+
+
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID)
 
     def do_activate(self):
         Gtk.Window.set_default_icon_name(APP_ID)
-        (self.props.active_window or Panel(self)).present()
+        (self.props.active_window or MainWindow(self)).present()
 
 
 if __name__ == "__main__":
