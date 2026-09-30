@@ -9,32 +9,34 @@ function Show-Disk($label) {
 
 Show-Disk "BEFORE"
 # running as SYSTEM: clean every user's folders, not SYSTEM's own
+# each step also goes to the shared folder so the app can show a progress bar
+function Step($text) { Set-Content '\\host.lan\Data\.aiwalk\progress' $text; $text }
 $profiles = Get-ChildItem C:\Users -Directory | ForEach-Object { $_.FullName }
 
-"1/9 kernel crash dumps"
+Step "1/9 kernel crash dumps"
 Remove-Item 'C:\Windows\LiveKernelReports\*.dmp' -Force
 Remove-Item 'C:\Windows\LiveKernelReports\*\*' -Recurse -Force
 Remove-Item 'C:\Windows\Minidump\*' -Recurse -Force
 Remove-Item 'C:\Windows\MEMORY.DMP' -Force
 
-"2/9 PowerPoint autorecover cache"
+Step "2/9 PowerPoint autorecover cache"
 foreach ($p in $profiles) { Remove-Item "$p\AppData\Roaming\Microsoft\PowerPoint\*" -Recurse -Force }
 
-"3/9 Office document cache"
+Step "3/9 Office document cache"
 foreach ($p in $profiles) { Remove-Item "$p\AppData\Local\Microsoft\Office\16.0\OfficeFileCache\*" -Recurse -Force }
 
-"4/9 LINE cache"
+Step "4/9 LINE cache"
 foreach ($p in $profiles) { Remove-Item "$p\AppData\Local\LINE\Cache\*" -Recurse -Force }
 
-"5/9 temp + windows update download cache"
+Step "5/9 temp + windows update download cache"
 foreach ($p in $profiles) { Remove-Item "$p\AppData\Local\Temp\*" -Recurse -Force }
 Remove-Item 'C:\Windows\Temp\*' -Recurse -Force -Exclude 'aiwalk*'
 Remove-Item 'C:\Windows\SoftwareDistribution\Download\*' -Recurse -Force
 
-"6/9 recycle bin"
+Step "6/9 recycle bin"
 Remove-Item 'C:\$Recycle.Bin\*\*' -Recurse -Force
 
-"7/9 disable hibernation, pin pagefile to 1 GB"
+Step "7/9 disable hibernation, pin pagefile to 1 GB"
 powercfg /h off
 $cs = Get-WmiObject Win32_ComputerSystem -EnableAllPrivileges
 $cs.AutomaticManagedPagefile = $false
@@ -42,10 +44,10 @@ $cs.Put() | Out-Null
 $pf = Get-WmiObject Win32_PageFileSetting
 if ($pf) { $pf.InitialSize = 1024; $pf.MaximumSize = 1024; $pf.Put() | Out-Null }
 
-"8/9 WinSxS component cleanup (slow, 5-10 min)"
+Step "8/9 WinSxS component cleanup (slow, 5-10 min)"
 Dism /Online /Cleanup-Image /StartComponentCleanup /ResetBase | Out-Null
 
-"9/9 ReTrim - this is what shrinks the host image file"
+Step "9/9 ReTrim - this is what shrinks the host image file"
 Optimize-Volume -DriveLetter C -ReTrim
 
 Show-Disk "AFTER"

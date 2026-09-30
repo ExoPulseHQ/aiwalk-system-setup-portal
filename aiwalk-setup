@@ -567,15 +567,20 @@ class WindowsVm:
             time.sleep(5)
         return False
 
-    def run_job(self, name, minutes=60):
-        """Asks the helper to run a job and waits for its output; returns a one-line message."""
+    def run_job(self, name, on_step=None, minutes=60):
+        """Asks the helper to run a job and waits for its output; returns a one-line message.
+        on_step(text) gets each step the job reports, e.g. "8/9 WinSxS component cleanup"."""
         result = os.path.join(self.helper_dir(), "result.txt")
-        if os.path.exists(result):
-            os.remove(result)
+        progress = os.path.join(self.helper_dir(), "progress")
+        for old in (result, progress):
+            if os.path.exists(old):
+                os.remove(old)
         with open(os.path.join(self.helper_dir(), "request"), "w") as f:
             f.write(name)
-        for _ in range(minutes * 6):
-            time.sleep(10)
+        for _ in range(minutes * 20):
+            time.sleep(3)
+            if on_step and os.path.exists(progress):
+                on_step(open(progress, encoding="utf-8-sig", errors="replace").read().strip())
             if os.path.exists(result):
                 out = open(result, encoding="utf-8-sig", errors="replace").read()
                 after = next((l.strip() for l in out.splitlines() if l.startswith("AFTER")), "")
@@ -662,6 +667,9 @@ class WindowsVmPage(Adw.NavigationPage):
         self.vm = None
         self.busy = False
         self.signature = None
+        self.cleaning = None  # (step text, when it started) while Clean up runs
+        self.clean_row = self.clean_bar = None
+        GLib.timeout_add_seconds(2, self._tick_progress)
 
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -798,9 +806,15 @@ class WindowsVmPage(Adw.NavigationPage):
                               "Removes Office and PowerPoint caches, crash dumps, temp files and "
                               "the recycle bin inside Windows, then gives the space back.")
         space.add_prefix(Gtk.Image(icon_name="user-trash-symbolic"))
-        clean = Gtk.Button(label="Clean up", valign=Gtk.Align.CENTER)
-        clean.connect("clicked", lambda *_: self._clean_up())
-        space.add_suffix(clean)
+        self.clean_row, self.clean_bar = space, Gtk.ProgressBar(valign=Gtk.Align.CENTER, width_request=140,
+                                                                 visible=self.cleaning is not None)
+        space.add_suffix(self.clean_bar)
+        if self.cleaning is None:
+            clean = Gtk.Button(label="Clean up", valign=Gtk.Align.CENTER)
+            clean.connect("clicked", lambda *_: self._clean_up())
+            space.add_suffix(clean)
+        else:
+            self._show_progress()
         group.add(space)
         return group
 
@@ -839,10 +853,48 @@ class WindowsVmPage(Adw.NavigationPage):
                                                   "automatically", timeout=5))
             return
         vm.stage_helper()
-        self.toasts.add_toast(Adw.Toast(title="Cleaning up inside Windows, about 10 minutes…", timeout=5))
+        self._clean_step("Starting Windows" if not vm.running else "Contacting Windows")
         self.run(self._clean_job, vm, not vm.running)
 
+    # Rough share of the total time each step reported by cleanup.ps1 starts at; step 8 (DISM) is the long one.
+    CLEAN_STEPS = {1: .02, 2: .04, 3: .06, 4: .08, 5: .10, 6: .13, 7: .16, 8: .20, 9: .85}
+
+    def _clean_step(self, text):
+        """Called from any thread with the current step; None when the cleanup is over."""
+        def show():
+            if text is None:
+                self.cleaning = None
+            else:
+                if not self.cleaning or self.cleaning[0] != text:
+                    self.cleaning = (text, time.time())
+                self._show_progress()
+        GLib.idle_add(show)
+
+    def _show_progress(self):
+        if self.clean_bar is None:
+            return
+        text, since = self.cleaning
+        step = int(text[0]) if text[:1].isdigit() else 0
+        start = self.CLEAN_STEPS.get(step, 0)
+        end = self.CLEAN_STEPS.get(step + 1, 1)
+        # creep towards the next step so the bar keeps moving during long steps
+        fraction = start + (end - start) * (1 - math.exp(-(time.time() - since) / 240))
+        self.clean_bar.set_fraction(fraction)
+        self.clean_bar.set_visible(True)
+        self.clean_row.set_subtitle(f"{text}… ({fraction:.0%})")
+
+    def _tick_progress(self):
+        if self.cleaning is not None:
+            self._show_progress()
+        return True
+
     def _clean_job(self, vm, starting):
+        try:
+            return self._clean_work(vm, starting)
+        finally:
+            self._clean_step(None)
+
+    def _clean_work(self, vm, starting):
         if starting:
             code, out = sh("docker", "compose", "-f", vm.compose, "start", timeout=120)
             if code != 0:
@@ -850,7 +902,16 @@ class WindowsVmPage(Adw.NavigationPage):
         if not vm.wait_helper(240 if starting else 20):
             GLib.idle_add(self._set_up_helper, vm)
             return None
-        return vm.run_job("cleanup")
+        return vm.run_job("cleanup", self._clean_step)
+
+    def _after_setup(self, vm):
+        self._clean_step("Waiting for the one-time setup in Windows")
+        try:
+            if not vm.wait_helper(900):
+                return "The aIwalk helper was not set up, try Clean up again"
+            return vm.run_job("cleanup", self._clean_step)
+        finally:
+            self._clean_step(None)
 
     def _set_up_helper(self, vm):
         command = ("Start-Process powershell -Verb RunAs -ArgumentList "
@@ -873,8 +934,7 @@ class WindowsVmPage(Adw.NavigationPage):
             self._open()
             # the helper reports in once it is installed; then clean up
             threading.Thread(target=lambda: GLib.idle_add(
-                self._done, vm.run_job("cleanup") if vm.wait_helper(900)
-                else "The aIwalk helper was not set up, try Clean up again"), daemon=True).start()
+                self._done, self._after_setup(vm)), daemon=True).start()
 
         dialog.connect("response", answered)
         dialog.present(self)
