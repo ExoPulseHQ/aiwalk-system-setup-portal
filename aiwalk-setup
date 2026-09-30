@@ -16,7 +16,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 import shutil
 
@@ -537,6 +537,31 @@ class WindowsVm:
         import re
         m = re.search(r'^\s*-\s*"?(\d+):3389(?:/tcp)?"?', text, re.M)
         self.rdp_port = m.group(1) if m else "3389"
+        m = re.search(r'^\s*-\s*"?([^:"\s]+):/storage', text, re.M)
+        self.storage = m.group(1) if m else os.path.join(os.path.dirname(compose or ""), "storage")
+
+    def disk_used_gb(self):
+        """Space the sparse disk image really takes on this computer."""
+        img = os.path.join(self.storage, "data.img")
+        return os.stat(img).st_blocks * 512 / 2**30 if os.path.exists(img) else None
+
+    def set_env(self, values):
+        """Rewrites KEY: "value" lines in the compose file, keeping their comments."""
+        out = []
+        for line in self.text.splitlines():
+            key = line.strip().split(":", 1)[0]
+            if key in values and not line.strip().startswith("#"):
+                head, _, rest = line.partition(":")
+                comment = rest[rest.index("#"):] if "#" in rest else ""
+                line = f'{head}: "{values[key]}"' + (f"  {comment}" if comment else "")
+            out.append(line)
+        self.text = "\n".join(out) + "\n"
+        with open(self.compose, "w") as f:
+            f.write(self.text)
+        return self.recreate()
+
+    def recreate(self):
+        return sh("docker", "compose", "-f", self.compose, "create", "--force-recreate")
 
     @property
     def running(self):
@@ -571,7 +596,7 @@ class WindowsVm:
                 out.insert(j + 1, "      - /dev/bus/usb")
         with open(self.compose, "w") as f:
             f.write("\n".join(out) + "\n")
-        return sh("docker", "compose", "-f", self.compose, "create", "--force-recreate")
+        return self.recreate()
 
 
 class WindowsVmPage(Adw.NavigationPage):
@@ -619,7 +644,7 @@ class WindowsVmPage(Adw.NavigationPage):
         self.refresh()
 
     def _show(self, vm):
-        sig = None if vm is None else (vm.name, vm.state, vm.card_reader, vm.user)
+        sig = None if vm is None else (vm.name, vm.state, vm.card_reader, vm.user, vm.ram, vm.cpus, vm.disk)
         if sig == self.signature and vm is not None:
             return
         self.signature, self.vm = sig, vm
@@ -671,10 +696,114 @@ class WindowsVmPage(Adw.NavigationPage):
         change.connect("clicked", lambda *_: self._ask_password(vm.user, None))
         account.add_suffix(change)
         settings.add(account)
+        shortcuts = Adw.PreferencesGroup(title="Shortcuts",
+                                         description="Added to the desktop and the app menu")
+        for key, (name, comment, icon_file, _flag) in SHORTCUTS.items():
+            row = Adw.SwitchRow(title=name, subtitle=comment, active=has_shortcut(key))
+            row.add_prefix(Gtk.Image(gicon=Gio.FileIcon.new(
+                Gio.File.new_for_path(os.path.join(HERE, "icons", icon_file + ".svg"))), pixel_size=32))
+            row.connect("notify::active", lambda r, _p, k=key: self._toggle_shortcut(k, r.get_active()))
+            shortcuts.add(row)
+        self.body.append(shortcuts)
         folder = Adw.ActionRow(title="VM folder", subtitle=os.path.dirname(vm.compose))
         folder.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
         settings.add(folder)
         self.body.append(settings)
+        self.body.append(self._resources(vm))
+
+    def _resources(self, vm):
+        group = Adw.PreferencesGroup(title="Resources",
+                                     description="Applied while Windows is off")
+        apply = Gtk.Button(label="Apply", sensitive=False, valign=Gtk.Align.CENTER)
+        apply.add_css_class("suggested-action")
+        group.set_header_suffix(apply)
+        host_gb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 2**30
+        now = {"RAM_SIZE": gb(vm.ram), "CPU_CORES": gb(vm.cpus), "DISK_SIZE": gb(vm.disk)}
+        rows = {
+            # leave the host at least 4 GB; the disk can only grow (Windows cannot shrink it)
+            "RAM_SIZE": ("Memory (GB)", f"This computer has {host_gb} GB", 2, max(host_gb - 4, 2)),
+            "CPU_CORES": ("CPU cores", f"This computer has {os.cpu_count()}", 1, os.cpu_count()),
+            "DISK_SIZE": ("Disk size (GB)", "Can only grow", now["DISK_SIZE"] or 32, 1024),
+        }
+        spins = {}
+        for key, (title, subtitle, lo, hi) in rows.items():
+            spin = Adw.SpinRow.new_with_range(lo, hi, 1)
+            spin.set_title(title)
+            spin.set_subtitle(subtitle)
+            spin.set_value(now[key] or lo)
+            spin.connect("notify::value", lambda *_: apply.set_sensitive(
+                any(int(s.get_value()) != now[k] for k, s in spins.items())))
+            spins[key] = spin
+            group.add(spin)
+        apply.connect("clicked", lambda *_: self._apply_resources(
+            {k: int(s.get_value()) for k, s in spins.items() if int(s.get_value()) != now[k]}))
+
+        used = vm.disk_used_gb()
+        space = Adw.ActionRow(title="Clean up space",
+                              subtitle=(f"The disk takes {used:.0f} GB on this computer. " if used else "") +
+                              "Removes Office and PowerPoint caches, crash dumps, temp files and "
+                              "the recycle bin inside Windows, then gives the space back.")
+        space.add_prefix(Gtk.Image(icon_name="user-trash-symbolic"))
+        clean = Gtk.Button(label="Clean up", valign=Gtk.Align.CENTER)
+        clean.connect("clicked", lambda *_: self._clean_up())
+        space.add_suffix(clean)
+        group.add(space)
+        return group
+
+    def _apply_resources(self, changes):
+        vm = self.vm
+        values = {k: f"{v}G" if k != "CPU_CORES" else str(v) for k, v in changes.items()}
+
+        def apply():
+            if vm.running:
+                stop_windows(vm)
+            code, out = vm.set_env(values)
+            if code != 0:
+                return f"Could not apply: {out[-120:]}"
+            if "DISK_SIZE" in changes:
+                return ("Applied. To use the bigger disk, extend drive C: in Windows' "
+                        "Disk Management after the next start.")
+            return "Applied, used from the next start"
+
+        if not vm.running:
+            self.run(apply)
+            return
+        dialog = Adw.AlertDialog(heading="Shut down Windows first?",
+                                 body="Memory, CPU and disk changes apply while the VM is off. "
+                                      "Windows will shut down, then the change is applied.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("apply", "Shut down and apply")
+        dialog.set_response_appearance("apply", Adw.ResponseAppearance.SUGGESTED)
+        dialog.connect("response", lambda _d, r: self.run(apply) if r == "apply" else None)
+        dialog.present(self)
+
+    def _clean_up(self):
+        # Windows reads the script through the RDP home-drive redirection (\\tsclient\home).
+        cache = os.path.expanduser("~/.cache/aiwalk-setup")
+        os.makedirs(cache, exist_ok=True)
+        shutil.copy(os.path.join(HERE, "windows-cleanup.ps1"), cache)
+        unc = "\\\\tsclient\\home\\" + os.path.relpath(cache, os.path.expanduser("~")).replace("/", "\\")
+        command = (f"Copy-Item '{unc}\\windows-cleanup.ps1' C:\\Users\\Public\\aiwalk-cleanup.ps1; "
+                   "Start-Process powershell -Verb RunAs -ArgumentList "
+                   "'-ExecutionPolicy Bypass -File C:\\Users\\Public\\aiwalk-cleanup.ps1'")
+        dialog = Adw.AlertDialog(
+            heading="Clean up space",
+            body="The cleanup runs inside Windows and takes about 10 minutes.\n\n"
+                 "1. Windows opens and the cleanup command is copied.\n"
+                 "2. In Windows, right-click Start, choose Terminal, press Ctrl+V and Enter.\n"
+                 "3. Answer Yes when Windows asks for permission.\n"
+                 "4. When it says DONE, shut down Windows from its Start menu.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("go", "Open Windows and copy command")
+        dialog.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
+
+        def answered(_d, response):
+            if response == "go":
+                self.get_display().get_clipboard().set(command)
+                self._open()
+
+        dialog.connect("response", answered)
+        dialog.present(self)
 
     # ---------- actions ----------
 
@@ -708,13 +837,13 @@ class WindowsVmPage(Adw.NavigationPage):
         return "Card reader passthrough is " + ("on" if on else "off")
 
     def _stop(self):
-        code, out = sh("docker", "compose", "-f", self.vm.compose, "stop", timeout=180)
-        return "Windows is shut down" if code == 0 else f"Could not shut down Windows: {out[-120:]}"
+        return stop_windows(self.vm)
 
-    def _ask_password(self, user, then):
+    def _ask_password(self, user, then, reason=None):
         entry = Gtk.PasswordEntry(show_peek_icon=True, activates_default=True)
         dialog = Adw.AlertDialog(heading=f"Password for {user}",
-                                 body="Saved in this computer's keyring, used to sign in to Windows.")
+                                 body=(reason + "\n\n" if reason else "") +
+                                 "Saved in this computer's keyring, used to sign in to Windows.")
         dialog.set_extra_child(entry)
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("save", "Save")
@@ -741,23 +870,135 @@ class WindowsVmPage(Adw.NavigationPage):
         self.run(self._connect, vm, password)
 
     def _connect(self, vm, password):
+        result = connect_windows(vm, password)
+        if result == WRONG_PASSWORD:
+            GLib.idle_add(self._ask_password, vm.user, self._open,
+                          "Windows rejected this password. Enter the password of the Windows account.")
+            return None
+        return result
+
+    # ---------- desktop shortcuts ----------
+
+    def _toggle_shortcut(self, key, on):
+        set_shortcut(key, on)
+        self.toasts.add_toast(Adw.Toast(title=("Added" if on else "Removed") +
+                                        f" the {SHORTCUTS[key][0]} shortcut", timeout=3))
+
+
+WRONG_PASSWORD = "wrong-password"
+
+
+def gb(text):
+    """'6G' -> 6, '4' -> 4, anything else -> 0."""
+    digits = "".join(c for c in str(text) if c.isdigit())
+    return int(digits) if digits else 0
+
+
+def connect_windows(vm, password):
+    """Starts the VM if needed and opens its desktop. Returns None when Windows is on screen."""
+    if not vm.running:
+        code, out = sh("docker", "compose", "-f", vm.compose, "start", timeout=120)
+        if code != 0:
+            return f"Could not start Windows: {out[-120:]}"
+    # Windows drops the connection until it has booted; retry for about 3 minutes.
+    for _ in range(18):
+        rdp = subprocess.Popen(
+            ["flatpak", "run", "--command=sdl-freerdp", "com.freerdp.FreeRDP", "/cert:ignore",
+             "+home-drive", "+clipboard", f"/u:{vm.user}", f"/p:{password}", "/scale:100",
+             "/dynamic-resolution", f"/v:127.0.0.1:{vm.rdp_port}"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        try:
+            out, _ = rdp.communicate(timeout=7)
+        except subprocess.TimeoutExpired:
+            threading.Thread(target=rdp.communicate, daemon=True).start()  # keep draining its log
+            return None  # still connected: Windows is on screen
+        # Never retry a sign-in Windows refused: repeated wrong passwords lock the account.
+        if "ACCOUNT_LOCKED_OUT" in out:
+            return ("Windows locked this account after too many wrong passwords. "
+                    "Wait about 10 minutes, then open Windows again.")
+        if "LOGON_FAILURE" in out or "WRONG_PASSWORD" in out or "PASSWORD_EXPIRED" in out:
+            return WRONG_PASSWORD
+        GLib.usleep(8_000_000)
+    return "Windows did not answer in time, try Open Windows again"
+
+
+def stop_windows(vm):
+    code, out = sh("docker", "compose", "-f", vm.compose, "stop", timeout=180)
+    return "Windows is shut down" if code == 0 else f"Could not shut down Windows: {out[-120:]}"
+
+
+# Desktop / app-menu shortcuts: key -> (name, comment, icon file, command-line flag)
+SHORTCUTS = {
+    "open": ("Open Windows", "Start the Windows VM and open its desktop", "windows-open", "--windows-open"),
+    "stop": ("Shut down Windows", "Shut down the Windows VM and free its memory", "windows-stop", "--windows-stop"),
+}
+
+
+def _shortcut_paths(key):
+    desktop_dir = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True).stdout.strip() \
+        or os.path.join(HOME, "Desktop")
+    name = f"{APP_ID}.{key}.desktop"
+    return (os.path.join(HOME, ".local/share/applications", name), os.path.join(desktop_dir, name),
+            os.path.join(HOME, ".local/share/icons/hicolor/scalable/apps", f"{APP_ID}.{SHORTCUTS[key][2]}.svg"))
+
+
+def has_shortcut(key):
+    return os.path.exists(_shortcut_paths(key)[0])
+
+
+def set_shortcut(key, on):
+    menu, desktop, icon = _shortcut_paths(key)
+    name, comment, icon_file, flag = SHORTCUTS[key]
+    if not on:
+        for f in (menu, desktop):
+            if os.path.exists(f):
+                os.remove(f)
+        return
+    os.makedirs(os.path.dirname(icon), exist_ok=True)
+    shutil.copy(os.path.join(HERE, "icons", icon_file + ".svg"), icon)
+    entry = (f"[Desktop Entry]\nName={name}\nComment={comment}\n"
+             f"Exec={os.path.realpath(__file__)} {flag}\nIcon={APP_ID}.{icon_file}\n"
+             "Terminal=false\nType=Application\nCategories=Utility;\n")
+    for f in (menu, desktop):
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        with open(f, "w") as out:
+            out.write(entry)
+        os.chmod(f, 0o755)
+    subprocess.run(["gio", "set", desktop, "metadata::trusted", "true"], capture_output=True)
+    subprocess.run(["gtk-update-icon-cache", "-f", "-t", os.path.join(HOME, ".local/share/icons/hicolor")],
+                   capture_output=True)
+
+
+def notify(text):
+    subprocess.run(["notify-send", "-i", f"{APP_ID}.windows-open", "Windows VM", text], capture_output=True)
+
+
+def shortcut_main(flag):
+    """What the desktop shortcuts run: no main window, progress as notifications."""
+    vm = WindowsVm.find()
+    if vm is None:
+        notify("No Windows VM on this computer yet. Open aIwalk System Setup to create one.")
+        return
+    if flag == "--windows-stop":
         if not vm.running:
-            code, out = sh("docker", "compose", "-f", vm.compose, "start", timeout=120)
-            if code != 0:
-                return f"Could not start Windows: {out[-120:]}"
-        # Windows drops the connection until it has booted; retry for about 3 minutes.
-        for _ in range(18):
-            rdp = subprocess.Popen(
-                ["flatpak", "run", "--command=sdl-freerdp", "com.freerdp.FreeRDP", "/cert:ignore",
-                 "+home-drive", "+clipboard", f"/u:{vm.user}", f"/p:{password}", "/scale:100",
-                 "/dynamic-resolution", f"/v:127.0.0.1:{vm.rdp_port}"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            try:
-                rdp.wait(timeout=7)
-            except subprocess.TimeoutExpired:
-                return None  # still connected: Windows is on screen
-            GLib.usleep(8_000_000)
-        return "Windows did not answer in time, try Open Windows again"
+            notify("Windows is already off")
+            return
+        notify("Shutting down Windows (up to 2 minutes)…")
+        notify(stop_windows(vm))
+        return
+    password = load_password(vm.user)
+    if not password:
+        notify("Set the Windows password in aIwalk System Setup first")
+        subprocess.Popen([os.path.realpath(__file__)], start_new_session=True)
+        return
+    if not vm.running:
+        notify("Starting Windows, this takes 1–2 minutes…")
+    result = connect_windows(vm, password)
+    if result == WRONG_PASSWORD:
+        notify("Windows rejected the saved password. Change it in aIwalk System Setup.")
+        subprocess.Popen([os.path.realpath(__file__)], start_new_session=True)
+    elif result:
+        notify(result)
 
 
 # ---------------------------------------------------------------- app shell
@@ -810,4 +1051,8 @@ class App(Adw.Application):
 
 
 if __name__ == "__main__":
-    App().run(None)
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("--windows-open", "--windows-stop"):
+        shortcut_main(sys.argv[1])
+    else:
+        App().run(None)
