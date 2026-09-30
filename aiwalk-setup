@@ -539,6 +539,19 @@ class WindowsVm:
         self.rdp_port = m.group(1) if m else "3389"
         m = re.search(r'^\s*-\s*"?([^:"\s]+):/storage', text, re.M)
         self.storage = m.group(1) if m else os.path.join(os.path.dirname(compose or ""), "storage")
+        # host folder Windows sees as \\host.lan\Data; also shared in the RDP window as \\tsclient\<name>
+        m = re.search(r'^\s*-\s*"?([^:"\s]+):/(?:data|shared)\b', text, re.M)
+        self.share = m.group(1) if m else None
+
+    def drives(self):
+        """RDP drive redirections: the VM's shared folder plus name=path lines from DRIVES_FILE."""
+        found = {os.path.basename(self.share.rstrip("/")): self.share} if self.share else {}
+        if os.path.exists(DRIVES_FILE):
+            for line in open(DRIVES_FILE):
+                name, _, path = line.strip().partition("=")
+                if name and path and not name.startswith("#"):
+                    found[name.strip()] = os.path.expanduser(path.strip())
+        return [f"/drive:{n},{p}" for n, p in found.items() if os.path.isdir(p)]
 
     def disk_used_gb(self):
         """Space the sparse disk image really takes on this computer."""
@@ -886,6 +899,7 @@ class WindowsVmPage(Adw.NavigationPage):
 
 
 WRONG_PASSWORD = "wrong-password"
+DRIVES_FILE = os.path.expanduser("~/.config/aiwalk-setup/drives")  # extra folders for Windows, name=path
 
 
 def gb(text):
@@ -904,7 +918,7 @@ def connect_windows(vm, password):
     for _ in range(18):
         rdp = subprocess.Popen(
             ["flatpak", "run", "--command=sdl-freerdp", "com.freerdp.FreeRDP", "/cert:ignore",
-             "+home-drive", "+clipboard", f"/u:{vm.user}", f"/p:{password}", "/scale:100",
+             "+home-drive", *vm.drives(), "+clipboard", f"/u:{vm.user}", f"/p:{password}", "/scale:100",
              "/dynamic-resolution", f"/v:127.0.0.1:{vm.rdp_port}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         try:
