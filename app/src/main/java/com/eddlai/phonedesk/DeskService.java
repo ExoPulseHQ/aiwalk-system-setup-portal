@@ -49,6 +49,7 @@ public class DeskService extends IDeskService.Stub {
         base = context;
         shell = new ShellContext(context);
         log("service started, pid " + android.os.Process.myPid());
+        sh("wm fixed-to-user-rotation default"); // undo a pin left by a desk that died
     }
 
     @Override
@@ -64,6 +65,9 @@ public class DeskService extends IDeskService.Stub {
         savedUserRotation = sh("settings get system user_rotation");
         sh("settings put system accelerometer_rotation 0");
         sh("settings put system user_rotation 1");
+        // Hold landscape even when something on the phone screen asks for portrait (the Pixel
+        // home comes to front there when the desk's home / app-list buttons are pressed).
+        sh("wm fixed-to-user-rotation enabled");
         sh("settings put global force_desktop_mode_on_external_displays 1");
         // No extra overlay flags. Verified in the 10 Pro's services.jar: OverlayDisplayAdapter only
         // marks a plain overlay FLAG_ALLOWS_CONTENT_MODE_SWITCH, and DisplayContent
@@ -104,6 +108,7 @@ public class DeskService extends IDeskService.Stub {
         releaseMirror();
         overlayId = -1;
         sh("settings put global overlay_display_devices none");
+        sh("wm fixed-to-user-rotation default");
         if (savedAccel != null) {
             sh("settings put system accelerometer_rotation " + savedAccel);
             sh("settings put system user_rotation " + savedUserRotation);
