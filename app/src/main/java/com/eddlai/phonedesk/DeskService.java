@@ -65,9 +65,9 @@ public class DeskService extends IDeskService.Stub {
         sh("settings put system accelerometer_rotation 0");
         sh("settings put system user_rotation 1");
         sh("settings put global force_desktop_mode_on_external_displays 1");
-        // should_show_system_decorations: run a launcher/taskbar on it instead of mirroring display 0
-        sh("settings put global overlay_display_devices " + width + "x" + height + "/" + dpi
-                + ",should_show_system_decorations");
+        // No extra flags: with "desktop experience features" on, the plain overlay display gets the
+        // desktop (taskbar + captioned windows); should_show_system_decorations drops the captions.
+        sh("settings put global overlay_display_devices " + width + "x" + height + "/" + dpi);
         int id = waitForOverlayDisplay();
         if (id < 0) {
             log("overlay display did not appear");

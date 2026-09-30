@@ -60,14 +60,13 @@ public class MainActivity extends Activity {
         status.setBackgroundColor(Color.BLACK);
         setContentView(status);
 
-        if (insideDesk) {
-            // The desk's own "電腦模式" icon means: back to phone mode.
+        // While the desk runs it covers the phone screen, so any launch of "電腦模式" came from
+        // inside the desk (Android may still place it on display 0): it means back to phone mode.
+        if (insideDesk || DeskOverlayService.instance != null) {
+            android.util.Log.i("PhoneDesk", "switch opened while desk runs (display "
+                    + (display == null ? -1 : display.getDisplayId()) + "): exiting");
             if (DeskOverlayService.instance != null) DeskOverlayService.instance.exit();
             finishAndRemoveTask();
-            return;
-        }
-        if (DeskOverlayService.instance != null && host != null) {
-            finish(); // already in desktop mode
             return;
         }
         host = this;
@@ -76,6 +75,17 @@ public class MainActivity extends Activity {
         Shizuku.addRequestPermissionResultListener(permissionListener);
         Shizuku.addBinderDeadListener(binderDeadListener);
         Shizuku.addBinderReceivedListenerSticky(binderListener);
+    }
+
+    /**
+     * Tapping "電腦模式" inside the desk reaches this existing host task (Android reuses it
+     * instead of starting a new instance there), so a relaunch while the desk runs means exit.
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        android.util.Log.i("PhoneDesk", "onNewIntent, overlay=" + (DeskOverlayService.instance != null));
+        if (DeskOverlayService.instance != null) DeskOverlayService.instance.exit();
     }
 
     @Override

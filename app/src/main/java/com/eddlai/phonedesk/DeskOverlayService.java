@@ -112,6 +112,7 @@ public class DeskOverlayService extends AccessibilityService {
 
     /** Back to phone mode. Safe to call more than once and from any thread. */
     void exit() {
+        Log.i(TAG, "exit requested", new Throwable("caller"));
         active = false;
         main.removeCallbacks(watchdog);
         main.post(() -> {
@@ -175,7 +176,10 @@ public class DeskOverlayService extends AccessibilityService {
         dot.setColor(0x80FFFFFF);
         back.setBackground(dot);
         back.setContentDescription("切換回手機模式");
-        back.setOnClickListener(v -> exit());
+        back.setOnClickListener(v -> {
+            Log.i(TAG, "exit dot tapped");
+            exit();
+        });
         int size = 56;
         FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(size, size, Gravity.START | Gravity.BOTTOM);
         bp.setMargins(Math.max(0, (ml - size) / 2), 0, 0, 40);
