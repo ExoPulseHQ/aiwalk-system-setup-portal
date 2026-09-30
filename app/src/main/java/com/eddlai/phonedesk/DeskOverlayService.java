@@ -95,6 +95,7 @@ public class DeskOverlayService extends AccessibilityService {
         active = true;
         mirrored = false;
         BootCleanup.markOn(this); // before the service rotates the screen
+        setPhoneModeIcon(true);
         main.postDelayed(watchdog, WATCHDOG_MS);
         DeskConnection.whenReady(() -> new Thread(() -> {
             try {
@@ -128,8 +129,18 @@ public class DeskOverlayService extends AccessibilityService {
                 Log.e(TAG, "exitDisplay failed", e);
             }
             BootCleanup.markOff(this);
+            setPhoneModeIcon(false);
             main.post(this::disableSelf); // also clears our entry from enabled services
         }).start();
+    }
+
+    /** The "手機模式" launcher icon only exists while the desk runs. */
+    private void setPhoneModeIcon(boolean on) {
+        getPackageManager().setComponentEnabledSetting(
+                new android.content.ComponentName(this, getPackageName() + ".PhoneModeAlias"),
+                on ? android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                        : android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                android.content.pm.PackageManager.DONT_KILL_APP);
     }
 
     private void removeWindow() {

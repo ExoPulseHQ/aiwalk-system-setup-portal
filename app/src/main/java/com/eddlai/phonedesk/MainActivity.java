@@ -60,6 +60,13 @@ public class MainActivity extends Activity {
         status.setBackgroundColor(Color.BLACK);
         setContentView(status);
 
+        // "手機模式" only ever means leave the desk; on the phone screen it has nothing to do.
+        boolean phoneModeIcon = getIntent().getComponent() != null
+                && getIntent().getComponent().getClassName().endsWith(".PhoneModeAlias");
+        if (phoneModeIcon && DeskOverlayService.instance == null) {
+            finishAndRemoveTask();
+            return;
+        }
         // While the desk runs it covers the phone screen, so any launch of "電腦模式" came from
         // inside the desk (Android may still place it on display 0): it means back to phone mode.
         if (insideDesk || DeskOverlayService.instance != null) {

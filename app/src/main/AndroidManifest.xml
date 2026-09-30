@@ -20,6 +20,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- "手機模式": enabled only while the desk runs (see DeskOverlayService); tapping it switches back to phone mode. -->
+        <activity-alias
+            android:name=".PhoneModeAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_phone_mode"
+            android:label="@string/phone_mode_name"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
         <service
             android:name=".DeskOverlayService"
             android:exported="true"

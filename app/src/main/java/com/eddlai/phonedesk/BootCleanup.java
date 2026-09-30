@@ -56,6 +56,10 @@ public class BootCleanup extends BroadcastReceiver {
             }
             Settings.System.putInt(r, Settings.System.ACCELEROMETER_ROTATION, s.getInt("accel", 1));
             Settings.System.putInt(r, Settings.System.USER_ROTATION, s.getInt("rotation", 0));
+            context.getPackageManager().setComponentEnabledSetting(
+                    new android.content.ComponentName(context, context.getPackageName() + ".PhoneModeAlias"),
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP);
             markOff(context);
         } catch (SecurityException e) {
             Log.e(TAG, "boot cleanup lacks permission", e);
