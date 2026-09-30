@@ -77,6 +77,8 @@ public class MainActivity extends Activity {
             return;
         }
         host = this;
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, backToDesk);
         offerHomeShortcut();
         show(getString(R.string.status_entering));
         Shizuku.addRequestPermissionResultListener(permissionListener);
@@ -107,8 +109,36 @@ public class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
         act(); // measuring needs the landscape relayout
     }
+
+    /** Immersive host: a stray swipe at the phone's edges first reveals the bars instead of going home. */
+    private void hideSystemBars() {
+        android.view.WindowInsetsController c = getWindow().getInsetsController();
+        if (c == null) return;
+        c.hide(WindowInsets.Type.systemBars());
+        c.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+    }
+
+    /**
+     * The phone's back gesture lands on this host while the desk runs: make it the desk's back.
+     * (targetSdk 36 uses predictive back, so onBackPressed is never called.)
+     */
+    private final android.window.OnBackInvokedCallback backToDesk = () -> {
+        if (DeskOverlayService.instance == null) {
+            finish();
+            return;
+        }
+        IDeskService desk = DeskConnection.get();
+        if (desk == null) return;
+        long t = android.os.SystemClock.uptimeMillis();
+        try {
+            desk.injectKey(new android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_BACK, 0));
+            desk.injectKey(new android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_BACK, 0));
+        } catch (Exception ignored) {
+        }
+    };
 
     private void connectShizuku() {
         if (Shizuku.isPreV11()) {
@@ -161,7 +191,11 @@ public class MainActivity extends Activity {
         }
         // ponytail: half the corner radius clears the status-bar text; tune if icons still clip
         int side = radius / 2;
-        Rect m = new Rect(side, 0, side, 0);
+        // Keep the desk's taskbar out of the phone's bottom gesture strip: gesture navigation
+        // watches every touch there and a tap on the desk's app-list button started the phone's
+        // recents/home instead (which also crashed the Pixel launcher).
+        int gestureBottom = insets.getInsets(WindowInsets.Type.mandatorySystemGestures()).bottom;
+        Rect m = new Rect(side, 0, side, gestureBottom);
         DisplayCutout cutout = insets.getDisplayCutout();
         if (cutout != null) {
             m.left = Math.max(m.left, cutout.getSafeInsetLeft());
