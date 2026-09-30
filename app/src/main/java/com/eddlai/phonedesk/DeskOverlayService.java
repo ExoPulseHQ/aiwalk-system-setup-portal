@@ -94,6 +94,7 @@ public class DeskOverlayService extends AccessibilityService {
         int dpi = p.getInt("dpi", 240);
         active = true;
         mirrored = false;
+        BootCleanup.markOn(this); // before the service rotates the screen
         main.postDelayed(watchdog, WATCHDOG_MS);
         DeskConnection.whenReady(() -> new Thread(() -> {
             try {
@@ -126,6 +127,7 @@ public class DeskOverlayService extends AccessibilityService {
             } catch (Exception e) {
                 Log.e(TAG, "exitDisplay failed", e);
             }
+            BootCleanup.markOff(this);
             main.post(this::disableSelf); // also clears our entry from enabled services
         }).start();
     }

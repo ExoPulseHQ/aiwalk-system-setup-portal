@@ -134,6 +134,9 @@ public class DeskService extends IDeskService.Stub {
             savedA11yOn = sh("settings get secure accessibility_enabled");
             String list = savedA11y == null || savedA11y.isEmpty() || savedA11y.equals("null")
                     ? component : savedA11y.contains(component) ? savedA11y : savedA11y + ":" + component;
+            // Lets the app itself clean up at boot if the phone restarts with the desk on.
+            sh("pm grant com.eddlai.phonedesk android.permission.WRITE_SECURE_SETTINGS");
+            sh("appops set com.eddlai.phonedesk WRITE_SETTINGS allow");
             // Sideloaded apps are "restricted": allow, or the system refuses to bind the service.
             sh("appops set com.eddlai.phonedesk ACCESS_RESTRICTED_SETTINGS allow");
             sh("settings put secure enabled_accessibility_services '" + list + "'");
