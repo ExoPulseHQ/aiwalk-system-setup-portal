@@ -11,6 +11,7 @@ import math
 import os
 import subprocess
 import threading
+import time
 
 import gi
 
@@ -543,6 +544,46 @@ class WindowsVm:
         m = re.search(r'^\s*-\s*"?([^:"\s]+):/(?:data|shared)\b', text, re.M)
         self.share = m.group(1) if m else None
 
+    # The aIwalk helper: a SYSTEM task in Windows (windows/agent.ps1) that runs fixed jobs by name.
+    # We talk to it through <share>/.aiwalk: it touches "alive", we write "request", it writes "result.txt".
+
+    def helper_dir(self):
+        return os.path.join(self.share, ".aiwalk") if self.share else None
+
+    def stage_helper(self):
+        """Puts the helper's scripts where Windows' one-time setup copies them from."""
+        os.makedirs(self.helper_dir(), exist_ok=True)
+        for name in ("agent.ps1", "install-agent.ps1", "cleanup.ps1"):
+            shutil.copy(os.path.join(HERE, "windows", name), self.helper_dir())
+
+    def wait_helper(self, seconds):
+        alive = os.path.join(self.helper_dir(), "alive")
+        for _ in range(0, seconds, 5):
+            try:
+                if time.time() - os.path.getmtime(alive) < 30:
+                    return True
+            except OSError:
+                pass
+            time.sleep(5)
+        return False
+
+    def run_job(self, name, minutes=60):
+        """Asks the helper to run a job and waits for its output; returns a one-line message."""
+        result = os.path.join(self.helper_dir(), "result.txt")
+        if os.path.exists(result):
+            os.remove(result)
+        with open(os.path.join(self.helper_dir(), "request"), "w") as f:
+            f.write(name)
+        for _ in range(minutes * 6):
+            time.sleep(10)
+            if os.path.exists(result):
+                out = open(result, encoding="utf-8-sig", errors="replace").read()
+                after = next((l.strip() for l in out.splitlines() if l.startswith("AFTER")), "")
+                used = self.disk_used_gb()
+                return (f"Cleanup finished. Windows C: {' '.join(after.split()[1:])}" if after
+                        else "Cleanup finished") + (f". The disk now takes {used:.0f} GB here." if used else "")
+        return "Windows did not finish the cleanup within an hour"
+
     def drives(self):
         """RDP drive redirections: the VM's shared folder plus name=path lines from DRIVES_FILE."""
         found = {os.path.basename(self.share.rstrip("/")): self.share} if self.share else {}
@@ -791,29 +832,49 @@ class WindowsVmPage(Adw.NavigationPage):
         dialog.present(self)
 
     def _clean_up(self):
-        # Windows reads the script through the RDP home-drive redirection (\\tsclient\home).
-        cache = os.path.expanduser("~/.cache/aiwalk-setup")
-        os.makedirs(cache, exist_ok=True)
-        shutil.copy(os.path.join(HERE, "windows-cleanup.ps1"), cache)
-        unc = "\\\\tsclient\\home\\" + os.path.relpath(cache, os.path.expanduser("~")).replace("/", "\\")
-        command = (f"Copy-Item '{unc}\\windows-cleanup.ps1' C:\\Users\\Public\\aiwalk-cleanup.ps1; "
-                   "Start-Process powershell -Verb RunAs -ArgumentList "
-                   "'-ExecutionPolicy Bypass -File C:\\Users\\Public\\aiwalk-cleanup.ps1'")
+        """Runs the cleanup through the aIwalk helper in Windows; sets the helper up once if needed."""
+        vm = self.vm
+        if not vm.helper_dir():
+            self.toasts.add_toast(Adw.Toast(title="This VM has no shared folder, so cleanup cannot run "
+                                                  "automatically", timeout=5))
+            return
+        vm.stage_helper()
+        self.toasts.add_toast(Adw.Toast(title="Cleaning up inside Windows, about 10 minutes…", timeout=5))
+        self.run(self._clean_job, vm, not vm.running)
+
+    def _clean_job(self, vm, starting):
+        if starting:
+            code, out = sh("docker", "compose", "-f", vm.compose, "start", timeout=120)
+            if code != 0:
+                return f"Could not start Windows: {out[-120:]}"
+        if not vm.wait_helper(240 if starting else 20):
+            GLib.idle_add(self._set_up_helper, vm)
+            return None
+        return vm.run_job("cleanup")
+
+    def _set_up_helper(self, vm):
+        command = ("Start-Process powershell -Verb RunAs -ArgumentList "
+                   "'-ExecutionPolicy Bypass -File \\\\host.lan\\Data\\.aiwalk\\install-agent.ps1'")
         dialog = Adw.AlertDialog(
-            heading="Clean up space",
-            body="The cleanup runs inside Windows and takes about 10 minutes.\n\n"
-                 "1. Windows opens and the cleanup command is copied.\n"
+            heading="One-time setup",
+            body="Windows needs the small aIwalk helper to clean up by itself.\n\n"
+                 "1. Windows opens and the setup command is copied.\n"
                  "2. In Windows, right-click Start, choose Terminal, press Ctrl+V and Enter.\n"
-                 "3. Answer Yes when Windows asks for permission.\n"
-                 "4. When it says DONE, shut down Windows from its Start menu.")
+                 "3. Answer Yes when Windows asks for permission.\n\n"
+                 "The cleanup then starts on its own. Next time, Clean up needs no steps.")
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("go", "Open Windows and copy command")
         dialog.set_response_appearance("go", Adw.ResponseAppearance.SUGGESTED)
 
         def answered(_d, response):
-            if response == "go":
-                self.get_display().get_clipboard().set(command)
-                self._open()
+            if response != "go":
+                return
+            self.get_display().get_clipboard().set(command)
+            self._open()
+            # the helper reports in once it is installed; then clean up
+            threading.Thread(target=lambda: GLib.idle_add(
+                self._done, vm.run_job("cleanup") if vm.wait_helper(900)
+                else "The aIwalk helper was not set up, try Clean up again"), daemon=True).start()
 
         dialog.connect("response", answered)
         dialog.present(self)
@@ -1015,11 +1076,319 @@ def shortcut_main(flag):
         notify(result)
 
 
+# ---------------------------------------------------------------- sign in
+
+# ponytail: one hard-coded company vault; move to a config file when there are several
+VAULTS = [("aIwalk Corp", "eddLai/aIwalk_Corp", "Company overview, setup log and writing guidelines")]
+GH_HELPER = "!gh auth git-credential"  # lets git use the GitHub sign-in, no SSH key needed
+
+
+def github_user():
+    """Signed-in GitHub login, or None."""
+    code, out = sh("gh", "api", "user", "--jq", ".login", timeout=15)
+    return out if code == 0 and out else None
+
+
+def repo_access(repo):
+    code, out = sh("gh", "api", f"repos/{repo}", "--jq", ".permissions.pull", timeout=15)
+    return code == 0 and out == "true"
+
+
+class Busy:
+    """Background work for a page: run(work) in a thread, toast its message, then refresh."""
+
+    def run(self, work, *args):
+        self.busy = True
+
+        def job():
+            msg = work(*args)
+            GLib.idle_add(self._done, msg)
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _done(self, msg):
+        self.busy = False
+        if msg:
+            self.toasts.add_toast(Adw.Toast(title=msg, timeout=5))
+        self.refresh()
+
+    def clear(self):
+        while (c := self.body.get_first_child()) is not None:
+            self.body.remove(c)
+
+
+def module_page(page):
+    """Header bar with a refresh button + a clamped scrolling body; returns the body box."""
+    view = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Check again")
+    refresh.connect("clicked", lambda *_: page.refresh())
+    header.pack_end(refresh)
+    view.add_top_bar(header)
+    body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24,
+                   margin_top=12, margin_bottom=24, margin_start=12, margin_end=12)
+    view.set_content(Gtk.ScrolledWindow(child=Adw.Clamp(maximum_size=560, child=body), vexpand=True))
+    page.set_child(view)
+    return body
+
+
+class SignInPage(Adw.NavigationPage, Busy):
+    """Module: the team member's GitHub account, which unlocks the company repositories."""
+
+    def __init__(self, toasts):
+        super().__init__(title="Sign in", tag="signin")
+        self.toasts, self.busy = toasts, False
+        self.body = module_page(self)
+        self.refresh()
+
+    def refresh(self):
+        if self.busy:
+            return
+        self.clear()
+        self.body.append(Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True))
+        threading.Thread(target=lambda: GLib.idle_add(self._show, *self._probe()), daemon=True).start()
+
+    @staticmethod
+    def _probe():
+        if not shutil.which("gh"):
+            return None, None
+        user = github_user()
+        return user, {repo: repo_access(repo) for _, repo, _ in VAULTS} if user else {}
+
+    def _show(self, user, access):
+        self.clear()
+        if user is None and access is None:
+            self.body.append(Adw.StatusPage(
+                icon_name="dialog-warning-symbolic", title="GitHub CLI is not installed",
+                description="Install it with  sudo apt install gh  and press refresh."))
+            return
+        if not user:
+            page = Adw.StatusPage(icon_name="avatar-default-symbolic", title="Sign in to aIwalk",
+                                  description="Use your GitHub account. It gives this computer access "
+                                              "to the Document vault and other company repositories.")
+            button = Gtk.Button(label="Sign in with GitHub", halign=Gtk.Align.CENTER)
+            button.add_css_class("suggested-action")
+            button.add_css_class("pill")
+            button.connect("clicked", lambda *_: self._sign_in())
+            page.set_child(button)
+            self.body.append(page)
+            return
+
+        head = Gtk.Label(label=f"Signed in as {user}", xalign=0)
+        head.add_css_class("title-2")
+        self.body.append(head)
+        group = Adw.PreferencesGroup(title="Access", description="Company repositories this account can open")
+        for name, repo, _ in VAULTS:
+            ok = access.get(repo)
+            row = Adw.ActionRow(title=name, subtitle=repo if ok else
+                                f"No access yet. Ask an admin to invite {user} to {repo}.")
+            row.add_prefix(Gtk.Image(icon_name="emblem-ok-symbolic" if ok else "action-unavailable-symbolic"))
+            group.add(row)
+        self.body.append(group)
+        out = Adw.PreferencesGroup()
+        row = Adw.ActionRow(title="Sign out", subtitle="Removes this computer's GitHub sign-in", activatable=True)
+        row.add_prefix(Gtk.Image(icon_name="system-log-out-symbolic"))
+        row.connect("activated", lambda *_: self._sign_out())
+        out.add(row)
+        self.body.append(out)
+
+    def _sign_in(self):
+        """GitHub device login: show the one-time code, the browser does the rest."""
+        proc = subprocess.Popen(["gh", "auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        dialog = Adw.AlertDialog(heading="Sign in with GitHub",
+                                 body="Waiting for GitHub…")
+        dialog.add_response("cancel", "Cancel")
+        dialog.connect("response", lambda *_: proc.poll() is None and proc.terminate())
+        dialog.present(self)
+
+        def read():
+            import re
+            for line in proc.stdout:
+                m = re.search(r"code: ([A-Z0-9]{4}-[A-Z0-9]{4})", line)
+                if m:
+                    GLib.idle_add(self._show_code, dialog, m.group(1))
+                if "Press Enter" in line:
+                    proc.stdin.write("\n")
+                    proc.stdin.flush()
+            ok = proc.wait() == 0
+            GLib.idle_add(dialog.close)
+            if ok:
+                sh("gh", "auth", "setup-git")
+            GLib.idle_add(self._done, "Signed in" if ok else "Sign-in was not completed")
+
+        threading.Thread(target=read, daemon=True).start()
+
+    def _show_code(self, dialog, code):
+        self.get_display().get_clipboard().set(code)
+        dialog.set_body(f"Your one-time code is\n\n{code}\n\nIt is copied. Paste it on the GitHub page that "
+                        "just opened in your browser and approve.")
+
+    def _sign_out(self):
+        dialog = Adw.AlertDialog(heading="Sign out of GitHub?",
+                                 body="This computer loses access to the company repositories "
+                                      "until you sign in again.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("out", "Sign out")
+        dialog.set_response_appearance("out", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.connect("response", lambda _d, r: r == "out" and self.run(
+            lambda: "Signed out" if sh("gh", "auth", "logout", "--hostname", "github.com")[0] == 0
+            else "Could not sign out"))
+        dialog.present(self)
+
+
+# ---------------------------------------------------------------- document vault
+
+OBSIDIAN_CONFIG = os.path.expanduser("~/.config/obsidian/obsidian.json")
+VAULT_HOME = os.path.expanduser("~/Documents/aIwalk")
+
+
+def obsidian_app():
+    for app_id in ("obsidian.desktop", "md.obsidian.Obsidian.desktop"):
+        if Gio.DesktopAppInfo.new(app_id):
+            return app_id
+    return None
+
+
+def obsidian_vaults():
+    import json
+    try:
+        return json.load(open(OBSIDIAN_CONFIG)).get("vaults", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def find_vault(repo):
+    """Local copy of repo: a vault Obsidian knows whose git remote is repo, else the default folder."""
+    paths = [v["path"] for v in obsidian_vaults().values()]
+    paths.append(os.path.join(VAULT_HOME, repo.split("/")[1]))
+    for path in paths:
+        code, url = sh("git", "-C", path, "remote", "get-url", "origin", timeout=5)
+        if code == 0 and url.rstrip("/").removesuffix(".git").endswith(repo):
+            return path
+    return None
+
+
+def register_vault(path):
+    """Adds path to Obsidian's vault list so it can be opened (Obsidian must not be running)."""
+    import json
+    import secrets
+    try:
+        config = json.load(open(OBSIDIAN_CONFIG))
+    except (OSError, ValueError):
+        config = {}
+    vaults = config.setdefault("vaults", {})
+    if not any(v["path"] == path for v in vaults.values()):
+        vaults[secrets.token_hex(8)] = {"path": path, "ts": int(GLib.get_real_time() / 1000)}
+        os.makedirs(os.path.dirname(OBSIDIAN_CONFIG), exist_ok=True)
+        with open(OBSIDIAN_CONFIG, "w") as f:
+            json.dump(config, f)
+
+
+class VaultPage(Adw.NavigationPage, Busy):
+    """Module: download the team's Obsidian vaults and keep them up to date."""
+
+    def __init__(self, toasts):
+        super().__init__(title="Document vault", tag="vault")
+        self.toasts, self.busy = toasts, False
+        self.body = module_page(self)
+        self.progress = {}
+        self.refresh()
+
+    def refresh(self):
+        if self.busy:
+            return
+        threading.Thread(target=lambda: GLib.idle_add(
+            self._show, {repo: find_vault(repo) for _, repo, _ in VAULTS}, obsidian_app()), daemon=True).start()
+
+    def _show(self, found, obsidian):
+        self.clear()
+        group = Adw.PreferencesGroup(title="Vaults", description="Opened with Obsidian")
+        for name, repo, about in VAULTS:
+            path = found[repo]
+            row = Adw.ActionRow(title=name, subtitle=f"{about}\n" + (path or "Not downloaded yet"))
+            row.add_prefix(Gtk.Image(icon_name="folder-documents-symbolic"))
+            if path:
+                update = Gtk.Button(icon_name="emblem-synchronizing-symbolic", tooltip_text="Get the latest changes",
+                                    valign=Gtk.Align.CENTER)
+                update.add_css_class("flat")
+                update.connect("clicked", lambda *_, p=path: self.run(self._update, p))
+                row.add_suffix(update)
+                open_ = Gtk.Button(label="Open", valign=Gtk.Align.CENTER, sensitive=bool(obsidian))
+                open_.connect("clicked", lambda *_, p=path: self._open(p, obsidian))
+                row.add_suffix(open_)
+            else:
+                bar = Gtk.ProgressBar(valign=Gtk.Align.CENTER, visible=False, width_request=120)
+                self.progress[repo] = bar
+                row.add_suffix(bar)
+                get = Gtk.Button(label="Download", valign=Gtk.Align.CENTER)
+                get.add_css_class("suggested-action")
+                get.connect("clicked", lambda b, r=repo: (b.set_visible(False), self.run(self._download, r)))
+                row.add_suffix(get)
+            group.add(row)
+        self.body.append(group)
+        if not obsidian:
+            apps = Adw.PreferencesGroup()
+            row = Adw.ActionRow(title="Obsidian is not installed", subtitle="Needed to read and edit the vault")
+            row.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
+            install = Gtk.Button(label="Install", valign=Gtk.Align.CENTER)
+            install.connect("clicked", lambda *_: self.run(self._install_obsidian))
+            row.add_suffix(install)
+            apps.add(row)
+            self.body.append(apps)
+
+    def _download(self, repo):
+        import re
+        dest = os.path.join(VAULT_HOME, repo.split("/")[1])
+        os.makedirs(VAULT_HOME, exist_ok=True)
+        bar = self.progress.get(repo)
+        GLib.idle_add(bar.set_visible, True)
+        # shallow: members need the current notes, not years of history
+        proc = subprocess.Popen(["git", "-c", "credential.helper=", "-c", f"credential.helper={GH_HELPER}",
+                                 "clone", "--progress", "--depth", "1", f"https://github.com/{repo}.git", dest],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        tail = ""
+        for chunk in iter(lambda: proc.stdout.read(256), ""):
+            tail = (tail + chunk)[-400:]
+            m = re.findall(r"Receiving objects:\s+(\d+)%", tail)
+            if m:
+                GLib.idle_add(bar.set_fraction, int(m[-1]) / 100)
+        if proc.wait() != 0:
+            shutil.rmtree(dest, ignore_errors=True)
+            if "not found" in tail or "Authentication" in tail or "could not read" in tail:
+                return "No access to the vault. Sign in first, or ask an admin for access."
+            return f"Download failed: {tail.strip().splitlines()[-1][:120] if tail.strip() else 'unknown error'}"
+        sh("git", "-C", dest, "config", "credential.helper", GH_HELPER)
+        register_vault(dest)
+        return "Vault downloaded"
+
+    @staticmethod
+    def _update(path):
+        code, out = sh("git", "-C", path, "pull", "--ff-only", timeout=300)
+        if code == 0:
+            return "Already up to date" if "Already up to date" in out else "Vault updated"
+        return "Could not update: your copy has local changes" if "local changes" in out or "diverg" in out \
+            else f"Could not update: {out.splitlines()[-1][:120] if out else ''}"
+
+    def _open(self, path, obsidian):
+        from urllib.parse import quote
+        register_vault(path)
+        Gio.AppInfo.launch_default_for_uri(f"obsidian://open?path={quote(path)}", None)
+
+    @staticmethod
+    def _install_obsidian():
+        code, out = sh("flatpak", "install", "-y", "--user", "flathub", "md.obsidian.Obsidian", timeout=900)
+        return "Obsidian installed" if code == 0 else f"Could not install Obsidian: {out[-120:]}"
+
+
 # ---------------------------------------------------------------- app shell
 
 MODULES = [  # (page class, sidebar icon)
+    (lambda t: SignInPage(t), "avatar-default-symbolic"),
     (lambda t: AndroidPage(t), "phone-symbolic"),
     (lambda t: WindowsVmPage(t), "computer-symbolic"),
+    (lambda t: VaultPage(t), "folder-documents-symbolic"),
 ]
 
 
