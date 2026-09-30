@@ -8,6 +8,7 @@ import android.hardware.display.VirtualDisplay;
 import android.hardware.input.InputManager;
 import android.os.IBinder;
 import android.util.Log;
+import android.view.Display;
 import android.view.InputEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -15,35 +16,29 @@ import android.view.Surface;
 
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
 
-import java.lang.reflect.Constructor;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.lang.reflect.Method;
 
 /**
- * Shizuku user service: runs as uid 2000 (shell), which is allowed to create trusted
- * virtual displays and inject input. Display flags and the shell-context trick follow
- * scrcpy's NewDisplayCapture / FakeContext (Apache-2.0).
+ * Shizuku user service running as uid 2000 (shell). Does only what needs shell rights:
+ * the overlay display, mirroring it, injecting input, and toggling our accessibility service.
+ * Android 17 does not let this process add windows (WMS rejects its unknown pid), so the
+ * window itself lives in the app's accessibility service. Mirroring and the shell-context
+ * trick follow scrcpy (Apache-2.0).
  */
 public class DeskService extends IDeskService.Stub {
     private static final String TAG = "PhoneDesk";
     private static final String SHELL = "com.android.shell";
+    private static final int TYPE_OVERLAY = 4; // Display.TYPE_OVERLAY (hidden)
 
-    private static final int FLAG_PUBLIC = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC;
-    private static final int FLAG_PRESENTATION = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION;
-    private static final int FLAG_OWN_CONTENT_ONLY = DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY;
-    private static final int FLAG_SUPPORTS_TOUCH = 1 << 6;
-    private static final int FLAG_ROTATES_WITH_CONTENT = 1 << 7;
-    private static final int FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 << 8;
-    private static final int FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS = 1 << 9;
-    private static final int FLAG_TRUSTED = 1 << 10;
-    private static final int FLAG_OWN_DISPLAY_GROUP = 1 << 11;
-    private static final int FLAG_ALWAYS_UNLOCKED = 1 << 12;
-    private static final int FLAG_TOUCH_FEEDBACK_DISABLED = 1 << 13;
-    private static final int FLAG_OWN_FOCUS = 1 << 14;
-    private static final int FLAG_DEVICE_DISPLAY_GROUP = 1 << 15;
-
+    private final Context base;
     private final Context shell;
-    private VirtualDisplay display;
-    private int displayId = -1;
+
+    private volatile int overlayId = -1;
+    private VirtualDisplay mirror;
+    private String savedAccel, savedUserRotation, savedA11y, savedA11yOn;
+
     private InputManager input;
     private Method injectMethod;
     private Method setDisplayIdMethod;
@@ -51,74 +46,66 @@ public class DeskService extends IDeskService.Stub {
     // Shizuku passes a Context when this constructor exists (API 13+).
     public DeskService(Context context) {
         HiddenApiBypass.addHiddenApiExemptions("");
+        base = context;
         shell = new ShellContext(context);
     }
 
     @Override
     public void destroy() {
-        stop();
+        exitDisplay();
         System.exit(0);
     }
 
     @Override
-    public synchronized int start(Surface surface, int width, int height, int dpi) {
-        if (display != null) {
-            // Keep the desk (and its windows) alive across activity pauses: only swap the surface.
-            display.resize(width, height, dpi);
-            display.setSurface(surface);
-            return displayId;
+    public synchronized int enterDisplay(int width, int height, int dpi) {
+        if (overlayId >= 0) return overlayId;
+        savedAccel = sh("settings get system accelerometer_rotation");
+        savedUserRotation = sh("settings get system user_rotation");
+        sh("settings put system accelerometer_rotation 0");
+        sh("settings put system user_rotation 1");
+        sh("settings put global force_desktop_mode_on_external_displays 1");
+        sh("settings put global overlay_display_devices " + width + "x" + height + "/" + dpi);
+        int id = waitForOverlayDisplay();
+        if (id < 0) {
+            Log.e(TAG, "overlay display did not appear");
+            exitDisplay();
+            return -1;
         }
-        try {
-            int flags = FLAG_PUBLIC | FLAG_PRESENTATION | FLAG_OWN_CONTENT_ONLY | FLAG_SUPPORTS_TOUCH
-                    | FLAG_ROTATES_WITH_CONTENT | FLAG_DESTROY_CONTENT_ON_REMOVAL
-                    | FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS | FLAG_TRUSTED | FLAG_OWN_DISPLAY_GROUP
-                    | FLAG_ALWAYS_UNLOCKED | FLAG_TOUCH_FEEDBACK_DISABLED | FLAG_OWN_FOCUS
-                    | FLAG_DEVICE_DISPLAY_GROUP;
-            Constructor<DisplayManager> ctor = DisplayManager.class.getDeclaredConstructor(Context.class);
-            ctor.setAccessible(true);
-            DisplayManager dm = ctor.newInstance(shell);
-            display = dm.createVirtualDisplay("PhoneDesk", width, height, dpi, surface, flags);
-            displayId = display.getDisplay().getDisplayId();
-            Log.i(TAG, "virtual display " + width + "x" + height + "/" + dpi + " id=" + displayId);
-            configureDisplay(displayId);
-            return displayId;
-        } catch (Exception e) {
-            Log.e(TAG, "createVirtualDisplay failed", e);
-            throw new IllegalStateException(e.toString());
-        }
+        overlayId = id;
+        setImePolicyLocal(id);
+        Log.i(TAG, "overlay display " + id + " " + width + "x" + height + "/" + dpi);
+        return id;
     }
 
-    /**
-     * Shell's "desktop supported" check rejects virtual displays, so make the display's root
-     * task area freeform directly: apps then open as movable, stackable windows.
-     */
-    private static void configureDisplay(int id) {
+    @Override
+    public synchronized void mirror(Surface surface, int width, int height) {
+        releaseMirror();
+        if (overlayId < 0 || surface == null) return;
         try {
-            Class<?> sm = Class.forName("android.os.ServiceManager");
-            IBinder binder = (IBinder) sm.getMethod("getService", String.class).invoke(null, "window");
-            Object wm = Class.forName("android.view.IWindowManager$Stub")
-                    .getMethod("asInterface", IBinder.class).invoke(null, binder);
-            wm.getClass().getMethod("setWindowingMode", int.class, int.class)
-                    .invoke(wm, id, 5); // WINDOWING_MODE_FREEFORM
-            wm.getClass().getMethod("setDisplayImePolicy", int.class, int.class)
-                    .invoke(wm, id, 0); // DISPLAY_IME_POLICY_LOCAL: keyboard shows on the desk
-            Log.i(TAG, "display " + id + " set to freeform");
+            Method m = DisplayManager.class.getMethod("createVirtualDisplay",
+                    String.class, int.class, int.class, int.class, Surface.class);
+            mirror = (VirtualDisplay) m.invoke(null, "PhoneDeskMirror", width, height, overlayId, surface);
         } catch (Exception e) {
-            Log.e(TAG, "configureDisplay failed", e);
+            Log.e(TAG, "mirror failed", e);
         }
     }
 
     @Override
-    public synchronized void detach() {
-        if (display != null) display.setSurface(null);
+    public synchronized void exitDisplay() {
+        releaseMirror();
+        overlayId = -1;
+        sh("settings put global overlay_display_devices none");
+        if (savedAccel != null) {
+            sh("settings put system accelerometer_rotation " + savedAccel);
+            sh("settings put system user_rotation " + savedUserRotation);
+            savedAccel = null;
+        }
     }
 
-    @Override
-    public synchronized void stop() {
-        if (display != null) {
-            display.release();
-            display = null;
-            displayId = -1;
+    private void releaseMirror() {
+        if (mirror != null) {
+            mirror.release();
+            mirror = null;
         }
     }
 
@@ -132,8 +119,53 @@ public class DeskService extends IDeskService.Stub {
         inject(event);
     }
 
+    @Override
+    public synchronized void setAccessibility(boolean enabled, String component) {
+        if (enabled) {
+            savedA11y = sh("settings get secure enabled_accessibility_services");
+            savedA11yOn = sh("settings get secure accessibility_enabled");
+            String list = savedA11y == null || savedA11y.isEmpty() || savedA11y.equals("null")
+                    ? component : savedA11y.contains(component) ? savedA11y : savedA11y + ":" + component;
+            // Sideloaded apps are "restricted": allow, or the system refuses to bind the service.
+            sh("appops set com.eddlai.phonedesk ACCESS_RESTRICTED_SETTINGS allow");
+            sh("settings put secure enabled_accessibility_services '" + list + "'");
+            sh("settings put secure accessibility_enabled 1");
+        } else if (savedA11y != null) {
+            if (savedA11y.isEmpty() || savedA11y.equals("null")) {
+                sh("settings delete secure enabled_accessibility_services");
+            } else {
+                sh("settings put secure enabled_accessibility_services '" + savedA11y + "'");
+            }
+            sh("settings put secure accessibility_enabled " + (savedA11yOn.equals("null") ? "0" : savedA11yOn));
+            savedA11y = null;
+        }
+    }
+
+    private int waitForOverlayDisplay() {
+        DisplayManager dm = base.getSystemService(DisplayManager.class);
+        for (int i = 0; i < 50; i++) {
+            for (Display d : dm.getDisplays()) {
+                if (displayType(d) == TYPE_OVERLAY) return d.getDisplayId();
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
+    private static int displayType(Display d) {
+        try {
+            return (int) Display.class.getMethod("getType").invoke(d);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
     private void inject(InputEvent event) {
-        int id = displayId;
+        int id = overlayId;
         if (id < 0) return;
         try {
             if (input == null) {
@@ -145,6 +177,37 @@ public class DeskService extends IDeskService.Stub {
             injectMethod.invoke(input, event, 0); // INJECT_INPUT_EVENT_MODE_ASYNC
         } catch (Exception e) {
             Log.e(TAG, "inject failed", e);
+        }
+    }
+
+    /** Show the soft keyboard on the desk instead of behind the overlay window. */
+    private static void setImePolicyLocal(int id) {
+        try {
+            Class<?> sm = Class.forName("android.os.ServiceManager");
+            IBinder binder = (IBinder) sm.getMethod("getService", String.class).invoke(null, "window");
+            Object wm = Class.forName("android.view.IWindowManager$Stub")
+                    .getMethod("asInterface", IBinder.class).invoke(null, binder);
+            wm.getClass().getMethod("setDisplayImePolicy", int.class, int.class)
+                    .invoke(wm, id, 0); // DISPLAY_IME_POLICY_LOCAL
+        } catch (Exception e) {
+            Log.e(TAG, "setDisplayImePolicy failed", e);
+        }
+    }
+
+    /** Runs a shell command as uid 2000 and returns its trimmed stdout. */
+    private static String sh(String cmd) {
+        try {
+            java.lang.Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String line;
+                while ((line = r.readLine()) != null) out.append(line);
+            }
+            p.waitFor();
+            return out.toString().trim();
+        } catch (Exception e) {
+            Log.e(TAG, "sh " + cmd, e);
+            return "";
         }
     }
 

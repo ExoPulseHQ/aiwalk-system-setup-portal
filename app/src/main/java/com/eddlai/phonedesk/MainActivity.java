@@ -1,124 +1,153 @@
 package com.eddlai.phonedesk;
 
 import android.app.Activity;
-import android.content.ComponentName;
 import android.content.Intent;
-import android.content.ServiceConnection;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
-import android.graphics.drawable.Icon;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Rect;
+import android.graphics.drawable.Icon;
 import android.os.Bundle;
-import android.os.IBinder;
-import android.os.RemoteException;
-import android.util.Log;
+import android.view.Display;
+import android.view.DisplayCutout;
 import android.view.Gravity;
-import android.view.KeyEvent;
-import android.view.MotionEvent;
-import android.view.Surface;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
+import android.view.RoundedCorner;
 import android.view.WindowInsets;
-import android.view.WindowInsetsController;
-import android.widget.FrameLayout;
+import android.view.WindowMetrics;
 import android.widget.TextView;
 
 import rikka.shizuku.Shizuku;
 
 /**
- * Shows a trusted virtual display full screen on the phone. With
- * force_desktop_mode_on_external_displays=1 Android treats it as an external monitor and
- * runs the native desktop (taskbar + freeform windows) on it.
+ * The "電腦模式" switch. On the phone screen it enters desktop mode and stays behind the desk
+ * as its landscape host; opened from inside the desk it switches back to phone mode.
  */
-public class MainActivity extends Activity implements SurfaceHolder.Callback {
-    private static final String TAG = "PhoneDesk";
+public class MainActivity extends Activity {
     private static final int DESK_DPI = 240; // ponytail: fixed density, make it a setting if 240 feels wrong
+    private static MainActivity host;
 
-    private SurfaceView surfaceView;
     private TextView status;
-    private IDeskService desk;
-    private Surface surface;
-    private int width, height;
-    private boolean started;
-
-    private final ServiceConnection connection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder binder) {
-            desk = IDeskService.Stub.asInterface(binder);
-            startDesk();
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            desk = null;
-            started = false;
-            show("桌面服務中斷");
-        }
-    };
-
-    private final Shizuku.UserServiceArgs serviceArgs = new Shizuku.UserServiceArgs(
-            new ComponentName("com.eddlai.phonedesk", DeskService.class.getName()))
-            .daemon(false)
-            .processNameSuffix("desk")
-            .version(2);
+    private boolean insideDesk;
+    private boolean requested;
 
     private final Shizuku.OnRequestPermissionResultListener permissionListener = (code, result) -> {
-        if (result == PackageManager.PERMISSION_GRANTED) bindDesk();
+        if (result == PackageManager.PERMISSION_GRANTED) act();
         else show("需要授權 Shizuku 權限");
     };
-
     private final Shizuku.OnBinderReceivedListener binderListener = this::connectShizuku;
+    private final Shizuku.OnBinderDeadListener binderDeadListener =
+            () -> runOnUiThread(() -> show("Shizuku 沒有在執行\n請先在 Shizuku 裡啟動"));
+
+    /** Called by the overlay when the desk closes. */
+    static void finishHost() {
+        MainActivity h = host;
+        host = null;
+        if (h != null) h.finishAndRemoveTask();
+    }
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        surfaceView = new SurfaceView(this);
-        surfaceView.getHolder().addCallback(this);
-        surfaceView.setFocusable(true);
-        surfaceView.setFocusableInTouchMode(true);
-        surfaceView.setOnTouchListener((v, e) -> forward(e));
-        surfaceView.setOnGenericMotionListener((v, e) -> forward(e));
-        surfaceView.setOnHoverListener((v, e) -> forward(e));
+        Display display = getDisplay();
+        insideDesk = display != null && display.getDisplayId() != Display.DEFAULT_DISPLAY;
 
         status = new TextView(this);
         status.setTextColor(Color.WHITE);
         status.setTextSize(18);
         status.setGravity(Gravity.CENTER);
+        status.setBackgroundColor(Color.BLACK);
+        setContentView(status);
 
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.BLACK);
-        root.addView(surfaceView);
-        root.addView(status);
-        setContentView(root);
-        hideSystemBars();
-
+        if (insideDesk) {
+            // The desk's own "電腦模式" icon means: back to phone mode.
+            if (DeskOverlayService.instance != null) DeskOverlayService.instance.exit();
+            finishAndRemoveTask();
+            return;
+        }
+        if (DeskOverlayService.instance != null && host != null) {
+            finish(); // already in desktop mode
+            return;
+        }
+        host = this;
         offerHomeShortcut();
-        show("連線 Shizuku…");
+        show("進入電腦模式…");
         Shizuku.addRequestPermissionResultListener(permissionListener);
+        Shizuku.addBinderDeadListener(binderDeadListener);
         Shizuku.addBinderReceivedListenerSticky(binderListener);
     }
 
     @Override
     protected void onDestroy() {
         Shizuku.removeBinderReceivedListener(binderListener);
+        Shizuku.removeBinderDeadListener(binderDeadListener);
         Shizuku.removeRequestPermissionResultListener(permissionListener);
-        stopDesk();
-        try {
-            Shizuku.unbindUserService(serviceArgs, connection, true);
-        } catch (Exception ignored) {
-        }
+        if (host == this) host = null;
         super.onDestroy();
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) {
-            hideSystemBars();
-            surfaceView.requestFocus();
+        act(); // measuring needs the landscape relayout
+    }
+
+    private void connectShizuku() {
+        if (Shizuku.isPreV11()) {
+            show("Shizuku 版本太舊");
+        } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+            act();
+        } else {
+            Shizuku.requestPermission(0);
         }
+    }
+
+    private void act() {
+        if (requested || insideDesk || host != this) return;
+        if (!Shizuku.pingBinder() || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return;
+        WindowMetrics metrics = getWindowManager().getCurrentWindowMetrics();
+        Rect bounds = metrics.getBounds();
+        if (bounds.width() < bounds.height()) return; // wait for landscape
+        requested = true;
+        Rect m = safeMargins(metrics.getWindowInsets());
+        getSharedPreferences("desk", MODE_PRIVATE).edit()
+                .putInt("w", bounds.width()).putInt("h", bounds.height()).putInt("dpi", DESK_DPI)
+                .putInt("ml", m.left).putInt("mt", m.top).putInt("mr", m.right).putInt("mb", m.bottom)
+                .putBoolean("pending", true).apply();
+        if (DeskOverlayService.instance != null) {
+            DeskOverlayService.instance.start();
+            return;
+        }
+        String component = getPackageName() + "/" + DeskOverlayService.class.getName();
+        DeskConnection.whenReady(() -> new Thread(() -> {
+            try {
+                DeskConnection.get().setAccessibility(true, component);
+            } catch (Exception e) {
+                runOnUiThread(() -> show("電腦模式啟動失敗：" + e.getMessage()));
+            }
+        }).start());
+    }
+
+    /** Keeps the desk clear of the rounded screen corners and the camera cutout. */
+    private static Rect safeMargins(WindowInsets insets) {
+        int radius = 0;
+        for (int pos : new int[]{RoundedCorner.POSITION_TOP_LEFT, RoundedCorner.POSITION_TOP_RIGHT,
+                RoundedCorner.POSITION_BOTTOM_LEFT, RoundedCorner.POSITION_BOTTOM_RIGHT}) {
+            RoundedCorner c = insets.getRoundedCorner(pos);
+            if (c != null) radius = Math.max(radius, c.getRadius());
+        }
+        // ponytail: half the corner radius clears the status-bar text; tune if icons still clip
+        int side = radius / 2;
+        Rect m = new Rect(side, 0, side, 0);
+        DisplayCutout cutout = insets.getDisplayCutout();
+        if (cutout != null) {
+            m.left = Math.max(m.left, cutout.getSafeInsetLeft());
+            m.right = Math.max(m.right, cutout.getSafeInsetRight());
+            m.top = Math.max(m.top, cutout.getSafeInsetTop());
+            m.bottom = Math.max(m.bottom, cutout.getSafeInsetBottom());
+        }
+        return m;
     }
 
     /** Asks the launcher once to pin a "電腦模式" shortcut to the home screen. */
@@ -136,96 +165,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         prefs.edit().putBoolean("shortcut_offered", true).apply();
     }
 
-    private void hideSystemBars() {
-        WindowInsetsController c = getWindow().getInsetsController();
-        if (c == null) return;
-        c.hide(WindowInsets.Type.systemBars());
-        c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-    }
-
-    private void connectShizuku() {
-        if (Shizuku.isPreV11()) {
-            show("Shizuku 版本太舊");
-        } else if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-            bindDesk();
-        } else {
-            Shizuku.requestPermission(0);
-        }
-    }
-
-    private void bindDesk() {
-        show("啟動桌面服務…");
-        Shizuku.bindUserService(serviceArgs, connection);
-    }
-
-    @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-    }
-
-    @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {
-        surface = holder.getSurface();
-        width = w;
-        height = h;
-        startDesk();
-    }
-
-    @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-        // Keep the desk running in the background; its windows survive until the app is closed.
-        if (desk != null && started) {
-            try {
-                desk.detach();
-            } catch (RemoteException ignored) {
-            }
-        }
-        started = false;
-        surface = null;
-    }
-
-    private void startDesk() {
-        if (desk == null || surface == null || width == 0) return;
-        try {
-            int id = desk.start(surface, width, height, DESK_DPI);
-            started = true;
-            status.setVisibility(TextView.GONE);
-            Log.i(TAG, "desk on display " + id);
-        } catch (Exception e) {
-            show("建立虛擬螢幕失敗：" + e.getMessage());
-        }
-    }
-
-    private void stopDesk() {
-        if (desk == null) return;
-        started = false;
-        try {
-            desk.stop();
-        } catch (RemoteException ignored) {
-        }
-    }
-
-    private boolean forward(MotionEvent e) {
-        if (!started) return false;
-        try {
-            // The virtual display has the same size as the surface, so coordinates map 1:1.
-            desk.injectMotion(e);
-        } catch (RemoteException ignored) {
-        }
-        return true;
-    }
-
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent e) {
-        if (!started) return super.dispatchKeyEvent(e);
-        try {
-            desk.injectKey(e);
-        } catch (RemoteException ignored) {
-        }
-        return true;
-    }
-
     private void show(String text) {
         status.setText(text);
-        status.setVisibility(TextView.VISIBLE);
     }
 }
