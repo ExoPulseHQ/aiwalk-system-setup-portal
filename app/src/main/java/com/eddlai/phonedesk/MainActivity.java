@@ -2,7 +2,12 @@ package com.eddlai.phonedesk;
 
 import android.app.Activity;
 import android.content.ComponentName;
+import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.SharedPreferences;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
+import android.graphics.drawable.Icon;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -57,7 +62,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             new ComponentName("com.eddlai.phonedesk", DeskService.class.getName()))
             .daemon(false)
             .processNameSuffix("desk")
-            .version(1);
+            .version(2);
 
     private final Shizuku.OnRequestPermissionResultListener permissionListener = (code, result) -> {
         if (result == PackageManager.PERMISSION_GRANTED) bindDesk();
@@ -89,6 +94,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         setContentView(root);
         hideSystemBars();
 
+        offerHomeShortcut();
         show("連線 Shizuku…");
         Shizuku.addRequestPermissionResultListener(permissionListener);
         Shizuku.addBinderReceivedListenerSticky(binderListener);
@@ -113,6 +119,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             hideSystemBars();
             surfaceView.requestFocus();
         }
+    }
+
+    /** Asks the launcher once to pin a "電腦模式" shortcut to the home screen. */
+    private void offerHomeShortcut() {
+        SharedPreferences prefs = getSharedPreferences("desk", MODE_PRIVATE);
+        if (prefs.getBoolean("shortcut_offered", false)) return;
+        ShortcutManager sm = getSystemService(ShortcutManager.class);
+        if (sm == null || !sm.isRequestPinShortcutSupported()) return;
+        ShortcutInfo info = new ShortcutInfo.Builder(this, "desk")
+                .setShortLabel(getString(R.string.app_name))
+                .setIcon(Icon.createWithResource(this, R.mipmap.ic_launcher))
+                .setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN))
+                .build();
+        sm.requestPinShortcut(info, null);
+        prefs.edit().putBoolean("shortcut_offered", true).apply();
     }
 
     private void hideSystemBars() {
@@ -151,7 +172,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        stopDesk();
+        // Keep the desk running in the background; its windows survive until the app is closed.
+        if (desk != null && started) {
+            try {
+                desk.detach();
+            } catch (RemoteException ignored) {
+            }
+        }
+        started = false;
         surface = null;
     }
 
@@ -168,7 +196,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void stopDesk() {
-        if (desk == null || !started) return;
+        if (desk == null) return;
         started = false;
         try {
             desk.stop();

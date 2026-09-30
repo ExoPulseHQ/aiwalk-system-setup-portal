@@ -12,6 +12,8 @@ interface IDeskService {
     // Creates a trusted virtual display rendering into surface; returns its display id.
     int start(in Surface surface, int width, int height, int dpi) = 1;
     void stop() = 2;
+    // Hide the desk without destroying it (activity went to background).
+    void detach() = 5;
     oneway void injectMotion(in MotionEvent event) = 3;
     oneway void injectKey(in KeyEvent event) = 4;
 }

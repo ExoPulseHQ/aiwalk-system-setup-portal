@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">電腦模式</string>
+    <color name="desk_blue">#1A73E8</color>
+</resources>

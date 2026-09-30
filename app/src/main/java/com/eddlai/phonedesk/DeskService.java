@@ -6,6 +6,7 @@ import android.content.ContextWrapper;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.hardware.input.InputManager;
+import android.os.IBinder;
 import android.util.Log;
 import android.view.InputEvent;
 import android.view.KeyEvent;
@@ -61,7 +62,12 @@ public class DeskService extends IDeskService.Stub {
 
     @Override
     public synchronized int start(Surface surface, int width, int height, int dpi) {
-        stop();
+        if (display != null) {
+            // Keep the desk (and its windows) alive across activity pauses: only swap the surface.
+            display.resize(width, height, dpi);
+            display.setSurface(surface);
+            return displayId;
+        }
         try {
             int flags = FLAG_PUBLIC | FLAG_PRESENTATION | FLAG_OWN_CONTENT_ONLY | FLAG_SUPPORTS_TOUCH
                     | FLAG_ROTATES_WITH_CONTENT | FLAG_DESTROY_CONTENT_ON_REMOVAL
@@ -74,11 +80,37 @@ public class DeskService extends IDeskService.Stub {
             display = dm.createVirtualDisplay("PhoneDesk", width, height, dpi, surface, flags);
             displayId = display.getDisplay().getDisplayId();
             Log.i(TAG, "virtual display " + width + "x" + height + "/" + dpi + " id=" + displayId);
+            configureDisplay(displayId);
             return displayId;
         } catch (Exception e) {
             Log.e(TAG, "createVirtualDisplay failed", e);
             throw new IllegalStateException(e.toString());
         }
+    }
+
+    /**
+     * Shell's "desktop supported" check rejects virtual displays, so make the display's root
+     * task area freeform directly: apps then open as movable, stackable windows.
+     */
+    private static void configureDisplay(int id) {
+        try {
+            Class<?> sm = Class.forName("android.os.ServiceManager");
+            IBinder binder = (IBinder) sm.getMethod("getService", String.class).invoke(null, "window");
+            Object wm = Class.forName("android.view.IWindowManager$Stub")
+                    .getMethod("asInterface", IBinder.class).invoke(null, binder);
+            wm.getClass().getMethod("setWindowingMode", int.class, int.class)
+                    .invoke(wm, id, 5); // WINDOWING_MODE_FREEFORM
+            wm.getClass().getMethod("setDisplayImePolicy", int.class, int.class)
+                    .invoke(wm, id, 0); // DISPLAY_IME_POLICY_LOCAL: keyboard shows on the desk
+            Log.i(TAG, "display " + id + " set to freeform");
+        } catch (Exception e) {
+            Log.e(TAG, "configureDisplay failed", e);
+        }
+    }
+
+    @Override
+    public synchronized void detach() {
+        if (display != null) display.setSurface(null);
     }
 
     @Override
