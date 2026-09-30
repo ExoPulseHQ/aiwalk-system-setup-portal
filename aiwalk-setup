@@ -17,7 +17,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 import shutil
 
@@ -1153,9 +1153,168 @@ def github_user():
     return out if code == 0 and out else None
 
 
-def repo_access(repo):
-    code, out = sh("gh", "api", f"repos/{repo}", "--jq", ".permissions.pull", timeout=15)
-    return code == 0 and out == "true"
+# ---------------------------------------------------------------- access tree
+
+ORG = "ExoPulseHQ"
+# ponytail: hand copy of the "repos" routes in ExoPulse_docs/Project_Management/vault_rules.json;
+# read that file instead once exo_repos.py ships the split vault.
+ACCESS_TREE = ("main", "exo-book", "Primary logs, guides and templates", [
+    ("Layers", None, "Detail repos, one per domain", [
+        ("L1 Sensing", "exo-l1", "L1_Sensing/", []),
+        ("L2 Platform", "exo-l2", "L2_Platform/", []),
+        ("L3 Simulation and AI", "exo-l3", "L3_Simulation_AI/", []),
+        ("L4 Deployment", "exo-l4", "L4_Deployment/", []),
+        ("L5 Human-machine interaction", "exo-l5", "L5_HMInteraction/", []),
+        ("L6 Clinical", "exo-l6", "L6_Clinical/", []),
+        ("Trailforge", "exo-trailforge", "Trailforge/", []),
+    ]),
+    ("Team shared", None, "Everyone on the team", [
+        ("Presentations and training", "exo-shared", "Presentations/  Training Program/", []),
+        ("Assets", "exo-assets", "Assets/", []),
+        ("Papers", "exo-papers", "Papers/", []),
+    ]),
+    ("Founders", None, "Core only", [
+        ("Management", "exo-mgmt", "Proposals/  Reports/  Project_Management/", []),
+        ("Secrets", "exo-secrets", "Passwords, access roster", []),
+    ]),
+])
+PERM_RANK = {"ADMIN": 4, "MAINTAIN": 3, "WRITE": 2, "TRIAGE": 1, "READ": 1}
+PERM_LABEL = {4: ("Admin", "perm-admin"), 3: ("Write", "perm-write"), 2: ("Write", "perm-write"),
+              1: ("Read", "perm-read"), 0: ("No access", "perm-none")}
+PURPLE = (0x8C / 255, 0x54 / 255, 0xD9 / 255)
+
+
+def org_access():
+    """{login: (name, {repo: rank})} for every ExoPulseHQ member, from org role and team grants."""
+    import json
+    code, out = sh("gh", "api", "graphql", "-f", "query={ organization(login:\"%s\") {"
+                   " membersWithRole(first:100) { edges { role node { login name } } }"
+                   " teams(first:50) { nodes { members(first:100) { nodes { login } }"
+                   " repositories(first:50) { edges { permission node { name } } } } } } }" % ORG, timeout=20)
+    if code != 0:
+        return {}
+    org = json.loads(out)["data"]["organization"]
+    people = {}
+    for edge in org["membersWithRole"]["edges"]:
+        login = edge["node"]["login"]
+        # org owners are admins of every repo
+        people[login] = (edge["node"]["name"] or login, {} if edge["role"] != "ADMIN" else None)
+    for team in org["teams"]["nodes"]:
+        for member in team["members"]["nodes"]:
+            grants = people.get(member["login"], (None, {}))[1]
+            if grants is None:
+                continue
+            for edge in team["repositories"]["edges"]:
+                repo = edge["node"]["name"]
+                grants[repo] = max(grants.get(repo, 0), PERM_RANK.get(edge["permission"], 0))
+    return people
+
+
+def security_keys():
+    """Names of plugged-in FIDO security keys (HID usage page 0xF1D0)."""
+    names = []
+    for dev in sorted(os.listdir("/sys/class/hidraw")):
+        base = f"/sys/class/hidraw/{dev}/device"
+        try:
+            if open(f"{base}/report_descriptor", "rb").read(3) == b"\x06\xd0\xf1":
+                uevent = open(f"{base}/uevent").read()
+                names.append(next((l.split("=", 1)[1] for l in uevent.splitlines()
+                                   if l.startswith("HID_NAME=")), "Security key"))
+        except OSError:
+            pass
+    return names
+
+
+def account_has_key_login():
+    """True when the GitHub account has a security-key SSH key (sk-...) registered."""
+    code, out = sh("gh", "api", "user/keys", "--jq", ".[].key", timeout=15)
+    return code == 0 and any(k.startswith("sk-") for k in out.splitlines())
+
+
+class TreeGutter(Gtk.DrawingArea):
+    """The connector lines and dot to the left of one access-tree row."""
+    STEP = 26
+
+    def __init__(self, depth, lasts, has_children):
+        super().__init__(content_width=self.STEP * (depth + 1), content_height=40)
+        self.depth, self.lasts, self.has_children = depth, lasts, has_children
+        self.set_draw_func(self._draw)
+
+    def _draw(self, _area, cr, _w, h):
+        x = lambda col: 12 + self.STEP * col
+        mid = h / 2
+        cr.set_line_width(1.5)
+        cr.set_source_rgba(0.6, 0.6, 0.65, 0.55)
+        # ancestors' lines that continue past this row
+        for col in range(self.depth - 1):
+            if not self.lasts[col + 1]:
+                cr.move_to(x(col), 0)
+                cr.line_to(x(col), h)
+        if self.depth:
+            col, r = self.depth - 1, 8
+            cr.move_to(x(col), 0)
+            cr.line_to(x(col), mid - r)
+            cr.curve_to(x(col), mid, x(col), mid, x(col) + r, mid)
+            cr.line_to(x(self.depth) - (7 if self.has_children else 0), mid)
+            if not self.lasts[-1]:
+                cr.move_to(x(col), mid - r)
+                cr.line_to(x(col), h)
+        cr.stroke()
+        if self.has_children:
+            cr.move_to(x(self.depth), mid)
+            cr.line_to(x(self.depth), h)
+            cr.stroke()
+            radius = 8 if self.depth == 0 else 6
+            cr.set_source_rgba(*PURPLE, 0.35)
+            cr.arc(x(self.depth), mid, radius + 3, 0, 2 * math.pi)
+            cr.fill()
+            cr.set_source_rgb(*PURPLE)
+            cr.arc(x(self.depth), mid, radius, 0, 2 * math.pi)
+            cr.fill()
+
+
+def access_tree(grants):
+    """The ExoPulse vault as a tree of repos, each with the permission `grants` gives (None = admin)."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    box.add_css_class("access-tree")
+
+    def add(node, depth, lasts):
+        title, repo, detail, children = node
+        row = Gtk.Box(spacing=10)
+        row.append(TreeGutter(depth, lasts, bool(children)))
+        name = Gtk.Label(label=title, xalign=0)
+        name.add_css_class("tree-group" if children else "tree-leaf")
+        row.append(name)
+        where = Gtk.Label(label=detail, xalign=0, hexpand=True, ellipsize=3)
+        where.add_css_class("dim-label")
+        where.add_css_class("monospace" if "/" in detail and not children else "caption")
+        row.append(where)
+        if repo:
+            rank = 4 if grants is None else grants.get(repo, 0)
+            text, css = PERM_LABEL[rank]
+            pill = Gtk.Label(label=text, valign=Gtk.Align.CENTER, width_chars=9)
+            pill.add_css_class("perm")
+            pill.add_css_class(css)
+            pill.set_tooltip_text(f"{ORG}/{repo}")
+            row.append(pill)
+        box.append(row)
+        for i, child in enumerate(children):
+            add(child, depth + 1, lasts + [i == len(children) - 1])
+
+    add(ACCESS_TREE, 0, [True])
+    return box
+
+
+ACCESS_CSS = """
+.access-tree { padding: 8px 12px 12px 4px; }
+.tree-group { font-weight: bold; font-size: 1.05em; }
+.tree-leaf { font-weight: 600; }
+.perm { border-radius: 6px; padding: 2px 8px; font-weight: bold; font-size: 0.9em; }
+.perm-admin { background: #8C54D9; color: white; }
+.perm-write { background: #F5843C; color: #1d1d1d; }
+.perm-read { background: #F9C29B; color: #1d1d1d; }
+.perm-none { border: 1px dashed alpha(currentColor, 0.35); color: alpha(currentColor, 0.5); font-weight: normal; }
+"""
 
 
 class Busy:
@@ -1217,7 +1376,9 @@ class SignInPage(Adw.NavigationPage, Busy):
         if not shutil.which("gh"):
             return None, None
         user = github_user()
-        return user, {repo: repo_access(repo) for _, repo, _ in VAULTS} if user else {}
+        if not user:
+            return user, {}
+        return user, {"people": org_access(), "keys": security_keys(), "key_login": account_has_key_login()}
 
     def _show(self, user, access):
         self.clear()
@@ -1241,13 +1402,37 @@ class SignInPage(Adw.NavigationPage, Busy):
         head = Gtk.Label(label=f"Signed in as {user}", xalign=0)
         head.add_css_class("title-2")
         self.body.append(head)
-        group = Adw.PreferencesGroup(title="Access", description="Company repositories this account can open")
-        for name, repo, _ in VAULTS:
-            ok = access.get(repo)
-            row = Adw.ActionRow(title=name, subtitle=repo if ok else
-                                f"No access yet. Ask an admin to invite {user} to {repo}.")
-            row.add_prefix(Gtk.Image(icon_name="emblem-ok-symbolic" if ok else "action-unavailable-symbolic"))
-            group.add(row)
+
+        keys = Adw.PreferencesGroup(title="Security key")
+        plugged = access["keys"]
+        row = Adw.ActionRow(title=plugged[0] if plugged else "No security key plugged in",
+                            subtitle=("Registered on this GitHub account" if access["key_login"] else
+                                      "Not registered on this GitHub account yet, so it does not sign you "
+                                      "in. Until it is, the tree shows what the account can open.")
+                            if plugged else "Plug in your key to see what it opens")
+        row.add_prefix(Gtk.Image(icon_name="auth-fingerprint-symbolic" if plugged else "dialog-password-symbolic"))
+        keys.add(row)
+        self.body.append(keys)
+
+        people = access["people"]
+        group = Adw.PreferencesGroup(title="What it opens",
+                                     description=f"{ORG} repositories and this account's permission")
+        frame = Gtk.Frame()
+        frame.add_css_class("card")
+        if user not in people:
+            frame.set_child(access_tree({}))
+        elif people[user][1] is None:
+            # owners may preview any member's view
+            logins = sorted(people, key=lambda l: (l != user, people[l][0].lower()))
+            view_as = Adw.ComboRow(title="View as", model=Gtk.StringList.new(
+                [f"{people[l][0]} ({l})" if people[l][0] != l else l for l in logins]))
+            view_as.connect("notify::selected", lambda r, _: frame.set_child(
+                access_tree(people[logins[r.get_selected()]][1])))
+            group.add(view_as)
+            frame.set_child(access_tree(None))
+        else:
+            frame.set_child(access_tree(people[user][1]))
+        group.add(frame)
         self.body.append(group)
         out = Adw.PreferencesGroup()
         row = Adw.ActionRow(title="Sign out", subtitle="Removes this computer's GitHub sign-in", activatable=True)
@@ -1494,6 +1679,10 @@ class App(Adw.Application):
 
     def do_activate(self):
         Gtk.Window.set_default_icon_name(APP_ID)
+        css = Gtk.CssProvider()
+        css.load_from_string(ACCESS_CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         (self.props.active_window or MainWindow(self)).present()
 
 
