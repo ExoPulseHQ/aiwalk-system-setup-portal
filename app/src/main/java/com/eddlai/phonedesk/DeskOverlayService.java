@@ -233,11 +233,29 @@ public class DeskOverlayService extends AccessibilityService {
         }).start();
     }
 
+    /**
+     * Re-creates the touch as coming from a virtual device (like `adb shell input`). Forwarding
+     * the real event keeps the phone touchscreen's device id, which Android associates with
+     * display 0, so the desk's taskbar opened the app list / home on the hidden phone screen.
+     */
     private boolean forward(MotionEvent e) {
-        MotionEvent copy = MotionEvent.obtain(e);
+        int n = e.getPointerCount();
+        MotionEvent.PointerProperties[] props = new MotionEvent.PointerProperties[n];
+        MotionEvent.PointerCoords[] coords = new MotionEvent.PointerCoords[n];
+        for (int i = 0; i < n; i++) {
+            props[i] = new MotionEvent.PointerProperties();
+            e.getPointerProperties(i, props[i]);
+            coords[i] = new MotionEvent.PointerCoords();
+            e.getPointerCoords(i, coords[i]);
+        }
+        MotionEvent copy = MotionEvent.obtain(e.getDownTime(), e.getEventTime(), e.getAction(), n,
+                props, coords, e.getMetaState(), e.getButtonState(), 1f, 1f,
+                VIRTUAL_DEVICE_ID, 0, e.getSource(), e.getFlags());
         call(d -> d.injectMotion(copy));
         return true;
     }
+
+    private static final int VIRTUAL_DEVICE_ID = -1; // KeyCharacterMap.VIRTUAL_KEYBOARD, as `input` uses
 
     /** Hardware keys go to the desk; volume up + down together is the emergency exit. */
     @Override
