@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Android 手機：a GNOME panel for the phones on this desk.
+"""Android Phone: a GNOME panel for the phones on this desk.
 
 One section per connected phone, with that phone's actions under it. A drawn silhouette
 shows the phone's state at a glance: upright = phone mode, sideways with a taskbar =
@@ -31,6 +31,7 @@ IPFILE = f"{HOME}/.config/phone-panel/ip"
 PHONEDESK_APK = os.path.join(HERE, "apk/phonedesk.apk")
 SHIZUKU_APK = os.path.join(HERE, "apk/shizuku.apk")
 PHONEDESK = "com.eddlai.phonedesk"
+APP_ID = "com.eddlai.PhonePanel"
 P_FIRST = "persist.wm.debug.force_desktop_first_on_default_display_for_testing"
 P_RESTRICT = "persist.wm.debug.desktop_mode_enforce_device_restrictions"
 
@@ -69,7 +70,7 @@ _bundled_hash = None
 
 
 def bundled_phonedesk_hash():
-    """SHA-256 of the 電腦模式 APK shipped in this folder (to spot an outdated install)."""
+    """SHA-256 of the Desktop Mode (電腦模式) APK shipped in this folder (to spot an outdated install)."""
     global _bundled_hash
     if _bundled_hash is None:
         import hashlib
@@ -147,9 +148,9 @@ class Silhouette(Gtk.DrawingArea):
         self.update_property([Gtk.AccessibleProperty.LABEL], [self._describe()])
 
     def _describe(self):
-        mode = "電腦桌面模式" if self.phone.desk_on else "手機模式"
-        link = "無線連線" if self.phone.wireless else "USB 有線連線"
-        return f"{self.phone.model}，{mode}，{link}"
+        mode = "desktop mode" if self.phone.desk_on else "phone mode"
+        link = "connected over Wi-Fi" if self.phone.wireless else "connected over USB"
+        return f"{self.phone.model}, {mode}, {link}"
 
     def _draw(self, _area, cr, w, h):
         fg = self.get_color()
@@ -201,7 +202,7 @@ class Silhouette(Gtk.DrawingArea):
 
 class Panel(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Android 手機")
+        super().__init__(application=app, title="Android Phone")
         self.set_default_size(460, 640)
         self.root_cache = {}
         self.busy = False
@@ -210,7 +211,7 @@ class Panel(Adw.ApplicationWindow):
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="重新偵測手機")
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Look for phones again")
         refresh.connect("clicked", lambda *_: self.refresh(force=True))
         header.pack_end(refresh)
         view.add_top_bar(header)
@@ -221,15 +222,20 @@ class Panel(Adw.ApplicationWindow):
         clamp = Adw.Clamp(maximum_size=560, child=self.list_box)
         self.stack.add_named(Gtk.ScrolledWindow(child=clamp, vexpand=True), "phones")
 
-        empty = Adw.StatusPage(icon_name="phone-symbolic", title="沒有偵測到手機",
-                               description="用 USB 線接上手機，或讓手機和電腦在同一個 Wi-Fi 後重新連線。")
-        again = Gtk.Button(label="重新連線無線手機", halign=Gtk.Align.CENTER)
+        empty = Adw.StatusPage(icon_name="phone-symbolic", title="No phone found",
+                               description="On the phone, turn on USB debugging (Settings › System › Developer options) and connect it with a USB cable. For Wi-Fi, turn on Wireless debugging there instead and keep the phone on the same Wi-Fi as this computer.")
+        again = Gtk.Button(label="Reconnect over Wi-Fi", halign=Gtk.Align.CENTER)
         again.add_css_class("pill")
         again.connect("clicked", lambda *_: self.run(self._reconnect_wireless))
         empty.set_child(again)
         self.stack.add_named(empty, "empty")
 
-        view.set_content(self.stack)
+        self.banner = Adw.Banner(title="A phone is connected but has not allowed debugging. "
+                                       "Unlock it and tap Allow on the USB debugging prompt.")
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self.banner)
+        content.append(self.stack)
+        view.set_content(content)
         self.toasts.set_child(view)
         self.set_content(self.toasts)
 
@@ -249,9 +255,11 @@ class Panel(Adw.ApplicationWindow):
 
     def _probe_all(self):
         _, out = adb(None, "devices")
-        serials = [l.split()[0] for l in out.split("\n")[1:] if l.endswith("\tdevice")]
+        rows = [l.split("\t") for l in out.split("\n")[1:] if "\t" in l]
+        serials = [r[0] for r in rows if r[1] == "device"]
+        waiting = any(r[1] == "unauthorized" for r in rows)
         phones = [Phone(s).probe(self.root_cache) for s in serials]
-        GLib.idle_add(self._show, phones)
+        GLib.idle_add(self._show, phones, waiting)
 
     def run(self, work, *args):
         """Runs an action off the UI thread, then re-probes."""
@@ -271,7 +279,8 @@ class Panel(Adw.ApplicationWindow):
 
     # ---------- rendering ----------
 
-    def _show(self, phones):
+    def _show(self, phones, waiting=False):
+        self.banner.set_revealed(waiting)
         sig = [(p.serial, p.model, p.desk_on, p.root, p.phonedesk, p.phonedesk_outdated, p.shizuku)
                for p in phones]
         if sig == self.signature:
@@ -292,28 +301,28 @@ class Panel(Adw.ApplicationWindow):
         name = Gtk.Label(label=p.model, xalign=0)
         name.add_css_class("title-2")
         text.append(name)
-        link = f"無線連線，{p.ip}" if p.wireless else "USB 有線連線"
+        link = f"Connected over Wi-Fi, {p.ip}" if p.wireless else "Connected over USB"
         text.append(self._dim(link))
         if p.desk_on:
-            state = "電腦桌面開啟中" + ("" if p.root else "（電腦模式 App）")
+            state = "Desktop is on" + ("" if p.root else " (Desktop Mode app)")
         else:
-            state = "手機模式"
-        text.append(self._dim(state + ("，已 root" if p.root else "")))
+            state = "Phone mode"
+        text.append(self._dim(state + (", rooted" if p.root else "")))
         head.append(text)
         section.append(head)
 
         rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
         rows.add_css_class("boxed-list")
-        rows.append(self._action("用電腦鍵盤打字", "電腦的鍵盤和觸控板直接操作手機",
+        rows.append(self._action("Type with this keyboard", "Use this computer's keyboard and touchpad on the phone",
                                  "input-keyboard-symbolic", self._keyboard, p))
-        rows.append(self._action("在電腦上看手機畫面", "鏡像並可用滑鼠操作",
+        rows.append(self._action("Show the phone screen here", "Mirror it and control it with the mouse",
                                  "video-display-symbolic", self._mirror, p))
         rows.append(self._desk_row(p))
         if p.wireless:
-            rows.append(self._action("中斷無線連線", None, "network-wireless-offline-symbolic",
+            rows.append(self._action("Disconnect Wi-Fi", None, "network-wireless-offline-symbolic",
                                      self._disconnect, p))
         else:
-            rows.append(self._action("改用無線連線", "之後就可以拔掉 USB 線",
+            rows.append(self._action("Switch to Wi-Fi", "Then you can unplug the USB cable",
                                      "network-wireless-symbolic", self._go_wireless, p))
         section.append(rows)
         return section
@@ -335,25 +344,25 @@ class Panel(Adw.ApplicationWindow):
 
     def _desk_row(self, p):
         if not p.root and not p.phonedesk:
-            row = Adw.ActionRow(title="電腦桌面", subtitle="這支手機沒有 root，需要先安裝「電腦模式」App（不會清除資料）")
+            row = Adw.ActionRow(title="Desktop", subtitle="Not rooted: install the Desktop Mode app first (keeps all data)")
             row.add_prefix(Gtk.Image(icon_name="computer-symbolic"))
-            install = Gtk.Button(label="安裝", valign=Gtk.Align.CENTER)
+            install = Gtk.Button(label="Install", valign=Gtk.Align.CENTER)
             install.add_css_class("suggested-action")
             install.connect("clicked", lambda *_: self.run(self._install_phonedesk, p))
             row.add_suffix(install)
             return row
         if p.root:
-            sub = "原生設定，切換後要重新開機"
+            sub = "Built-in setting, applies after a restart"
         elif not p.shizuku:
-            sub = "Shizuku 沒有在執行，開啟時會先幫你啟動"
+            sub = "Shizuku is not running; it will be started first"
         else:
-            sub = "由「電腦模式」App 在手機螢幕上顯示"
+            sub = "Shown on the phone screen by the Desktop Mode app"
         if not p.root and p.phonedesk_outdated:
-            sub = "手機上的「電腦模式」App 不是最新版，建議先更新"
-        row = Adw.SwitchRow(title="電腦桌面", subtitle=sub, active=p.desk_on)
+            sub = "The Desktop Mode app on this phone is outdated, update it first"
+        row = Adw.SwitchRow(title="Desktop", subtitle=sub, active=p.desk_on)
         row.add_prefix(Gtk.Image(icon_name="computer-symbolic"))
         if not p.root and p.phonedesk_outdated:
-            update = Gtk.Button(label="更新", valign=Gtk.Align.CENTER)
+            update = Gtk.Button(label="Update", valign=Gtk.Align.CENTER)
             update.add_css_class("suggested-action")
             update.connect("clicked", lambda *_: self.run(self._install_phonedesk, p))
             row.add_suffix(update)
@@ -364,15 +373,17 @@ class Panel(Adw.ApplicationWindow):
 
     def _keyboard(self, p):
         self._scrcpy(p, ["--no-video", "--no-audio", "--keyboard=uhid", "--mouse=uhid",
-                         "--window-title=手機鍵盤"])
-        self.toasts.add_toast(Adw.Toast(title="點一下「手機鍵盤」視窗後就能打字", timeout=4))
+                         "--window-title=Phone keyboard"])
+        self.toasts.add_toast(Adw.Toast(title="Click the Phone keyboard window, then type", timeout=4))
 
     def _mirror(self, p):
         self._scrcpy(p, ["--keyboard=uhid", f"--window-title={p.model}"])
 
     @staticmethod
     def _scrcpy(p, args):
-        env = dict(os.environ, ADB=ADB)
+        # Group scrcpy's windows under this app in the dock and show our icon inside them.
+        env = dict(os.environ, ADB=ADB, SCRCPY_ICON_PATH=os.path.join(HERE, "icon.png"),
+                   SDL_APP_ID=APP_ID, SDL_VIDEO_WAYLAND_WMCLASS=APP_ID, SDL_VIDEO_X11_WMCLASS=APP_ID)
         subprocess.Popen([SCRCPY, "-s", p.serial] + args, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
@@ -381,11 +392,11 @@ class Panel(Adw.ApplicationWindow):
             return
         if p.root:
             dialog = Adw.AlertDialog(
-                heading="要" + ("開啟" if on else "關閉") + f" {p.model} 的電腦桌面嗎？",
-                body="會套用整組設定（顯示大小、字型、橫向），重新開機後生效。")
-            dialog.add_response("cancel", "取消")
-            dialog.add_response("later", "稍後自己重開")
-            dialog.add_response("reboot", "套用並重新開機")
+                heading=("Turn on" if on else "Turn off") + f" the desktop on {p.model}?",
+                body="This applies the whole setup (display size, font size, landscape). It takes effect after a restart.")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("later", "Restart later")
+            dialog.add_response("reboot", "Apply and restart")
             dialog.set_response_appearance("reboot", Adw.ResponseAppearance.SUGGESTED)
 
             def answered(_d, response):
@@ -408,8 +419,8 @@ class Panel(Adw.ApplicationWindow):
             '[ "$v" != "$n" ] && settings put secure enabled_accessibility_services "$n"')
         if reboot:
             adb(p.serial, "reboot")
-            return f"{p.model} 正在重新開機"
-        return "設定已套用，重新開機後生效"
+            return f"{p.model} is restarting"
+        return "Applied, takes effect after a restart"
 
     def _start_shizuku(self, p):
         _, path = adb(p.serial, "shell", "pm path moe.shizuku.privileged.api")
@@ -421,37 +432,37 @@ class Panel(Adw.ApplicationWindow):
             self._start_shizuku(p)
         # Launching 電腦模式 enters the desk; launching it again while the desk runs exits.
         adb(p.serial, "shell", f"am start -n {PHONEDESK}/.MainActivity")
-        return "正在開啟電腦桌面，請看手機畫面" if on else "已切回手機模式"
+        return "Turning on the desktop, check the phone" if on else "Back to phone mode"
 
     def _install_phonedesk(self, p):
         if not os.path.exists(PHONEDESK_APK):
-            return "找不到電腦模式 App 的安裝檔"
+            return "The Desktop Mode app installer is missing from this folder"
         code, _ = adb(p.serial, "shell", "pm path moe.shizuku.privileged.api")
         if code != 0 and adb(p.serial, "install", SHIZUKU_APK, timeout=180)[0] != 0:
-            return "Shizuku 安裝失敗"
+            return "Could not install Shizuku"
         if p.desk_app_on:  # updating kills the running desk; leave it cleanly first
             adb(p.serial, "shell", f"am start -n {PHONEDESK}/.MainActivity")
             GLib.usleep(3_000_000)
         if adb(p.serial, "install", "-r", PHONEDESK_APK, timeout=180)[0] != 0:
-            return "電腦模式 App 安裝失敗"
+            return "Could not install the Desktop Mode app"
         adb(p.serial, "shell", f"pm enable {PHONEDESK}")
         self._start_shizuku(p)
-        return f"「電腦模式」已裝到 {p.model}（第一次開啟時請在手機上允許 Shizuku）"
+        return f"Desktop Mode app installed on {p.model}. Allow Shizuku on the phone the first time you use it."
 
     def _go_wireless(self, p):
         if not p.ip:
-            return "手機沒有連上 Wi-Fi"
+            return "The phone is not on Wi-Fi"
         adb(p.serial, "tcpip", "5555")
         os.makedirs(os.path.dirname(IPFILE), exist_ok=True)
         with open(IPFILE, "w") as f:
             f.write(p.ip)
         GLib.usleep(2_000_000)
         _, out = adb(None, "connect", f"{p.ip}:5555")
-        return f"已改用無線連線，現在可以拔線" if "connected" in out else f"無線連線失敗：{out}"
+        return "Now on Wi-Fi, you can unplug the cable" if "connected" in out else f"Could not connect over Wi-Fi: {out}"
 
     def _disconnect(self, p):
         adb(None, "disconnect", p.serial)
-        return "已中斷無線連線"
+        return "Wi-Fi disconnected"
 
     def _reconnect_wireless(self):
         # Wireless-debugging phones advertise themselves; fall back to the last saved IP.
@@ -460,15 +471,15 @@ class Panel(Adw.ApplicationWindow):
         if not targets and os.path.exists(IPFILE):
             targets = [open(IPFILE).read().strip() + ":5555"]
         connected = [t for t in targets if "connected" in adb(None, "connect", t)[1]]
-        return f"已連上 {len(connected)} 支手機" if connected else "找不到可以無線連線的手機"
+        return f"Connected {len(connected)} phone(s)" if connected else "No phone found on Wi-Fi"
 
 
 class App(Adw.Application):
     def __init__(self):
-        super().__init__(application_id="com.eddlai.PhonePanel")
+        super().__init__(application_id=APP_ID)
 
     def do_activate(self):
-        Gtk.Window.set_default_icon_name("com.eddlai.PhonePanel")
+        Gtk.Window.set_default_icon_name(APP_ID)
         (self.props.active_window or Panel(self)).present()
 
 

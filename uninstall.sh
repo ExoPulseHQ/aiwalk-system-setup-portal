@@ -6,4 +6,4 @@ rm -rf "$HOME/.local/share/phone-panel"
 rm -f "$HOME/.local/share/applications/$APP_ID.desktop" "$DESKTOP_DIR/$APP_ID.desktop" \
       "$HOME/.local/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
-echo "已移除「Android 手機」。"
+echo "Removed Android Phone."
