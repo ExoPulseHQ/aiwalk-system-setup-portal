@@ -191,11 +191,12 @@ public class MainActivity extends Activity {
         }
         // ponytail: half the corner radius clears the status-bar text; tune if icons still clip
         int side = radius / 2;
-        // Keep the desk's taskbar out of the phone's bottom gesture strip: gesture navigation
-        // watches every touch there and a tap on the desk's app-list button started the phone's
-        // recents/home instead (which also crashed the Pixel launcher).
-        int gestureBottom = insets.getInsets(WindowInsets.Type.mandatorySystemGestures()).bottom;
-        Rect m = new Rect(side, 0, side, gestureBottom);
+        // The desk's taskbar lies over the phone's bottom gesture strip. Gesture navigation sees
+        // every touch there; a tap on the app-list button used to start the phone's recents/home
+        // (crashing the Pixel launcher). The immersive host is expected to stop that, so no
+        // bottom margin. If the app list crashes again, restore:
+        //   insets.getInsets(WindowInsets.Type.mandatorySystemGestures()).bottom
+        Rect m = new Rect(side, 0, side, 0);
         DisplayCutout cutout = insets.getDisplayCutout();
         if (cutout != null) {
             m.left = Math.max(m.left, cutout.getSafeInsetLeft());
