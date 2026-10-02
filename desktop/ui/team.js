@@ -16,15 +16,15 @@ function badge(s) {
   const name = s.name || s.user;
   const who = el("div", "who");
   who.append(el("div", "name", name), el("div", "dim", s.name ? `@${s.user}` : "Signed in on this computer"));
-  const methods = el("div", "methods");
+  const methods = el("div", "methods claude-line");
   const a = s.accounts.find(x => x.active) || {};
-  methods.append(
+  methods.append(el("span", "label", "GitHub"),
     el("span", "method " + (a.method === "account" ? "m-account" : "m-off"), "GitHub account"),
     el("span", "method " + (a.method === "temporary" ? "m-temporary" : "m-off"), "Temporary credential"),
     el("span", "method m-off", "Security key"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods);
-  const out = el("button", "ghost small", "Sign out");
+  who.append(methods, claudeLine());
+  const out = el("button", "ghost small", "Sign out of GitHub");
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
     if (await ask(`Sign out ${s.user} on this computer?`, (others.length ? `${others.join(", ")} stays signed in and takes over.`
@@ -38,7 +38,7 @@ function badge(s) {
   const others = s.accounts.filter(x => !x.active);
   if (others.length) {
     const pick = el("select");
-    pick.append(new Option("Switch account", ""), ...others.map(x => new Option(x.login, x.login)));
+    pick.append(new Option("Switch GitHub account", ""), ...others.map(x => new Option(x.login, x.login)));
     pick.onchange = async () => {
       pick.disabled = true;
       try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}`); } catch (e) { toast(`Could not switch: ${e}`); }
@@ -46,12 +46,49 @@ function badge(s) {
     };
     actions.append(pick);
   }
-  const add = el("button", "ghost small", "Add account");
+  const add = el("button", "ghost small", "Add a GitHub account");
   add.onclick = () => teamPage().replaceChildren(signInView(null, true));
   actions.append(add, out);
   who.append(actions);
   b.append(el("div", "band"), el("div", "face", initials(name)), who);
   return b;
+}
+
+// Claude Code on this computer: the team's vault workflow runs through it, so the badge says whether it is ready.
+function claudeLine() {
+  const line = el("div", "claude-line");
+  const label = el("span", "label", "Claude Code");
+  const state = el("span", "method m-off"); state.append(el("span", "spinner"));
+  const msg = el("span", "sub");
+  line.append(label, state, msg);
+  const PLAN = { max: "Max", pro: "Pro", team: "Team", enterprise: "Enterprise" };
+  const paint = async () => {
+    const c = await invoke("claude_state");
+    line.querySelectorAll("button").forEach(b => b.remove());
+    if (!c.path) {
+      state.className = "method m-off"; state.textContent = "Not installed";
+      const b = el("button", "small", "Install Claude Code");
+      b.onclick = () => run(b, "Installing", "claude_install");
+      line.append(b);
+    } else if (!c.signed_in) {
+      state.className = "method m-temporary"; state.textContent = `Installed ${c.version}, not signed in`;
+      const b = el("button", "small", "Sign in to Claude");
+      b.onclick = () => run(b, "Waiting for the browser", "claude_login");
+      line.append(b);
+    } else {
+      state.className = "method m-key";
+      state.textContent = `Signed in${c.method === "claude.ai" ? " with Claude.ai" : c.method ? ` with ${c.method}` : ""}${PLAN[c.plan] ? `, ${PLAN[c.plan]} plan` : ""}`;
+      msg.textContent = c.version;
+    }
+  };
+  async function run(b, label, cmd) {
+    msg.textContent = "";
+    const stop = await listen("claude-step", e => { msg.textContent = e.payload; });
+    try { toast(await working(b, label, () => invoke(cmd))); } catch (e) { msg.textContent = e; }
+    stop(); paint();
+  }
+  paint();
+  return line;
 }
 
 // A member asks for more on one repo: pick read or write, add a note, it lands as an issue the owners see.
