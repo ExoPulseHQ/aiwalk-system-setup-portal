@@ -250,14 +250,23 @@ pub fn pick_folder(app: tauri::AppHandle, title: String) -> Option<String> {
 #[tauri::command]
 pub fn default_folder(repo: String) -> String { default_dest(&repo).to_string_lossy().into() }
 
-/// Uses a copy the person already has: it must be a clone of `repo`.
+/// The clone of `repo` in `path`: the folder itself or one of its subfolders. Only a folder that is a repo
+/// itself counts; git would otherwise answer for a vault enclosing it.
+fn find_copy(path: &str, repo: &str) -> Option<PathBuf> {
+    std::iter::once(PathBuf::from(path))
+        .chain(std::fs::read_dir(path).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()))
+        .find(|p| p.join(".git").exists() && is_copy_of(&p.to_string_lossy(), repo))
+}
+
+/// Uses a copy the person already has. They pick the folder that holds it, as for a download; the copy is the
+/// subfolder that is a clone of `repo` (or the picked folder itself, if they picked the copy).
 #[tauri::command(async)]
 pub fn vault_link(repo: String, path: String) -> Result<String, String> {
-    let url = run(Path::new(&path), &["remote", "get-url", "origin"], &[]).map_err(|_| "That folder is not a git copy of a vault".to_string())?;
-    if !is_copy_of(&path, &repo) { return Err(format!("That folder is a copy of {}, not {repo}", url.trim())) }
-    register(Path::new(&path));
-    remember(&repo, Path::new(&path));
-    Ok("Using the copy in that folder".into())
+    let copy = find_copy(&path, &repo)
+        .ok_or(format!("No copy of {repo} in {path}"))?;
+    register(&copy);
+    remember(&repo, &copy);
+    Ok(format!("Using the copy in {}", copy.display()))
 }
 
 /// Downloads into `dest`, or into the default folder when the person did not pick one.
@@ -300,6 +309,21 @@ pub fn obsidian_install() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linking_finds_the_copy_inside_the_picked_folder() {
+        let parent = std::env::temp_dir().join(format!("vault-link-{}", std::process::id()));
+        let copy = parent.join("ExoPulse_docs");
+        std::fs::create_dir_all(copy.join("System")).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").current_dir(&copy).args(args).status().unwrap().success());
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "https://github.com/ExoPulseHQ/exo-book.git"]);
+        let found = |p: &std::path::Path| super::find_copy(&p.to_string_lossy(), "ExoPulseHQ/exo-book");
+        assert_eq!(found(&parent), Some(copy.clone()));
+        assert_eq!(found(&copy), Some(copy.clone()));
+        assert_eq!(found(&copy.join("System")), None);   // a folder inside the vault is not the vault
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
+
     use super::*;
 
     const FILE: [(&str, &str); 1] = [("protocol.file.allow", "always")];

@@ -550,7 +550,7 @@ function downloadRow(v) {
   const text = el("div", "text");
   const useCopy = el("button", "small ghost", path ? "Change folder" : "Use a copy I already have");
   useCopy.onclick = async () => {
-    const p = await invoke("pick_folder", { title: `Pick your copy of ${v.name}` });
+    const p = await invoke("pick_folder", { title: `Pick the folder that holds your copy of ${v.name}` });
     if (!p) return;
     try { toast(await working(useCopy, "Checking that folder", () => invoke("vault_link", { repo: v.repo, path: p }))); await refreshLocal(); loadTeam(); }
     catch (e) { msg.textContent = e; }
