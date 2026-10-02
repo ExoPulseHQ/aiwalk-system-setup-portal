@@ -19,11 +19,11 @@ systemctl is-active --quiet cloudflared || { echo "cloudflared is not running. A
 SELF=$(hostname -I)
 PEERS=$(for ip in $MACHINES; do case " $SELF " in *" $ip "*) ;; *) echo -n "$ip ";; esac; done)
 
-# rules that open SSH, HTTP or VNC to everyone: "[ n] 22/tcp   ALLOW IN   Anywhere" and their v6 twins
+# rules that open SSH, HTTP(S) or VNC to everyone (the web goes out through the tunnel, nothing needs 80/443 open): "[ n] 22/tcp   ALLOW IN   Anywhere" and their v6 twins
 open_rules() {
   ufw status numbered | awk -F'[][]' '/ALLOW IN/ && /Anywhere/ && !/ from / {
     split($3, f, " "); to = f[1]
-    if (to ~ /^(22|80|59[0-9][0-9](:59[0-9][0-9])?)(\/tcp|\/udp)?$/ || to == "OpenSSH" || to ~ /^Nginx/) print $2 + 0 }'
+    if (to ~ /^(22|80|443|59[0-9][0-9](:59[0-9][0-9])?)(\/tcp|\/udp)?$/ || to == "OpenSSH" || to ~ /^Nginx/) print $2 + 0 }'
 }
 
 echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered | sed '1,4d'
@@ -34,7 +34,7 @@ echo " 2. The boot-time desktops :1-:5 are started by exo-desktop: Unix socket o
 echo "    (a systemd override for $VNC_SERVICE; the original files stay). They restart once, so anyone on them"
 echo "    is disconnected; afterwards they open from the portal's Open desktop."
 echo " 3. SSH (22) is allowed only from: $PEERS"
-echo "    Rules that open 22, 80 or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
+echo "    Rules that open 22, 80, 443 or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
 read -rp "Apply? [y/N] " answer
 [ "$answer" = y ] || { echo "Nothing changed."; exit 0; }
@@ -62,14 +62,16 @@ fi
 
 ufw default deny incoming >/dev/null
 for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'registered lab machine' >/dev/null; done
-for n in $(open_rules | sort -rn); do yes | ufw delete "$n" >/dev/null; done
+# --force answers ufw's own question; piping "yes" into it ends with SIGPIPE, which pipefail turned into an abort
+for n in $(open_rules | sort -rn); do ufw --force delete "$n" >/dev/null; done
 
 systemctl daemon-reload
 systemctl stop "$VNC_SERVICE" || true
 for i in 1 2 3 4 5 6 7 8; do sudo -u "$VNC_USER" vncserver -kill ":$i" >/dev/null 2>&1 || true; done   # the old TCP ones
-systemctl start "$VNC_SERVICE"
+systemctl start "$VNC_SERVICE" || echo "WARNING: $VNC_SERVICE did not start; open desktops from the portal instead (New desktop)"
 sleep 3
 
+set +e   # the check only reports; a missing socket or port must not hide the rest of it
 echo
 echo "== Check"
 echo "cloudflared service file: $(stat -c %A /etc/systemd/system/cloudflared.service) (want -rw-------)"
