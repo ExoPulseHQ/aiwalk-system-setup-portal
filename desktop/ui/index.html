@@ -81,6 +81,20 @@
   .section > header { display: flex; align-items: baseline; gap: 12px; padding-top: 20px; flex-wrap: wrap; }
   .section > header .grow { flex: 1; }
 
+  /* vaults fold; the summary keeps name, place and access visible */
+  details.vault > summary { list-style: none; cursor: pointer; }
+  details.vault > summary::-webkit-details-marker { display: none; }
+  details.vault > summary header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 20px; }
+  details.vault > summary header .grow { flex: 1; }
+  details.vault > summary h2::before { content: ""; display: inline-block; width: 8px; height: 8px; margin: 0 12px 3px 2px;
+    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); }
+  details.vault[open] > summary h2::before { transform: rotate(45deg); margin-bottom: 5px; }
+  @media (prefers-reduced-motion: no-preference) { details.vault > summary h2::before { transition: transform .15s; } }
+  details.vault > summary:focus-visible { outline: 2px solid var(--purple); outline-offset: 4px; border-radius: 6px; }
+  .vault-body { padding-bottom: 8px; }
+  .view-as { justify-content: space-between; flex-wrap: wrap; margin-bottom: 6px; }
+  .ask { padding: 8px 0; }
+  .ask p:first-child { margin: 8px 0 12px; }
   /* the access tree, drawn with connectors */
   .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
   .tree ul { margin-left: 11px; padding-left: 18px; border-left: 2px solid var(--line); }

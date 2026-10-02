@@ -283,32 +283,68 @@ function teamsList(a, login, person) {
   return sec;
 }
 
-function vaultSection(v, user, viewAs) {
-  const sec = el("div", "section");
+// Somebody who cannot open a vault yet gets one way forward: ask the owners. If even that cannot reach them
+// (the account is on no team, so it cannot see the request repo), say who has to act.
+function askForVault(v, orgs) {
+  const box = el("div", "ask");
+  const owner = v.repo.split("/")[0];
+  // requests travel inside an organisation; a vault kept under a person's own account has no request repo
+  if (!orgs.has(owner)) {
+    box.append(el("p", null, `This account cannot open ${v.name}. It belongs to ${owner} personally, so ask ${owner} to add you on GitHub.`));
+    return box;
+  }
+  const msg = el("p", "sub");
+  const b = el("button", "small", "Ask the owners for access");
+  b.onclick = async () => {
+    msg.textContent = "";
+    try {
+      await working(b, "Sending", () => invoke("request_access", { org: v.repo.split("/")[0], repo: v.repo.split("/")[1], level: "read", note: `Asked from aIwalk System Setup: cannot open ${v.name} yet.` }));
+      toast("Request sent to the owners"); loadTeam();
+    } catch (e) {
+      msg.textContent = /not found|404|could not resolve/i.test(String(e))
+        ? "Your account is not on a team yet, so requests cannot reach the owners. Ask an owner to add you to the team."
+        : `GitHub refused: ${e}`;
+    }
+  };
+  box.append(el("p", null, `This account cannot open ${v.name} yet.`), b, msg);
+  return box;
+}
+
+// One collapsible section per vault; the summary line says where it is and what you can do, even when folded.
+function vaultSection(v, user, viewAs, orgs) {
+  const sec = el("details", "section vault");
+  const key = "open:" + v.repo;
+  try { sec.open = localStorage.getItem(key) !== "0"; } catch { sec.open = true; }
+  sec.ontoggle = () => { try { localStorage.setItem(key, sec.open ? "1" : "0"); } catch {} };
+  const summary = el("summary");
   const head = el("header");
-  head.append(el("h2", null, v.name), el("span", "grow"));
-  sec.append(head);
-  sec.append(downloadRow(v));
+  const here = local.copies[v.repo];
+  head.append(el("h2", null, v.name), el("span", "tag", here ? "On this computer" : "Not downloaded"),
+    pill(Math.min(v.permission, 4), v.repo), el("span", "grow"));
+  summary.append(head);
+  sec.append(summary);
+  const body = el("div", "vault-body");
+  sec.append(body);
+  if (!v.permission) { if (here) body.append(downloadRow(v)); body.append(askForVault(v, orgs)); return sec; }
+  body.append(downloadRow(v));
   const a = v.access;
   if (!a) {
     // one repo, not split: what counts is the permission on the repo itself
-    const t = el("ul", "tree"), li = el("li");
-    li.append(node(v.name, v.repo, v.permission, v.repo, () => null, false));
-    t.append(li);
-    sec.append(el("h3", null, "Documents"), t,
-      el("p", "sub", v.permission ? "This vault is one repo, so your access is the same everywhere in it." : "This account cannot open this vault. Ask an owner if you need it."));
+    body.append(el("p", "sub", "This vault is one repo, so your access is the same everywhere in it."));
     return sec;
   }
   const owner = (a.people[user] || {}).grants === null;
-  editAccess = owner ? repo => accessDialog(a, repo) : null;
   const docs = el("ul", "tree"), teams = el("div");
   const show = login => {
     const person = a.people[login] || { name: login, grants: {} };
     // only a member looking at their own view can ask for more
     const extra = (repo, rank) => !owner && login === user && rank < 2 ? requestControl(a, repo, rank) : null;
+    editAccess = owner ? repo => accessDialog(a, repo) : null;   // pills are editable for owners, in every re-render
     docs.replaceChildren(tree(a.tree, person.grants, extra));
+    editAccess = null;
     teams.replaceChildren(owner && person.grants !== null && a.teams.length ? teamsList(a, login, person) : "");
   };
+  const tools = el("div", "row view-as");
   if (owner) {   // owners may look through any member's eyes
     const pick = el("select");
     Object.keys(a.people).sort((x, y) => (x !== user) - (y !== user) || a.people[x].name.localeCompare(a.people[y].name))
@@ -317,15 +353,10 @@ function vaultSection(v, user, viewAs) {
     if (viewAs in a.people) pick.value = viewAs;
     const label = el("label", "sub", "View as ");
     label.append(pick);
-    head.append(label);
+    tools.append(el("span", "sub grow", "Click a permission to choose who can open that repo."), label);
   }
-  const render = show;
-  // keep pills editable for re-renders under View as
-  const showEditable = login => { editAccess = owner ? repo => accessDialog(a, repo) : null; render(login); editAccess = null; };
-  if (owner) head.querySelector("select").onchange = e => showEditable(e.target.value);
-  showEditable(viewAs in a.people ? viewAs : user);
-  sec.append(el("h3", null, "Documents"), docs, teams);
-  if (owner) sec.insertBefore(el("p", "sub", "Click a permission to choose who can open that repo."), docs);
+  show(viewAs in a.people ? viewAs : user);
+  body.append(el("h3", null, "Documents"), tools, docs, teams);
   return sec;
 }
 
@@ -586,6 +617,7 @@ async function loadTeam(viewAs) {
   if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams, org.tree)); }
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   if (machines.length) parts.push(machinesSection(machines));
-  s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs)));
+  const orgs = new Set(s.vaults.filter(v => v.access).map(v => v.access.org));
+  s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs, orgs)));
   page.replaceChildren(...parts);
 }
