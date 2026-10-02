@@ -7,8 +7,60 @@ use exo_core::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 use tauri::Emitter;
+
+// The phone and VM modules drive a Linux desktop (adb, scrcpy, docker, GNOME keyring).
+#[cfg(target_os = "linux")]
+mod android;
+#[cfg(target_os = "linux")]
+mod vm;
+
+pub fn home() -> PathBuf { PathBuf::from(std::env::var_os("HOME").unwrap_or_default()) }
+
+/// The app's folder: bundled tools (tools/), phone apps (apk/) and icon.png sit next to the binary.
+pub fn here() -> PathBuf {
+    std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(PathBuf::from)).unwrap_or_default()
+}
+
+/// A bundled tool next to the app, else the one on PATH.
+pub fn find_tool(bundled: &str, name: &str) -> String {
+    let p = here().join(bundled);
+    if p.exists() { return p.to_string_lossy().into() }
+    std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.exists()))
+        .map(|p| p.to_string_lossy().into()).unwrap_or_else(|| name.into())
+}
+
+/// Runs a program with optional stdin, killed after `timeout` seconds; (exit code, stdout + stderr).
+/// 124 on timeout, 1 when it could not start, as the Python app did.
+pub fn sh_stdin(prog: &str, args: &[&str], stdin: Option<&str>, timeout: u64) -> (i32, String) {
+    let child = Command::new(prog).args(args).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    let mut child = match child { Ok(c) => c, Err(e) => return (1, e.to_string()) };
+    if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) { let _ = pipe.write_all(input.as_bytes()); }
+    let start = Instant::now();
+    let code = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code().unwrap_or(1),
+            Ok(None) if start.elapsed() > Duration::from_secs(timeout) => { let _ = child.kill(); let _ = child.wait(); return (124, String::new()) }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return (1, e.to_string()),
+        }
+    };
+    // ponytail: output is read after exit; a tool that fills the 64 KB pipe before exiting stalls until the timeout
+    match child.wait_with_output() {
+        Ok(o) => (code, String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).trim().to_string()),
+        Err(e) => (1, e.to_string()),
+    }
+}
+
+pub fn sh(prog: &str, args: &[&str], timeout: u64) -> (i32, String) { sh_stdin(prog, args, None, timeout) }
+
+/// Which modules this computer gets: the phone and VM pages need Linux.
+#[tauri::command]
+fn platform() -> &'static str { std::env::consts::OS }
 
 // ponytail: vault list is hard-coded, same as the Python app; move to a config file when teams need different lists
 const VAULTS: [(&str, &str, &str); 2] = [
@@ -193,14 +245,35 @@ fn sign_in(app: tauri::AppHandle) -> bool {
     ok
 }
 
+#[cfg(target_os = "linux")]
+fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
+    tauri::generate_handler![platform, team_access, sign_in, set_team, request_access, approve_request, decline_request,
+                             android::phones, android::phone_action, vm::vm_state, vm::vm_action]
+}
+#[cfg(not(target_os = "linux"))]
+fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
+    tauri::generate_handler![platform, team_access, sign_in, set_team, request_access, approve_request, decline_request]
+}
+
 fn main() {
     // `--dump` prints what the page would get, for checking without a window
+    #[cfg(target_os = "linux")]
+    if let Some(flag) = std::env::args().find(|a| a == "--windows-open" || a == "--windows-stop") {
+        return vm::shortcut_main(&flag);
+    }
+    #[cfg(target_os = "linux")]
+    if std::env::args().any(|a| a == "--dump-local") {
+        let state = vm::vm_state();
+        let password_saved = vm::find().is_some_and(|v| vm::load_password(&v.user).is_some());
+        println!("{}", serde_json::json!({ "vm": state, "password_saved": password_saved, "phones": android::phones() }));
+        return;
+    }
     if std::env::args().any(|a| a == "--dump") {
         println!("{}", serde_json::to_string_pretty(&team_access()).unwrap());
         return;
     }
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![team_access, sign_in, set_team, request_access, approve_request, decline_request])
+        .invoke_handler(handlers())
         .run(tauri::generate_context!())
         .expect("error while running aIwalk System Setup");
 }
