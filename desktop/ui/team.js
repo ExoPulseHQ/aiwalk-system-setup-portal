@@ -325,10 +325,25 @@ function machinesSection(machines, org, user) {
       specs[host].replaceChildren(...d.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
       if (s.disk_free_gb != null && s.disk_free_gb < 20) specs[host].append(el("p", "warn", `Disk almost full: ${gb(s.disk_free_gb)} left.`));
       if ((s.desktops || []).length) specs[host].append(desktopList(byHost[host], s.desktops, open));
+      // a cluster reached through this machine (rooster through horse) comes in the same answer
+      if (s.cluster) hosts.filter(x => x.via === host).forEach(x => clusterView(x.host, s.cluster));
     }
     // a check that finished before these numbers arrived may still be asking for a sign-in
     if (lastState && [...live].some(h => lastState[h] !== "up")) { live.forEach(h => lastState[h] = "up"); showHelp(lastState); }
   };
+  // A SLURM cluster: totals as meters, then each node and the queues. The reading is at most a minute old.
+  function clusterView(host, c) {
+    const sum = k => c.nodes.reduce((a, n) => a + (n[k] || 0), 0);
+    const [gu, gt, cu, ct] = ["gpu_used", "gpu_total", "cpu_used", "cpu_total"].map(sum);
+    meters[host].replaceChildren(bar("GPU", gt ? 100 * gu / gt : 0, `${gu} of ${gt} GPUs allocated`),
+      bar("CPU", ct ? 100 * cu / ct : 0, `${cu} of ${ct} cores allocated`),
+      el("span", "sub", `${c.running} jobs running, ${c.pending} waiting`));
+    const q = o => Object.entries(o || {}).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
+    const rows = [...c.nodes.map(n => [n.name, `GPU ${n.gpu_used}/${n.gpu_total}, CPU ${n.cpu_used}/${n.cpu_total}, ${n.state.toLowerCase()}${n.reason ? ` (${n.reason})` : ""}`]),
+      ["Running", q(c.running_by_queue)], ["Waiting", q(c.pending_by_queue)],
+      ["Updated", c.time ? new Date(c.time * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?"]];
+    specs[host].replaceChildren(...rows.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
+  }
   // Each VNC desktop listens on the machine itself only; opening one forwards a local port to it through
   // Cloudflare, and the person's own VNC viewer connects to 127.0.0.1:<that port>.
   function desktopList(m, desktops, open) {

@@ -8,12 +8,17 @@ for 5 seconds, so a page polling every 15 seconds costs a few /proc reads and on
   exo-status.py              serve on 127.0.0.1:9101
   exo-status.py --once       print one answer and exit
   exo-status.py --selftest   check the parsers on canned input
+  --cluster HPC              also report a SLURM cluster reached through this machine (an ssh alias in its
+                             ~/.ssh/config), from the cluster's own status service that its `hpcs` command reads
 """
 import json, os, shutil, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 9101
 CACHE_SECONDS = 5
+CLUSTER = None          # ssh alias of a cluster this machine reaches, from --cluster
+CLUSTER_SECONDS = 60    # the school's service is asked at most once a minute, in the background
+CLUSTER_API = "http://10.141.255.254:8050"   # NYCU HPC's status service, behind its login node (what `hpcs` reads)
 
 
 def read(path):
@@ -82,6 +87,39 @@ _last = {"t": 0.0, "answer": None, "cpu": None}
 _lock = threading.Lock()
 
 
+
+def cluster_parse(text):
+    """Two JSON lines from the cluster's /nodes and /queue: nodes with CPU/GPU in use, jobs running and waiting."""
+    lines = [l for l in text.splitlines() if l.strip()]
+    nodes, queue = json.loads(lines[0]), json.loads(lines[1])
+    return {"time": queue.get("last_update"), "running": queue.get("running_job", 0), "pending": queue.get("pending_job", 0),
+            "running_by_queue": queue.get("running_by_partition", {}), "pending_by_queue": queue.get("pending_by_partition", {}),
+            "nodes": [{"name": n["name"], "cpu_used": n["cpu_used"], "cpu_total": n["cpu_total"], "gpu_used": n["gpu_used"],
+                       "gpu_total": n["gpu_total"], "state": "+".join(n.get("state", [])), "reason": n.get("reason", "")} for n in nodes]}
+
+
+_cluster = {"t": 0, "data": None, "busy": False}
+
+def cluster():
+    """The last cluster reading; starts a fresh one in the background when it is older than CLUSTER_SECONDS."""
+    if not CLUSTER:
+        return None
+    if not _cluster["busy"] and time.time() - _cluster["t"] > CLUSTER_SECONDS:
+        _cluster["busy"] = True
+        threading.Thread(target=_fetch_cluster, daemon=True).start()
+    return _cluster["data"]
+
+def _fetch_cluster():
+    try:
+        out = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", CLUSTER,
+                              f"curl -s --max-time 10 {CLUSTER_API}/nodes; echo; curl -s --max-time 10 {CLUSTER_API}/queue"],
+                             capture_output=True, text=True, timeout=30).stdout
+        _cluster["data"] = cluster_parse(out)
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError, KeyError):
+        pass   # keep the last reading; the page shows its time
+    finally:
+        _cluster.update(t=time.time(), busy=False)
+
 def answer():
     with _lock:
         now = time.time()
@@ -108,7 +146,7 @@ def answer():
                "disk_gb": round(disk.total / 1e9), "disk_free_gb": round(disk.free / 1e9),
                "uptime_h": round(float(read("/proc/uptime").split()[0] or 0) / 3600, 1),
                "users": len(set(users[::5])) if users else 0,
-               "desktops": desktops(ps)}
+               "desktops": desktops(ps), "cluster": cluster()}
         _last.update(t=now, answer=ans, cpu=(busy, total))
         return ans
 
@@ -135,12 +173,18 @@ def selftest():
                  {"user": "root", "display": ":7", "port": 5907, "socket": None, "geometry": ""}], d
     s6 = desktops("ntk /usr/bin/Xtigervnc :6 -rfbport -1 -rfbunixpath /home/ntk/.vnc/desk-6.sock -geometry 1920x1080\n")
     assert s6 == [{"user": "ntk", "display": ":6", "port": None, "socket": "/home/ntk/.vnc/desk-6.sock", "geometry": "1920x1080"}], s6
+    c = cluster_parse('[{"cpu_total":224,"cpu_used":96,"gpu_total":8,"gpu_used":8,"name":"DGX-CN01","reason":"","state":["ALLOCATED"]}]\n'
+                      '{"last_update":1,"pending_by_partition":{"defq":2},"pending_job":7,"running_by_partition":{"defq":12},"running_job":27}\n')
+    assert c["running"] == 27 and c["pending"] == 7 and c["nodes"][0] == {"name": "DGX-CN01", "cpu_used": 96, "cpu_total": 224,
+        "gpu_used": 8, "gpu_total": 8, "state": "ALLOCATED", "reason": ""}, c
     a = answer(); assert {"cpu", "threads", "mem_gb", "cpu_pct", "gpus", "disk_free_gb"} <= set(a) and 0 <= a["cpu_pct"] <= 100
     assert answer() is a, "answers are reused within the cache window"
     print("exo-status: all checks passed")
 
 
 if __name__ == "__main__":
+    if "--cluster" in sys.argv:
+        i = sys.argv.index("--cluster"); CLUSTER = sys.argv[i + 1]; del sys.argv[i:i + 2]
     if sys.argv[1:] == ["--selftest"]:
         selftest()
     elif sys.argv[1:] == ["--once"]:
