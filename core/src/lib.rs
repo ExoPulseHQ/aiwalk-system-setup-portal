@@ -146,6 +146,14 @@ pub fn org_access(response_json: &str) -> OrgAccess {
     out
 }
 
+/// What `user` may see: org owners see everyone (for View as), anyone else only their own grants.
+pub fn visible_to(mut people: BTreeMap<String, Person>, user: &str) -> BTreeMap<String, Person> {
+    if people.get(user).is_some_and(|p| p.grants.is_none()) {
+        return people;
+    }
+    people.remove(user).map(|p| BTreeMap::from([(user.to_string(), p)])).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +199,14 @@ mod tests {
         assert_eq!(alice["exo-l3"], 2);
         assert!(!alice.contains_key("exo-mgmt"));
         assert_eq!(org_access("garbage"), OrgAccess::default());
+    }
+
+    #[test]
+    fn only_owners_see_everyone() {
+        assert_eq!(visible_to(org_access(ORG).people, "owner").len(), 2);
+        let member = visible_to(org_access(ORG).people, "alice");
+        assert_eq!(member.keys().collect::<Vec<_>>(), ["alice"]);
+        assert!(visible_to(org_access(ORG).people, "stranger").is_empty());
     }
 
     #[test]

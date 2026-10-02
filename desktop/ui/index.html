@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>aIwalk System Setup</title>
+<style>
+  :root { --bg: #fafafa; --fg: #1d1d1d; --card: #fff; --dim: #6b6b6b; --line: #ddd; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1e1e1e; --fg: #eee; --card: #2a2a2a; --dim: #a0a0a0; --line: #444; } }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.4em; margin: 0 0 4px; }
+  .dim { color: var(--dim); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin: 16px 0; }
+  .card h2 { font-size: 1.1em; margin: 0; }
+  label { display: block; margin: 10px 0; }
+  ul.tree, ul.tree ul { list-style: none; margin: 0; padding-left: 20px; border-left: 1px solid var(--line); }
+  ul.tree { padding-left: 4px; border: 0; }
+  li { margin: 4px 0; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .title { font-weight: 600; }
+  .group > .row .title { font-weight: bold; }
+  .detail { flex: 1; color: var(--dim); font-family: ui-monospace, monospace; font-size: .9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .perm { border-radius: 6px; padding: 2px 8px; font-weight: bold; font-size: .9em; min-width: 72px; text-align: center; }
+  .p4 { background: #8C54D9; color: #fff; }
+  .p3, .p2 { background: #F5843C; color: #1d1d1d; }
+  .p1 { background: #F9C29B; color: #1d1d1d; }
+  button { font: inherit; padding: 6px 16px; border-radius: 8px; border: 0; background: #8C54D9; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; }
+  .code { font-weight: 600; }
+  .p0 { border: 1px dashed var(--dim); color: var(--dim); font-weight: normal; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Team access</h1>
+  <p id="who" class="dim">Reading GitHub…</p>
+  <div id="vaults"></div>
+</main>
+<script>
+const LABEL = { 4: "Admin", 3: "Write", 2: "Write", 1: "Read", 0: "No access" };
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+function tree(node, grants, org) {
+  const li = el("li", node.children.length ? "group" : "");
+  const row = el("div", "row");
+  row.append(el("span", "title", node.title), el("span", "detail", node.detail));
+  if (node.repo) {
+    const rank = grants === null ? 4 : (grants[node.repo] || 0);
+    const pill = el("span", "perm p" + rank, LABEL[rank]);
+    pill.title = org + "/" + node.repo;
+    row.append(pill);
+  }
+  li.append(row);
+  if (node.children.length) {
+    const ul = el("ul");
+    node.children.forEach(c => ul.append(tree(c, grants, org)));
+    li.append(ul);
+  }
+  return li;
+}
+
+function vaultCard(v, user) {
+  const card = el("section", "card");
+  card.append(el("h2", null, v.name), el("div", "dim", v.about));
+  const a = v.access;
+  if (!a) { card.append(el("p", "dim", "No access tree: this account cannot read the vault, or it is not split into repos.")); return card; }
+  const box = el("ul", "tree");
+  const show = login => { box.replaceChildren(tree(a.tree, (a.people[login] || { grants: {} }).grants, a.org)); };
+  const me = a.people[user];
+  if (me && me.grants === null) {   // owners may preview any member's view
+    const pick = el("select");
+    Object.keys(a.people).sort((x, y) => (x !== user) - (y !== user) || a.people[x].name.localeCompare(a.people[y].name))
+      .forEach(l => pick.append(new Option(a.people[l].name === l ? l : `${a.people[l].name} (${l})`, l)));
+    pick.onchange = () => show(pick.value);
+    const label = el("label", null, "View as ");
+    label.append(pick);
+    card.append(label);
+  }
+  show(user);
+  card.append(box);
+  return card;
+}
+
+const { invoke } = window.__TAURI__.core;
+const who = document.getElementById("who"), vaults = document.getElementById("vaults");
+
+function signInCard(error) {
+  const card = el("section", "card");
+  card.append(el("h2", null, "Sign in with GitHub"),
+    el("p", "dim", "Everything here follows your GitHub account. Sign in once; the app keeps no token of its own."));
+  if (error) card.append(el("p", "dim", error));
+  const code = el("p", "code"), btn = el("button", null, "Sign in");
+  btn.onclick = async () => {
+    btn.disabled = true;
+    code.textContent = "Waiting for GitHub…";
+    const stop = await window.__TAURI__.event.listen("gh-code", e => {
+      code.textContent = `Your one-time code is ${e.payload}. Paste it on the GitHub page that just opened and approve.`;
+    });
+    const ok = await invoke("sign_in");
+    stop();
+    ok ? load() : (code.textContent = "Sign-in was not completed.", btn.disabled = false);
+  };
+  card.append(btn, code);
+  return card;
+}
+
+async function load() {
+  who.textContent = "Reading GitHub…";
+  const s = await invoke("team_access");
+  if (!s.user) { who.textContent = ""; vaults.replaceChildren(signInCard(s.error)); return; }
+  who.textContent = `Signed in to GitHub as ${s.user}`;
+  vaults.replaceChildren(...s.vaults.map(v => vaultCard(v, s.user)));
+}
+load();
+</script>
+</body>
+</html>
