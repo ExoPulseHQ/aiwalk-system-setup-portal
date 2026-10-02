@@ -1181,7 +1181,7 @@ KEY_SCOPES = ["admin:public_key", "admin:ssh_signing_key"]  # to register the se
 
 # A vault that is split into repos says so in its own routing file: which repo owns which folder,
 # and the GitHub organisation that grants them. Any vault with one gets an access tree.
-RULES_PATHS = ["Project_Management/vault_rules.json", "vault_rules.json"]
+RULES_PATHS = ["System/vault_rules.json", "Project_Management/vault_rules.json", "vault_rules.json"]
 PERM_RANK = {"ADMIN": 4, "MAINTAIN": 3, "WRITE": 2, "TRIAGE": 1, "READ": 1}
 PERM_LABEL = {4: ("Admin", "perm-admin"), 3: ("Write", "perm-write"), 2: ("Write", "perm-write"),
               1: ("Read", "perm-read"), 0: ("No access", "perm-none")}
@@ -1225,6 +1225,38 @@ def build_tree(book, repos, repo_teams):
              "Founders": "Core only"}
     return ("main", book, "Primary logs, guides and templates",
             [(g, None, about[g], sorted(items)) for g, items in groups.items() if items])
+
+
+# The vault's member table is the one list of who is on the team and who has left (Status, the last column).
+TEAM_PATH = "System/ExoPulse_Task_Assignment.md"
+
+
+def parse_members(text):
+    """[{name, chinese, code, role, passport, status, left}] from the member table: the first table with a Code column."""
+    head, rows = None, []
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            if rows:
+                break
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if head is None:
+            if any("Code" in c for c in cells):
+                head = cells
+            continue
+        if set("".join(cells)) <= set("-: "):
+            continue
+        col = lambda key: next((cells[i] for i, h in enumerate(head) if key in h and i < len(cells)), "")
+        rows.append({"name": cells[0], "chinese": cells[1], "code": col("Code"), "role": col("角色"),
+                     "passport": col("Passport"), "status": cells[-1],
+                     "left": bool(re.search(r"離開|Left", cells[-1], re.I))})
+    return rows
+
+
+def vault_members(vault):
+    code, out = sh("gh", "api", f"repos/{vault}/contents/{TEAM_PATH}", "-H", "Accept: application/vnd.github.raw",
+                   timeout=20)
+    return parse_members(out) if code == 0 else []
 
 
 def org_access(org):
@@ -1505,7 +1537,8 @@ class SignInPage(Adw.NavigationPage, Busy):
                 org, book, repos = layout
                 people, repo_teams = orgs.setdefault(org, org_access(org))
                 vaults[vault] = {"org": org, "people": people, "tree": build_tree(book, repos, repo_teams)}
-        return user, {"vaults": vaults, "keys": security_keys(), "key_login": account_has_key_login(),
+        members = next((m for m in (vault_members(v) for _, v, _ in VAULTS) if m), [])
+        return user, {"members": members, "vaults": vaults, "keys": security_keys(), "key_login": account_has_key_login(),
                       "accounts": accounts, "active": active}
 
     def _show(self, user, access):
@@ -1580,12 +1613,32 @@ class SignInPage(Adw.NavigationPage, Busy):
         self.vaults.set_extras({vault: (lambda v=v: self._tree_rows(user, v))
                                 for vault, v in access["vaults"].items()})
         self.body.append(self.vaults)
+        self._members(access["members"])
         out = Adw.PreferencesGroup()
         row = Adw.ActionRow(title="Sign out", subtitle="Removes this computer's GitHub sign-in", activatable=True)
         row.add_prefix(Gtk.Image(icon_name="system-log-out-symbolic"))
         row.connect("activated", lambda *_: self._sign_out())
         out.add(row)
         self.body.append(out)
+
+    def _members(self, members):
+        """Who is on the team now and who was, from the vault's member table; leaving keeps a person's history."""
+        now, past = [m for m in members if not m["left"]], [m for m in members if m["left"]]
+        for title, about, people in (
+                ("Team members", f"{len(now)} people, from the vault's {TEAM_PATH}", now),
+                ("Former members", "Left or on leave. Their work stays in the vault under their code.", past)):
+            if not people:
+                continue
+            group = Adw.PreferencesGroup(title=title, description=about)
+            for m in people:
+                name = m["name"] if m["chinese"] in ("", "—", m["name"]) else f"{m['chinese']}  {m['name']}"
+                row = Adw.ActionRow(title=name, subtitle=", ".join(x for x in (m["passport"], m["role"]) if x))
+                row.add_suffix(self._pill(m["code"], "state-off"))
+                if m["left"]:
+                    row.add_css_class("dim-label")
+                    row.add_suffix(self._pill("On leave" if "leave" in m["status"].lower() else "Left", "state-off"))
+                group.add(row)
+            self.body.append(group)
 
     @staticmethod
     def _pill(text, css):
