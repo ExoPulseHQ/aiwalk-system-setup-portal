@@ -67,6 +67,17 @@
   .badge .methods { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .badge .actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); margin-right: 20px; }
   .badge .actions select { margin-right: auto; }
+  /* machine rows: two small meters, specs open on click */
+  .meters { display: inline-flex; gap: 10px; }
+  .meter-mini { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+  .meter-mini .track { width: 54px; height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .meter-mini i { display: block; height: 100%; background: var(--purple); border-radius: inherit; }
+  .meter-mini i.hot { background: var(--orange); }
+  @media (prefers-reduced-motion: no-preference) { .meter-mini i { transition: width .4s ease-out; } }
+  .specs { padding: 4px 4px 14px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
+  .spec { display: grid; grid-template-columns: 96px 1fr; gap: 12px; font-size: 13.5px; }
+  .spec .k { color: var(--muted); }
+  .warn { color: var(--orange); font-size: 13.5px; margin: 6px 0 0; }
   .claude-line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
   .claude-line .label { color: var(--muted); font-size: 14px; width: 92px; flex: none; }
   .claude-line .sub { overflow-wrap: anywhere; }
@@ -217,7 +228,7 @@
 <script>
 const listen = window.__TAURI__.event.listen;
 // Every call to the app's backend shows the top line while it runs, except the quiet background checks.
-const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable", "ssh_status", "claude_state"]);
+const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable", "ssh_status", "claude_state", "machine_status"]);
 let pendingCalls = 0;
 function invoke(cmd, args) {
   const loud = !QUIET.has(cmd);

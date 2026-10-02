@@ -181,14 +181,20 @@ function machinesSection(machines) {
   const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
   const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
-  const list = el("div", "list"), pills = {};
+  const list = el("div", "list"), pills = {}, meters = {}, specs = {};
   hosts.forEach(m => {
     const p = el("span", "perm checking"); p.append(el("span", "spinner"));
     pills[m.host] = p;
     const right = [];
     if (m.sometimes) right.push(el("span", "tag", "Often off"));
     if (m.via) right.push(el("span", "tag", `Through ${m.via}`));
-    list.append(item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p));
+    meters[m.host] = el("span", "meters");
+    const row = item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, meters[m.host], ...right, p);
+    // what the machine has, opened by clicking its row once its status is known
+    specs[m.host] = el("div", "specs"); specs[m.host].hidden = true;
+    row.classList.add("click");
+    row.onclick = () => { if (specs[m.host].childElementCount) specs[m.host].hidden = !specs[m.host].hidden; };
+    list.append(row, specs[m.host]);
   });
   const help = el("div");
   sec.append(help, list);
@@ -231,8 +237,35 @@ function machinesSection(machines) {
       help.append(el("p", "sub", "Connections are set up on this computer."));
     }
   }
-  again.onclick = check;
-  check();
+  // live numbers from each machine's status page, every 15 s while this page is on screen
+  const bar = (label, pct, title) => {
+    const b = el("span", "meter-mini"); b.title = title;
+    const fill = el("i"); fill.style.width = `${Math.max(0, Math.min(100, pct || 0))}%`;
+    if (pct >= 85) fill.className = "hot";
+    const track = el("span", "track"); track.append(fill);
+    b.append(el("span", "k", label), track);
+    return b;
+  };
+  const gb = x => x == null ? "?" : `${Math.round(x)} GB`;
+  const status = async () => {
+    const tunnels = hosts.filter(m => m.tunnel).map(m => [m.host, m.tunnel]);
+    if (!tunnels.length) return;
+    const all = await invoke("machine_status", { tunnels });
+    for (const [host, s] of Object.entries(all)) {
+      const g = s.gpus || [];
+      const gpu = g.length ? Math.max(...g.map(x => x.util || 0)) : null;
+      meters[host].replaceChildren(bar("CPU", s.cpu_pct, `CPU ${s.cpu_pct}% of ${s.threads} threads, load ${s.load.join(" ")}`),
+        ...(gpu == null ? [] : [bar("GPU", gpu, g.map(x => `${x.name}: ${x.util}%, ${Math.round(x.mem_used_mb / 1024)}/${Math.round(x.mem_total_mb / 1024)} GB`).join("\n"))]));
+      const d = [["Processor", `${s.cpu} (${s.threads} threads)`], ["Memory", `${s.mem_used_gb} of ${s.mem_gb} GB in use`],
+        ...g.map((x, i) => [`GPU ${g.length > 1 ? i : ""}`.trim(), `${x.name}, ${x.util}% busy, ${(x.mem_used_mb / 1024).toFixed(1)} of ${Math.round(x.mem_total_mb / 1024)} GB, ${x.temp_c} °C`]),
+        ["Disk", `${gb(s.disk_free_gb)} free of ${gb(s.disk_gb)}`], ["System", `${s.os}, up ${Math.round(s.uptime_h / 24)} days, ${s.users} signed in`]];
+      specs[host].replaceChildren(...d.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
+      if (s.disk_free_gb != null && s.disk_free_gb < 20) specs[host].append(el("p", "warn", `Disk almost full: ${gb(s.disk_free_gb)} left.`));
+    }
+  };
+  const timer = setInterval(() => { if (!sec.isConnected) return clearInterval(timer); if (current === "team" && !document.hidden) status(); }, 15000);
+  again.onclick = () => { check(); status(); };
+  check(); status();
   return sec;
 }
 

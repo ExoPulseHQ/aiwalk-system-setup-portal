@@ -30,12 +30,33 @@ pub fn reachable(machines: Vec<(String, Option<String>)>) -> BTreeMap<String, &'
     jobs.into_iter().filter_map(|j| j.join().ok()).collect()
 }
 
+/// Each machine's status (what it has, how busy it is) from its status-<name> hostname, read with this computer's
+/// Cloudflare sign-in. Machines without one, or not answering, are left out. All at once, 10 seconds each.
+#[tauri::command(async)]
+pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_json::Value> {
+    let Some(cf) = cloudflared() else { return BTreeMap::new() };
+    let jobs: Vec<_> = tunnels.into_iter().map(|(host, tunnel)| {
+        let cf = cf.clone();
+        std::thread::spawn(move || {
+            let url = format!("https://{}/", tunnel.replacen("ssh-", "status-", 1));
+            // without a sign-in cloudflared would open a browser; the page asks for the sign-in instead
+            if sh(&cf, &["access", "token", &format!("-app={url}")], 10).0 != 0 { return None }
+            let (code, out) = sh(&cf, &["access", "curl", &url, "-s", "--max-time", "8"], 12);
+            (code == 0).then(|| serde_json::from_str::<serde_json::Value>(&out).ok()).flatten().map(|v| (host, v))
+        })
+    }).collect();
+    jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
+}
+
 /// Signs this computer in to Cloudflare Access for `tunnel`: a browser opens for the GitHub sign-in.
 #[tauri::command(async)]
 pub fn access_login(tunnel: String) -> Result<String, String> {
     let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
     let (code, out) = sh(&cf, &["access", "login", &format!("https://{tunnel}")], 300);
-    if code == 0 { Ok("Signed in to Cloudflare".into()) } else { Err(out.lines().last().unwrap_or("Sign-in was not finished").into()) }
+    if code != 0 { return Err(out.lines().last().unwrap_or("Sign-in was not finished").into()) }
+    // the status hostname sits in the same Access app; the browser already holds the session, so this one passes at once
+    let _ = sh(&cf, &["access", "login", &format!("https://{}", tunnel.replacen("ssh-", "status-", 1))], 60);
+    Ok("Signed in to Cloudflare".into())
 }
 
 fn ssh_config() -> PathBuf { home().join(".ssh/config") }
