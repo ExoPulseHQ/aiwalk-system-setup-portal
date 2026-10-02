@@ -162,3 +162,19 @@ pub fn close_all() {
 /// Hands vnc://127.0.0.1:<port> to whatever VNC viewer this computer has (Screen Sharing on a Mac).
 #[tauri::command]
 pub fn open_viewer(port: u16) { crate::open_url(&format!("vnc://127.0.0.1:{port}")); }
+
+/// Starts or stops a desktop with hosts/exo-desktop on the machine, over the same SSH through Cloudflare.
+/// action is "start" (display 0 = the lowest free one) or "stop"; returns what exo-desktop printed.
+#[tauri::command(async)]
+pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Result<String, String> {
+    if action != "start" && action != "stop" { return Err(format!("unknown action {action}")) }
+    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
+    let arg = if display == 0 { String::new() } else { display.to_string() };
+    let (code, out) = sh("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", &format!("ProxyCommand=\"{cf}\" access ssh --hostname %h"), &format!("{user}@{tunnel}"),
+        &format!("~/.local/bin/exo-desktop {action} {arg}")], 60);
+    let last = out.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or_default().to_string();
+    if code == 0 { Ok(last) } else if last.contains("Permission denied") {
+        Err(format!("{user} on this machine did not accept this computer's key"))
+    } else { Err(if last.is_empty() { "The machine did not answer".into() } else { last }) }
+}

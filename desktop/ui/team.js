@@ -287,12 +287,32 @@ function machinesSection(machines) {
   // Cloudflare, and the person's own VNC viewer connects to 127.0.0.1:<that port>.
   function desktopList(m, desktops, open) {
     const box = el("div", "desktops");
-    box.append(el("div", "k", "Desktops"));
+    const head = el("div", "row"), msg = el("span", "sub");
+    const add = el("button", "small ghost", "New desktop");
+    add.onclick = async e => {
+      e.stopPropagation(); msg.textContent = "";
+      try { toast(`Desktop ${await working(add, "Starting", () => invoke("desktop", { tunnel: m.tunnel, user: desktops[0]?.user || "ntk", action: "start", display: 0 }))} is ready`); status(); }
+      catch (err) { msg.textContent = err; }
+    };
+    head.append(el("span", "k", "Desktops"), add, msg);
+    box.append(head);
     desktops.forEach(d => {
       const r = el("div", "desk"), msg = el("span", "sub");
       const name = `${d.display}  ${d.geometry || ""}  (${d.user})`;
       const show = port => {
         r.replaceChildren(el("span", null, name));
+        // closing ends the desktop for everyone on it, since desktops are shared by the account
+        const close = el("button", "small ghost", "Close");
+        close.onclick = async e => {
+          e.stopPropagation();
+          if (await ask(`Close desktop ${d.display} on ${m.host}?`, "Anyone working on this desktop loses it, along with any unsaved work in it.",
+            [["cancel", "Cancel"], ["close", "Close desktop", true]]) !== "close") return;
+          try {
+            await invoke("close_forward", { host: m.host, remotePort: d.port });
+            toast(await working(close, "Closing", () => invoke("desktop", { tunnel: m.tunnel, user: d.user, action: "stop", display: +d.display.slice(1) })));
+            status();
+          } catch (err) { msg.textContent = err; r.append(msg); }
+        };
         if (!port) {
           const b = el("button", "small ghost", "Open desktop");
           b.onclick = async e => {
@@ -300,15 +320,15 @@ function machinesSection(machines) {
             try { show(await working(b, "Connecting", () => invoke("open_forward", { host: m.host, tunnel: m.tunnel, user: d.user, remotePort: d.port }))); }
             catch (err) { msg.textContent = err; r.append(msg); }
           };
-          r.append(b);
+          r.append(b, close);
           return;
         }
         const addr = `127.0.0.1:${port}`;
-        const copy = el("button", "small ghost", "Copy"), view = el("button", "small ghost", "Open viewer"), stop = el("button", "small ghost", "Stop");
+        const copy = el("button", "small ghost", "Copy"), view = el("button", "small ghost", "Open viewer"), stop = el("button", "small ghost", "Disconnect");
         copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(addr).then(() => toast(`Copied ${addr}`), () => toast(addr)); };
         view.onclick = e => { e.stopPropagation(); invoke("open_viewer", { port }); };
         stop.onclick = async e => { e.stopPropagation(); await invoke("close_forward", { host: m.host, remotePort: d.port }); show(null); };
-        r.append(el("span", "sub", "VNC at"), el("strong", "cmd", addr), copy, view, stop);
+        r.append(el("span", "sub", "VNC at"), el("strong", "cmd", addr), copy, view, stop, close);
       };
       show(open[`${m.host}:${d.port}`]);
       box.append(r);
