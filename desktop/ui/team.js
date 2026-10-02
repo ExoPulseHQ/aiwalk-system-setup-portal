@@ -169,6 +169,11 @@ function tree(t, grants, extra) {
   return li;
 }
 
+// Signing in to GitHub here also signs this computer in for the lab machines, so a person signs in once.
+// Cloudflare Access cannot take gh's token, so its own GitHub sign-in runs right after, in the browser that just
+// signed in: GitHub asks to authorise the first time only.
+let labSignInNext = false;
+
 // Lab machines, one row each, and whether this computer can connect to it right now. Members only ever
 // connect through Cloudflare (Access for the GitHub sign-in, a tunnel for SSH), never to a machine's address.
 // Which project lives where is the vault plugin's job; here only the machine matters.
@@ -221,7 +226,8 @@ function machinesSection(machines) {
     if (needSignIn) {
       const b = el("button", "small", "Sign in with GitHub");
       b.onclick = async () => { try { toast(await working(b, "Waiting for the browser", () => invoke("access_login", { tunnel: way(needSignIn).tunnel }))); } catch (e) { toast(e); } check(); };
-      help.append(item("Sign in once to reach the lab machines", "A browser opens; sign in with your GitHub account. No Cloudflare account is needed: Cloudflare only checks that you are on the team.", null, b));
+      help.append(item("Finish signing in for the lab machines", "A browser opens with your GitHub account. No Cloudflare account is needed: it only checks that you are on the team.", null, b));
+      if (labSignInNext) { labSignInNext = false; b.click(); }
     }
     const ssh = await invoke("ssh_status", { machines });
     if (ssh === "missing") {
@@ -406,7 +412,7 @@ function signInView(error, adding) {
     });
     const ok = await working(btn, "Waiting for GitHub", () => invoke("sign_in"));
     stop();
-    ok ? loadTeam() : (code.textContent = "Sign-in was not finished. Try again.");
+    if (ok) { labSignInNext = true; loadTeam(); } else code.textContent = "Sign-in was not finished. Try again.";
   };
   box.append(btn, code);
   if (adding) { const back = el("button", "ghost", "Cancel"); back.style.marginLeft = "8px"; back.onclick = () => loadTeam(); btn.after(back); }
