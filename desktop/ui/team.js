@@ -389,7 +389,7 @@ function missingTools(t) {
 }
 
 // Owners: the organisation's people, invitations and owner role.
-async function peopleSection(org, user, teams) {
+async function peopleSection(org, user, teams, tree) {
   const sec = el("div", "section");
   const head = el("header");
   head.append(el("h2", null, "People"), el("span", "grow"));
@@ -433,24 +433,65 @@ async function peopleSection(org, user, teams) {
   });
   sec.append(list);
 
-  // invite: a GitHub username, a role, and the teams they start in
+  // invite: a GitHub username, a role, and the layers they start in; everyone also gets the shared team
   const form = el("div", "invite");
-  const who = el("input"); who.placeholder = "GitHub username";
-  const role = el("select"); role.append(new Option("Member", "member"), new Option("Owner", "owner"));
-  const picks = el("div", "picks");
-  teams.forEach(t => {
-    const l = el("label", "pick"); const c = el("input"); c.type = "checkbox"; c.value = t.slug;
-    c.checked = t.slug === "members";   // everyone on the team reads the book
-    l.append(c, ` ${t.slug} `, el("span", "sub", `(${t.repos.map(([r]) => r).join(", ")})`)); picks.append(l);
+  form.append(el("h3", null, "Invite someone"));
+  const who = el("input", "who"); who.placeholder = "Their GitHub username"; who.autocomplete = "off"; who.spellcheck = false;
+  form.append(who);
+
+  let asOwner = false;
+  const seg = el("div", "segmented"); seg.setAttribute("role", "radiogroup"); seg.setAttribute("aria-label", "Role");
+  const roleBtn = (label, owner) => {
+    const b = el("button", null, label); b.type = "button"; b.setAttribute("role", "radio");
+    b.onclick = () => { asOwner = owner; paint(); };
+    return b;
+  };
+  const memberBtn = roleBtn("Member", false), ownerBtn = roleBtn("Owner", true);
+  seg.append(memberBtn, ownerBtn);
+  const roleRow = el("div", "field");
+  roleRow.append(el("span", "label", "Role"), seg);
+  form.append(roleRow);
+
+  // the layer a team opens, by the name people know (L1 Sensing), from the access tree
+  const names = {};
+  const walk = n => { if (n.repo) names[n.repo] = n.title; n.children.forEach(walk); };
+  if (tree) walk(tree);
+  const shared = teams.find(t => t.slug === "members");
+  const tiles = el("div", "tiles"), chosenTeams = new Set();
+  teams.filter(t => t !== shared).forEach(t => {
+    const repos = t.repos.map(([r]) => r);
+    const title = repos.map(r => names[r]).find(Boolean) || t.slug;
+    const tile = el("button", "tile"); tile.type = "button"; tile.setAttribute("aria-pressed", "false");
+    tile.append(el("span", "tile-title", title), el("span", "tile-sub", repos.join(", ")));
+    tile.onclick = () => { chosenTeams.has(t.slug) ? chosenTeams.delete(t.slug) : chosenTeams.add(t.slug); paint(); };
+    tile.dataset.slug = t.slug;
+    tiles.append(tile);
   });
-  const send = el("button", "small", "Send invitation");
+  const startsRow = el("div", "field top");
+  const ownerNote = el("p", "sub");
+  startsRow.append(el("span", "label", "Starts in"), tiles);
+  form.append(startsRow, ownerNote);
+
+  const send = el("button", null, "Send invitation");
+  const foot = el("div", "foot"); foot.append(send);
+  form.append(foot);
+
+  function paint() {
+    memberBtn.setAttribute("aria-checked", String(!asOwner)); ownerBtn.setAttribute("aria-checked", String(asOwner));
+    tiles.querySelectorAll(".tile").forEach(tile => {
+      tile.disabled = asOwner;
+      tile.setAttribute("aria-pressed", String(!asOwner && chosenTeams.has(tile.dataset.slug)));
+    });
+    ownerNote.textContent = asOwner ? "Owners open every repo, so they need no layers."
+      : shared ? "Everyone also gets the shared notes and papers, and can ask the owners for more." : "";
+  }
+  paint();
+
   send.onclick = async () => {
     if (!who.value.trim()) return who.focus();
-    await act(() => invoke("invite", { org, login: who.value, owner: role.value === "owner",
-      teams: [...picks.querySelectorAll("input:checked")].map(c => c.value) }), null, send, "Inviting")();
+    const picked = asOwner ? [] : [...chosenTeams, ...(shared ? [shared.slug] : [])];
+    await act(() => invoke("invite", { org, login: who.value, owner: asOwner, teams: picked }), null, send, "Inviting")();
   };
-  const line = el("div", "row"); line.append(who, role, send);
-  form.append(el("h3", null, "Invite someone"), line, el("p", "sub", "Teams they start in:"), picks);
   sec.append(form, msg);
   return sec;
 }
@@ -474,7 +515,7 @@ async function loadTeam(viewAs) {
                           : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
     badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
-  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams)); }
+  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams, org.tree)); }
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   if (machines.length) parts.push(machinesSection(machines));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs)));
