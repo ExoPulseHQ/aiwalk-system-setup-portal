@@ -237,7 +237,7 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
 #[tauri::command(async)]
 fn sign_out(login: String) -> Result<(), String> {
     gh(&["auth", "logout", "--hostname", "github.com", "--user", &login])?;
-    machines::forget_access();   // the lab machines must not keep letting the signed-out person in
+    machines::forget_access();   // the machines must not keep letting the signed-out person in
     Ok(())
 }
 

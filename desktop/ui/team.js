@@ -41,7 +41,7 @@ function badge(s) {
     pick.append(new Option("Switch GitHub account", ""), ...others.map(x => new Option(x.login, x.login)));
     pick.onchange = async () => {
       pick.disabled = true;
-      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}; step 2 signs this account in to the lab machines`); labSignInNext = true; }
+      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}; step 2 signs this account in to the machines`); labSignInNext = true; }
       catch (e) { toast(`Could not switch: ${e}`); }
       loadTeam();
     };
@@ -55,7 +55,7 @@ function badge(s) {
   return b;
 }
 
-// Sign-in is one thing in two steps: 1 GitHub (gh, for repos), 2 the lab machines (Cloudflare Access, its own
+// Sign-in is one thing in two steps: 1 GitHub (gh, for repos), 2 the machines (Cloudflare Access, its own
 // GitHub sign-in in the browser, because Access cannot take gh's token). Both must be the same person, so step 2 lives
 // here next to step 1, shows whom Cloudflare knows, and is redone whenever the GitHub account changes.
 function labLine(s) {
@@ -63,7 +63,7 @@ function labLine(s) {
   const line = el("div", "claude-line");
   if (!tunnel) return line;
   const state = el("span", "method m-off"), msg = el("span", "sub");
-  line.append(el("span", "label", "Lab machines"), state, msg);
+  line.append(el("span", "label", "Machines"), state, msg);
   const step2 = async b => {
     msg.textContent = "";
     try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnel })); }
@@ -219,14 +219,14 @@ function tree(t, grants, extra) {
 // Set after step 1 (GitHub) succeeds or the account switches, so the badge runs step 2 at once.
 let labSignInNext = false;
 
-// Lab machines, one row each, and whether this computer can connect to it right now. Members only ever
+// Machines, one row each, and whether this computer can connect to it right now. Members only ever
 // connect through Cloudflare (Access for the GitHub sign-in, a tunnel for SSH), never to a machine's address.
 // Which project lives where is the vault plugin's job; here only the machine matters.
 function machinesSection(machines) {
   const sec = el("div", "section");
   const head = el("header");
   const again = el("button", "small ghost", "Check again");
-  head.append(el("h2", null, "Lab machines"), el("span", "grow"), again);
+  head.append(el("h2", null, "Machines"), el("span", "grow"), again);
   sec.append(head, el("p", "sub", "Whether this computer can reach each machine right now, through Cloudflare."));
   const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
   const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
@@ -276,7 +276,7 @@ function machinesSection(machines) {
     if (ssh === "missing") {
       const b = el("button", "small", "Set up connections");
       b.onclick = async () => {
-        if (await ask("Set up connections on this computer?", "The app adds the lab machines to your SSH settings (~/.ssh/config) as one marked block, so ssh <account>@host-20 goes through Cloudflare. The rest of the file stays as it is, and the old file is kept as config.bak.",
+        if (await ask("Set up connections on this computer?", "The app adds the machines to your SSH settings (~/.ssh/config) as one marked block, so ssh <account>@host-20 goes through Cloudflare. The rest of the file stays as it is, and the old file is kept as config.bak.",
           [["cancel", "Cancel"], ["ok", "Set up connections", true]]) !== "ok") return;
         try { toast(await working(b, "Setting up", () => invoke("ssh_setup", { machines }))); } catch (e) { toast(e); }
         showHelp(state);
@@ -510,7 +510,7 @@ function signInView(error, adding) {
   const box = el("div", "empty");
   box.append(el("h1", null, adding ? "Add another GitHub account" : "Sign in with GitHub"),
     el("p", "lede", adding ? "The page that opens approves whichever account your browser is signed in to. Sign in to the other account there first, or use a private window. The new account becomes the active one; switch back from the badge."
-                           : "Your team access follows your GitHub account. Signing in has two steps in the browser: GitHub for the repos, then the same account for the lab machines. The app keeps no token of its own."));
+                           : "Your team access follows your GitHub account. Signing in has two steps in the browser: GitHub for the repos, then the same account for the machines. The app keeps no token of its own."));
   const code = el("p", "sub"), btn = el("button", null, "Sign in with GitHub");
   btn.onclick = async () => {
     code.textContent = "";

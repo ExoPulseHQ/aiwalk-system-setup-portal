@@ -1,4 +1,4 @@
-//! Lab machines through Cloudflare: members never reach a machine's address directly
+//! Machines through Cloudflare: members never reach a machine's address directly
 //! (Machine_Login_Identity_Summary §二). Access lets in members of the GitHub org; the tunnel carries SSH.
 
 use crate::{home, on_path, sh};
@@ -61,7 +61,7 @@ pub fn access_login(tunnel: String) -> Result<String, String> {
     if code != 0 { return Err(out.lines().last().unwrap_or("Sign-in was not finished").into()) }
     // the status hostname sits in the same Access app; the browser already holds the session, so this one passes at once
     let _ = sh(&cf, &["access", "login", &format!("https://{}", tunnel.replacen("ssh-", "status-", 1))], 60);
-    Ok("Signed in: the lab machines know you are on the team".into())
+    Ok("Signed in: the machines know you are on the team".into())
 }
 
 fn ssh_config() -> PathBuf { home().join(".ssh/config") }
@@ -90,7 +90,7 @@ pub fn ssh_setup(machines: Vec<Machine>) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------- desktops through the tunnel
-// A VNC desktop on a lab machine listens on that machine's 127.0.0.1 only. The app forwards a local port to it over
+// A VNC desktop on a machine listens on that machine's 127.0.0.1 only. The app forwards a local port to it over
 // SSH through Cloudflare, so the person's own VNC viewer connects to 127.0.0.1:<local port> and nothing else is open.
 
 /// "host:display" -> (ssh process, local port). Closed when the person stops it or the app quits.
@@ -199,7 +199,7 @@ pub fn forget_access() {
     }
 }
 
-/// Who this computer is signed in to the lab machines as: the email and expiry inside its Cloudflare Access token
+/// Who this computer is signed in to the machines as: the email and expiry inside its Cloudflare Access token
 /// for `tunnel`. None when there is no sign-in. Shown next to the GitHub account so the two can be seen to match.
 #[tauri::command(async)]
 pub fn lab_identity(tunnel: String) -> Option<serde_json::Value> {

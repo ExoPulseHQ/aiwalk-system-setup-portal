@@ -273,7 +273,7 @@ pub fn edit_machines(text: &str, edit: &dyn Fn(&Value, &str) -> Option<Option<St
 /// `cloudflared` is the program's path. Machines without a tunnel are left out.
 pub fn ssh_block(machines: &[Machine], cloudflared: &str) -> String {
     let mut seen = BTreeSet::new();
-    let mut out = String::from("# >>> aIwalk System Setup: lab machines through Cloudflare (this block is rewritten by the app)\n");
+    let mut out = String::from("# >>> aIwalk System Setup: machines through Cloudflare (this block is rewritten by the app)\n");
     for m in machines {
         let Some(t) = &m.tunnel else { continue };
         if !seen.insert(m.host.clone()) { continue }
