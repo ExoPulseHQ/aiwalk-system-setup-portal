@@ -235,11 +235,19 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
 
 /// Signs `login` out of gh on this computer; any other account stays signed in and gh makes one of them active.
 #[tauri::command(async)]
-fn sign_out(login: String) -> Result<(), String> { gh(&["auth", "logout", "--hostname", "github.com", "--user", &login]).map(|_| ()) }
+fn sign_out(login: String) -> Result<(), String> {
+    gh(&["auth", "logout", "--hostname", "github.com", "--user", &login])?;
+    machines::forget_access();   // the lab machines must not keep letting the signed-out person in
+    Ok(())
+}
 
 /// Makes another signed-in account the one git and this app use.
 #[tauri::command(async)]
-fn switch_account(login: String) -> Result<(), String> { gh(&["auth", "switch", "--hostname", "github.com", "--user", &login]).map(|_| ()) }
+fn switch_account(login: String) -> Result<(), String> {
+    gh(&["auth", "switch", "--hostname", "github.com", "--user", &login])?;
+    machines::forget_access();   // the next lab connection signs in as this account, not the previous one
+    Ok(())
+}
 
 /// Adds `login` to or removes them from an org team. GitHub itself refuses anyone who is not an owner.
 #[tauri::command(async)]

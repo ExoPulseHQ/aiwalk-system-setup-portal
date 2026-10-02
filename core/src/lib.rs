@@ -217,6 +217,58 @@ pub fn machines(rules_json: &str) -> Vec<Machine> {
     }).collect()
 }
 
+/// One machine as a line of vault_rules.json `machines.hosts`, the way the file writes them.
+pub fn machine_line(host: &str, repos: &BTreeMap<String, String>, note: &str, tunnel: &str) -> String {
+    let mut v = serde_json::json!({ "host": host, "repos": repos, "ready": false });
+    if !note.is_empty() { v["note"] = note.into() }
+    if !tunnel.is_empty() { v["tunnel"] = tunnel.into() }
+    // serde_json's compact form, spaced like the hand-written lines: { "host": "dragon", ... }
+    let compact = v.to_string();
+    let mut out = String::new();
+    let mut in_str = false;
+    let mut prev = ' ';
+    for c in compact.chars() {
+        if c == '"' && prev != '\\' { in_str = !in_str }
+        match c {
+            '{' if !in_str => out.push_str("{ "),
+            '}' if !in_str => out.push_str(" }"),
+            ':' if !in_str => out.push_str(": "),
+            ',' if !in_str => out.push_str(", "),
+            _ => out.push(c),
+        }
+        prev = c;
+    }
+    out
+}
+
+/// vault_rules.json with its `machines.hosts` changed line by line, everything else kept byte for byte.
+/// `edit` gets the parsed host and its line, and returns the new line, or None to drop it; `add` is appended.
+/// Err when the result would not parse, or a host to change does not exist.
+pub fn edit_machines(text: &str, edit: &dyn Fn(&Value, &str) -> Option<Option<String>>, add: Option<&str>) -> Result<String, String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let start = lines.iter().position(|l| l.trim_start().starts_with("\"hosts\": [")).ok_or("no machines.hosts in vault_rules.json")?;
+    let end = (start..lines.len()).find(|&i| lines[i].trim_start().starts_with(']')).ok_or("machines.hosts is not closed")?;
+    let mut hosts: Vec<String> = vec![];
+    let mut touched = false;
+    for l in &lines[start + 1..end] {
+        let body = l.trim().trim_end_matches(',');
+        let parsed: Value = serde_json::from_str(body).map_err(|e| format!("cannot read a machine line: {e}"))?;
+        match edit(&parsed, body) {
+            Some(Some(new)) => { hosts.push(new); touched = true }
+            Some(None) => touched = true,
+            None => hosts.push(body.to_string()),
+        }
+    }
+    if let Some(a) = add { hosts.push(a.to_string()); touched = true }
+    if !touched { return Err("that machine is not in vault_rules.json".into()) }
+    let indent: String = lines.get(start + 1).map(|l| l.chars().take_while(|c| c.is_whitespace()).collect()).unwrap_or("      ".into());
+    let body: String = hosts.iter().enumerate()
+        .map(|(i, h)| format!("{indent}{h}{}\n", if i + 1 < hosts.len() { "," } else { "" })).collect();
+    let out = format!("{}{}{}", lines[..=start].concat(), body, lines[end..].concat());
+    serde_json::from_str::<Value>(&out).map_err(|e| format!("the edit would break vault_rules.json: {e}"))?;
+    Ok(out)
+}
+
 /// The block the app keeps in ~/.ssh/config: one alias per tunnelled machine, reached through cloudflared.
 /// `cloudflared` is the program's path. Machines without a tunnel are left out.
 pub fn ssh_block(machines: &[Machine], cloudflared: &str) -> String {
@@ -456,6 +508,22 @@ mod tests {
         assert!(once.starts_with(mine) && once.ends_with(&block));
         let again = with_ssh_block(&once, &ssh_block(&[], "/x"));
         assert!(again.starts_with(mine) && !again.contains("host-20") && again.matches(">>> aIwalk").count() == 1);
+    }
+
+    #[test]
+    fn machines_are_added_renamed_and_removed_line_by_line() {
+        let text = "{\n  \"version\": 1,\n  \"machines\": {\n    \"hosts\": [\n      { \"host\": \"dragon\", \"repos\": { \"NTKCAP\": \"ntkcap\" }, \"ready\": false, \"tunnel\": \"ssh-dragon.x.com\" },\n      { \"host\": \"horse\", \"repos\": { \"depRL\": \"deprl\" }, \"ready\": false }\n    ]\n  },\n  \"skills\": []\n}\n";
+        let repos = BTreeMap::from([("ExoPulse".to_string(), "exopulse".to_string())]);
+        let line = machine_line("dog", &repos, "Spare box", "ssh-dog.x.com");
+        assert_eq!(line, r#"{ "host": "dog", "note": "Spare box", "ready": false, "repos": { "ExoPulse": "exopulse" }, "tunnel": "ssh-dog.x.com" }"#);
+        let added = edit_machines(text, &|_, _| None, Some(&line)).unwrap();
+        assert!(added.contains("\"ready\": false },\n      { \"host\": \"dog\"") && added.ends_with("\"skills\": []\n}\n"));
+        assert_eq!(machines(&added).iter().map(|m| m.host.as_str()).collect::<Vec<_>>(), ["dragon", "horse", "dog"]);
+        let renamed = edit_machines(&added, &|v, l| (v["host"] == "dog").then(|| Some(l.replace("\"dog\"", "\"pig\"").replace("ssh-dog", "ssh-pig"))), None).unwrap();
+        assert!(machines(&renamed).iter().any(|m| m.host == "pig" && m.tunnel.as_deref() == Some("ssh-pig.x.com")));
+        let removed = edit_machines(&renamed, &|v, _| (v["host"] == "pig").then_some(None), None).unwrap();
+        assert_eq!(removed, text, "removing what was added gives the file back unchanged");
+        assert!(edit_machines(text, &|v, _| (v["host"] == "cat").then_some(None), None).is_err());
     }
 
     #[test]

@@ -184,3 +184,36 @@ pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Res
         Err(format!("{user} on this machine did not accept this computer's key"))
     } else { Err(if last.is_empty() { "The machine did not answer".into() } else { last }) }
 }
+
+/// Forgets this computer's Cloudflare Access sign-in for the team (every lab hostname and the team session), and
+/// closes desktop forwards. Called when the GitHub account changes, so the next connection signs in as the new one
+/// instead of riding the old person's sign-in for up to a day. Other Cloudflare files are left alone.
+pub fn forget_access() {
+    close_all();
+    let dir = home().join(".cloudflared");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let ours = name.contains(".aiwalkcorp.com-") || name.starts_with("aiwalkcorp.cloudflareaccess.com-org-token");
+        if ours && name.contains("token") { let _ = std::fs::remove_file(e.path()); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn forgetting_access_removes_only_this_teams_sign_ins() {
+        let home = std::env::temp_dir().join(format!("aiwalk-forget-{}", std::process::id()));
+        let dir = home.join(".cloudflared");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ours = ["ssh-dragon.aiwalkcorp.com-cf70-token", "status-dragon.aiwalkcorp.com-cf70-token",
+                    "aiwalkcorp.cloudflareaccess.com-org-token"];
+        let keep = ["aiwalkcorp.cloudflareaccess.com-jwks", "other.example.com-ab12-token", "cert.pem"];
+        for f in ours.iter().chain(&keep) { std::fs::write(dir.join(f), "x").unwrap(); }
+        std::env::set_var("HOME", &home);
+        super::forget_access();
+        for f in ours { assert!(!dir.join(f).exists(), "{f} should be gone") }
+        for f in keep { assert!(dir.join(f).exists(), "{f} should stay") }
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+}

@@ -41,7 +41,8 @@ function badge(s) {
     pick.append(new Option("Switch GitHub account", ""), ...others.map(x => new Option(x.login, x.login)));
     pick.onchange = async () => {
       pick.disabled = true;
-      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}`); } catch (e) { toast(`Could not switch: ${e}`); }
+      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}; the lab machines will ask this account to sign in`); labSignInNext = true; }
+      catch (e) { toast(`Could not switch: ${e}`); }
       loadTeam();
     };
     actions.append(pick);
