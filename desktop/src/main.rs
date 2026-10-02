@@ -321,14 +321,14 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::access_login, machines::ssh_status, machines::ssh_setup,
+    tauri::generate_handler![platform, tools, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::access_login, machines::ssh_status, machines::ssh_setup,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::access_login, machines::ssh_status, machines::ssh_setup,
+    tauri::generate_handler![platform, tools, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::access_login, machines::ssh_status, machines::ssh_setup,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
@@ -352,6 +352,21 @@ fn main() {
         println!("{:?}", machines::reachable(std::env::args().skip(2).map(|h| { let t = h.contains('.').then(|| h.clone()); (h, t) }).collect()));
         return;
     }
+    // `--forward <host> <tunnel> <user> <port>` opens one desktop forward, prints the VNC greeting it gets, closes it
+    if std::env::args().nth(1).as_deref() == Some("--forward") {
+        let a: Vec<String> = std::env::args().skip(2).collect();
+        match machines::open_forward(a[0].clone(), a[1].clone(), a[2].clone(), a[3].parse().unwrap_or(5901)) {
+            Ok(p) => {
+                use std::io::Read;
+                let mut buf = [0u8; 12];
+                let got = std::net::TcpStream::connect(("127.0.0.1", p)).and_then(|mut s| s.read_exact(&mut buf).map(|_| buf));
+                println!("local port {p}: {:?}", got.map(|b| String::from_utf8_lossy(&b).trim().to_string()));
+            }
+            Err(e) => println!("error: {e}"),
+        }
+        machines::close_all();
+        return;
+    }
     if std::env::args().any(|a| a == "--claude") {
         println!("{}", serde_json::to_string(&claude::claude_state()).unwrap());
         return;
@@ -363,6 +378,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(handlers())
-        .run(tauri::generate_context!())
-        .expect("error while running aIwalk System Setup");
+        .build(tauri::generate_context!())
+        .expect("error while starting aIwalk System Setup")
+        // desktop forwards are ssh processes; none outlives the app
+        .run(|_, event| if let tauri::RunEvent::Exit = event { machines::close_all() });
 }

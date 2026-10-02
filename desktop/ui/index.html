@@ -80,6 +80,10 @@
   .specs { padding: 4px 4px 14px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
   .spec { display: grid; grid-template-columns: 96px 1fr; gap: 12px; font-size: 13.5px; }
   .spec .k { color: var(--muted); }
+  .desktops { margin-top: 10px; display: grid; gap: 6px; }
+  .desktops > .k { color: var(--muted); font-size: 13.5px; }
+  .desk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13.5px; }
+  .desk > span:first-child { min-width: 170px; font-family: ui-monospace, monospace; font-size: 13px; }
   .warn { color: var(--orange); font-size: 13.5px; margin: 6px 0 0; }
   .claude-line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
   .claude-line .label { color: var(--muted); font-size: 14px; width: 92px; flex: none; }
@@ -231,7 +235,7 @@
 <script>
 const listen = window.__TAURI__.event.listen;
 // Every call to the app's backend shows the top line while it runs, except the quiet background checks.
-const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable", "ssh_status", "claude_state", "machine_status"]);
+const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable", "ssh_status", "claude_state", "machine_status", "forwards"]);
 let pendingCalls = 0;
 function invoke(cmd, args) {
   const loud = !QUIET.has(cmd);

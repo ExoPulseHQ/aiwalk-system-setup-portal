@@ -4,7 +4,11 @@
 use crate::{home, on_path, sh};
 use exo_core::{ssh_block, with_ssh_block, Machine};
 use std::collections::BTreeMap;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 fn cloudflared() -> Option<String> { on_path("cloudflared").map(|p| p.to_string_lossy().into_owned()) }
 
@@ -84,3 +88,77 @@ pub fn ssh_setup(machines: Vec<Machine>) -> Result<String, String> {
     { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)); }
     Ok("Connections set up: ssh <account>@<machine> now goes through Cloudflare".into())
 }
+
+// ---------------------------------------------------------------- desktops through the tunnel
+// A VNC desktop on a lab machine listens on that machine's 127.0.0.1 only. The app forwards a local port to it over
+// SSH through Cloudflare, so the person's own VNC viewer connects to 127.0.0.1:<local port> and nothing else is open.
+
+/// "host:remote port" -> (ssh process, local port). Closed when the person stops it or the app quits.
+static FORWARDS: Mutex<BTreeMap<String, (Child, u16)>> = Mutex::new(BTreeMap::new());
+
+fn free_port(preferred: u16) -> u16 {
+    if TcpListener::bind(("127.0.0.1", preferred)).is_ok() { return preferred }
+    TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).map(|a| a.port()).unwrap_or(preferred)
+}
+
+/// Opens (or reuses) a forward from 127.0.0.1:<local> to <remote_port> on the machine; returns the local port.
+/// Err when SSH could not get in, with its last line, so the page can say why.
+#[tauri::command(async)]
+pub fn open_forward(host: String, tunnel: String, user: String, remote_port: u16) -> Result<u16, String> {
+    let key = format!("{host}:{remote_port}");
+    {
+        let mut f = FORWARDS.lock().unwrap();
+        if let Some((child, port)) = f.get_mut(&key) {
+            if child.try_wait().ok().flatten().is_none() { return Ok(*port) }
+            f.remove(&key);
+        }
+    }
+    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
+    let local = free_port(remote_port.saturating_add(10000));
+    let mut child = Command::new("ssh")
+        .args(["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
+               "-o", "StrictHostKeyChecking=accept-new", "-o", &format!("ProxyCommand=\"{cf}\" access ssh --hostname %h"),
+               "-L", &format!("127.0.0.1:{local}:127.0.0.1:{remote_port}"), &format!("{user}@{tunnel}")])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let addr: SocketAddr = ([127, 0, 0, 1], local).into();
+    let start = Instant::now();
+    // the forward is ready once the local port answers; ssh exiting first means it could not get in
+    while start.elapsed() < Duration::from_secs(25) {
+        if let Ok(Some(_)) = child.try_wait() {
+            let err = child.wait_with_output().map(|o| String::from_utf8_lossy(&o.stderr).into_owned()).unwrap_or_default();
+            let last = err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("SSH ended").to_string();
+            return Err(if last.contains("Permission denied") {
+                format!("{user}@{host} did not accept this computer's key. Until SSH certificates arrive, ask an owner to add your key.")
+            } else { last });
+        }
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
+            FORWARDS.lock().unwrap().insert(key, (child, local));
+            return Ok(local);
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    let _ = child.kill();
+    Err("The machine did not answer in time".into())
+}
+
+#[tauri::command]
+pub fn close_forward(host: String, remote_port: u16) {
+    if let Some((mut child, _)) = FORWARDS.lock().unwrap().remove(&format!("{host}:{remote_port}")) { let _ = child.kill(); }
+}
+
+/// Open forwards as "host:remote port" -> local port, for the page to show after a redraw.
+#[tauri::command]
+pub fn forwards() -> BTreeMap<String, u16> {
+    let mut f = FORWARDS.lock().unwrap();
+    f.retain(|_, (child, _)| child.try_wait().ok().flatten().is_none());
+    f.iter().map(|(k, (_, p))| (k.clone(), *p)).collect()
+}
+
+/// Closes every forward; the app calls it when it quits so no ssh is left running.
+pub fn close_all() {
+    for (_, (mut child, _)) in std::mem::take(&mut *FORWARDS.lock().unwrap()) { let _ = child.kill(); }
+}
+
+/// Hands vnc://127.0.0.1:<port> to whatever VNC viewer this computer has (Screen Sharing on a Mac).
+#[tauri::command]
+pub fn open_viewer(port: u16) { crate::open_url(&format!("vnc://127.0.0.1:{port}")); }

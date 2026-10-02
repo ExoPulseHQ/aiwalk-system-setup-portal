@@ -52,6 +52,23 @@ def gpus(csv):
     return out
 
 
+def desktops(ps_out):
+    """VNC desktops from `ps -eo user=,args=`: [{user, display, port, geometry}] (TigerVNC Xvnc / Xtigervnc)."""
+    out = []
+    for line in ps_out.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or os.path.basename(parts[1]) not in ("Xtigervnc", "Xvnc"):
+            continue
+        disp = next((p for p in parts[2:] if p.startswith(":") and p[1:].isdigit()), None)
+        if disp is None:
+            continue
+        args = parts[2:]
+        opt = lambda k: args[args.index(k) + 1] if k in args and args.index(k) + 1 < len(args) else None
+        port = int(opt("-rfbport") or 5900 + int(disp[1:]))
+        out.append({"user": parts[0], "display": disp, "port": port, "geometry": opt("-geometry") or ""})
+    return sorted(out, key=lambda d: d["port"])
+
+
 def static():
     cpu = next((l.split(":", 1)[1].strip() for l in read("/proc/cpuinfo").splitlines() if l.startswith("model name")), "")
     os_name = next((l.split("=", 1)[1].strip('"') for l in read("/etc/os-release").splitlines() if l.startswith("PRETTY_NAME=")), "")
@@ -81,13 +98,15 @@ def answer():
             smi = ""
         disk = shutil.disk_usage("/")
         users = subprocess.run(["who"], capture_output=True, text=True).stdout.split()
+        ps = subprocess.run(["ps", "-eo", "user=,args="], capture_output=True, text=True).stdout
         ans = {**static(), "time": int(now), "cpu_pct": cpu_pct,
                "load": [round(x, 2) for x in os.getloadavg()],
                "mem_used_gb": round((m.get("MemTotal", 0) - m.get("MemAvailable", 0)) / 1048576, 1),
                "gpus": gpus(smi),
                "disk_gb": round(disk.total / 1e9), "disk_free_gb": round(disk.free / 1e9),
                "uptime_h": round(float(read("/proc/uptime").split()[0] or 0) / 3600, 1),
-               "users": len(set(users[::5])) if users else 0}
+               "users": len(set(users[::5])) if users else 0,
+               "desktops": desktops(ps)}
         _last.update(t=now, answer=ans, cpu=(busy, total))
         return ans
 
@@ -108,6 +127,10 @@ def selftest():
     g = gpus("NVIDIA GeForce RTX 5080, 16303, 7, 0, 41\nTesla, [N/A], 1, 2, 3\n")
     assert g[0] == {"name": "NVIDIA GeForce RTX 5080", "mem_total_mb": 16303.0, "mem_used_mb": 7.0, "util": 0.0, "temp_c": 41.0}
     assert g[1]["mem_total_mb"] is None
+    d = desktops("ntk /usr/bin/Xtigervnc :2 -localhost=0 -desktop x -geometry 1920x1080 -rfbport 5902\n"
+                 "ntk bash -c grep Xtigervnc :9\nroot /usr/bin/Xvnc :7\n")
+    assert d == [{"user": "ntk", "display": ":2", "port": 5902, "geometry": "1920x1080"},
+                 {"user": "root", "display": ":7", "port": 5907, "geometry": ""}], d
     a = answer(); assert {"cpu", "threads", "mem_gb", "cpu_pct", "gpus", "disk_free_gb"} <= set(a) and 0 <= a["cpu_pct"] <= 100
     assert answer() is a, "answers are reused within the cache window"
     print("exo-status: all checks passed")

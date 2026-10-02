@@ -262,7 +262,7 @@ function machinesSection(machines) {
   const status = async () => {
     const tunnels = hosts.filter(m => m.tunnel).map(m => [m.host, m.tunnel]);
     if (!tunnels.length) return;
-    const all = await invoke("machine_status", { tunnels });
+    const [all, open] = await Promise.all([invoke("machine_status", { tunnels }), invoke("forwards")]);
     for (const [host, s] of Object.entries(all)) {
       const g = s.gpus || [];
       const gpu = g.length ? Math.max(...g.map(x => x.util || 0)) : null;
@@ -278,10 +278,44 @@ function machinesSection(machines) {
         ["Disk", `${gb(s.disk_free_gb)} free of ${gb(s.disk_gb)}`], ["System", `${s.os}, up ${Math.round(s.uptime_h / 24)} days, ${s.users} signed in`]];
       specs[host].replaceChildren(...d.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
       if (s.disk_free_gb != null && s.disk_free_gb < 20) specs[host].append(el("p", "warn", `Disk almost full: ${gb(s.disk_free_gb)} left.`));
+      if ((s.desktops || []).length) specs[host].append(desktopList(byHost[host], s.desktops, open));
     }
     // a check that finished before these numbers arrived may still be asking for a sign-in
     if (lastState && [...live].some(h => lastState[h] !== "up")) { live.forEach(h => lastState[h] = "up"); showHelp(lastState); }
   };
+  // Each VNC desktop listens on the machine itself only; opening one forwards a local port to it through
+  // Cloudflare, and the person's own VNC viewer connects to 127.0.0.1:<that port>.
+  function desktopList(m, desktops, open) {
+    const box = el("div", "desktops");
+    box.append(el("div", "k", "Desktops"));
+    desktops.forEach(d => {
+      const r = el("div", "desk"), msg = el("span", "sub");
+      const name = `${d.display}  ${d.geometry || ""}  (${d.user})`;
+      const show = port => {
+        r.replaceChildren(el("span", null, name));
+        if (!port) {
+          const b = el("button", "small ghost", "Open desktop");
+          b.onclick = async e => {
+            e.stopPropagation();
+            try { show(await working(b, "Connecting", () => invoke("open_forward", { host: m.host, tunnel: m.tunnel, user: d.user, remotePort: d.port }))); }
+            catch (err) { msg.textContent = err; r.append(msg); }
+          };
+          r.append(b);
+          return;
+        }
+        const addr = `127.0.0.1:${port}`;
+        const copy = el("button", "small ghost", "Copy"), view = el("button", "small ghost", "Open viewer"), stop = el("button", "small ghost", "Stop");
+        copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(addr).then(() => toast(`Copied ${addr}`), () => toast(addr)); };
+        view.onclick = e => { e.stopPropagation(); invoke("open_viewer", { port }); };
+        stop.onclick = async e => { e.stopPropagation(); await invoke("close_forward", { host: m.host, remotePort: d.port }); show(null); };
+        r.append(el("span", "sub", "VNC at"), el("strong", "cmd", addr), copy, view, stop);
+      };
+      show(open[`${m.host}:${d.port}`]);
+      box.append(r);
+    });
+    return box;
+  }
+
   const timer = setInterval(() => { if (!sec.isConnected) return clearInterval(timer); if (current === "team" && !document.hidden) status(); }, 15000);
   again.onclick = () => { check(); status(); };
   check(); status();
