@@ -200,7 +200,7 @@
 <script>
 const listen = window.__TAURI__.event.listen;
 // Every call to the app's backend shows the top line while it runs, except the quiet background checks.
-const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable"]);
+const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable", "ssh_status"]);
 let pendingCalls = 0;
 function invoke(cmd, args) {
   const loud = !QUIET.has(cmd);

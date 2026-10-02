@@ -180,7 +180,7 @@ pub fn repo_grants(people: &mut BTreeMap<String, Person>, response_json: &str, v
     }
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, serde::Deserialize, PartialEq)]
 pub struct Machine {
     pub host: String,
     pub repo: String,
@@ -194,6 +194,8 @@ pub struct Machine {
     pub via: Option<String>,
     /// Everyone uses their own account there (an outside service), not a shared repo account.
     pub personal: bool,
+    /// The machine's Cloudflare Tunnel hostname, once its tunnel exists; members connect only through it.
+    pub tunnel: Option<String>,
 }
 
 /// Every (host, code repo, account) from vault_rules.json's `machines` section.
@@ -207,11 +209,36 @@ pub fn machines(rules_json: &str) -> Vec<Machine> {
         let sometimes = h["power"] == "sometimes";
         let via = h["via"].as_str().map(String::from);
         let personal = h["personal"].as_bool().unwrap_or(false);
+        let tunnel = h["tunnel"].as_str().filter(|t| !t.is_empty()).map(String::from);
         h["repos"].as_object().into_iter().flatten().map(move |(repo, acct)| Machine {
             host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), ready,
-            note: note.clone(), sometimes, via: via.clone(), personal,
+            note: note.clone(), sometimes, via: via.clone(), personal, tunnel: tunnel.clone(),
         })
     }).collect()
+}
+
+/// The block the app keeps in ~/.ssh/config: one alias per tunnelled machine, reached through cloudflared.
+/// `cloudflared` is the program's path. Machines without a tunnel are left out.
+pub fn ssh_block(machines: &[Machine], cloudflared: &str) -> String {
+    let mut seen = BTreeSet::new();
+    let mut out = String::from("# >>> aIwalk System Setup: lab machines through Cloudflare (this block is rewritten by the app)\n");
+    for m in machines {
+        let Some(t) = &m.tunnel else { continue };
+        if !seen.insert(m.host.clone()) { continue }
+        out += &format!("Host {}\n  HostName {t}\n  ProxyCommand \"{cloudflared}\" access ssh --hostname %h\n", m.host);
+    }
+    out + "# <<< aIwalk System Setup\n"
+}
+
+/// `config` with the app's block replaced by `block` (or added at the end); everything else kept as it was.
+pub fn with_ssh_block(config: &str, block: &str) -> String {
+    let start = config.find("# >>> aIwalk System Setup");
+    let end = config.find("# <<< aIwalk System Setup").and_then(|i| config[i..].find('\n').map(|n| i + n + 1));
+    match (start, end) {
+        (Some(a), Some(b)) if a < b => format!("{}{block}{}", &config[..a], &config[b..]),
+        _ if config.is_empty() || config.ends_with('\n') => format!("{config}{block}"),
+        _ => format!("{config}\n{block}"),
+    }
 }
 
 /// Machine logins come with write access to the code repo; read access does not include one.
@@ -415,6 +442,20 @@ mod tests {
         assert_eq!(ok, ["ntkcap"]);
         assert!(ms.iter().all(|m| can_sign_in(m, None)));
         assert!(machines("{}").is_empty());
+    }
+
+    #[test]
+    fn ssh_block_replaces_only_its_own_lines() {
+        let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "tunnel": "ssh-host-20.example.com"},
+            {"host": "kd240", "repos": {"firmware_layer": "firmware"}}]}}"#;
+        let block = ssh_block(&machines(rules), "/opt/cloudflared");
+        assert_eq!(block.matches("Host ").count(), 1, "one alias per tunnelled machine: {block}");
+        assert!(block.contains("HostName ssh-host-20.example.com") && block.contains("\"/opt/cloudflared\" access ssh --hostname %h"));
+        let mine = "Host nuctz-70\n    HostName 10.0.0.70\n";
+        let once = with_ssh_block(mine, &block);
+        assert!(once.starts_with(mine) && once.ends_with(&block));
+        let again = with_ssh_block(&once, &ssh_block(&[], "/x"));
+        assert!(again.starts_with(mine) && !again.contains("host-20") && again.matches(">>> aIwalk").count() == 1);
     }
 
     #[test]

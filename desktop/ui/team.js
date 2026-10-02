@@ -132,15 +132,17 @@ function tree(t, grants, extra) {
   return li;
 }
 
-// Lab machines, one row each, and whether this computer can connect to it right now.
+// Lab machines, one row each, and whether this computer can connect to it right now. Members only ever
+// connect through Cloudflare (Access for the GitHub sign-in, a tunnel for SSH), never to a machine's address.
 // Which project lives where is the vault plugin's job; here only the machine matters.
 function machinesSection(machines) {
   const sec = el("div", "section");
   const head = el("header");
   const again = el("button", "small ghost", "Check again");
   head.append(el("h2", null, "Lab machines"), el("span", "grow"), again);
-  sec.append(head, el("p", "sub", "Whether this computer can reach each machine right now."));
+  sec.append(head, el("p", "sub", "Whether this computer can reach each machine right now, through Cloudflare."));
   const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
+  const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
   const list = el("div", "list"), pills = {};
   hosts.forEach(m => {
@@ -151,18 +153,47 @@ function machinesSection(machines) {
     if (m.via) right.push(el("span", "tag", `Through ${m.via}`));
     list.append(item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p));
   });
-  sec.append(list);
-  const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], unknown: ["p0", "Not set up here"] };
+  const help = el("div");
+  sec.append(help, list);
+
+  const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], "no-tunnel": ["p0", "Tunnel not set up"],
+                 "sign-in": ["pending", "Sign in needed"], "no-cloudflared": ["p0", "cloudflared missing"] };
+  // a machine reached through another one shares that one's way in
+  const way = m => byHost[m.via] || m;
   const check = async () => {
     Object.values(pills).forEach(p => { p.className = "perm checking"; p.replaceChildren(el("span", "spinner")); });
-    // a machine reached through another one is as reachable as that one
-    const targets = [...new Set(hosts.map(m => m.via || m.host))];
-    const state = await working(again, "Checking", () => invoke("reachable", { hosts: targets }));
+    const targets = [...new Map(hosts.map(m => [way(m).host, way(m).tunnel || null])).entries()];
+    const state = await working(again, "Checking", () => invoke("reachable", { machines: targets }));
     hosts.forEach(m => {
-      const [cls, text] = LOOK[state[m.via || m.host]] || LOOK.unknown;
+      const [cls, text] = LOOK[state[way(m).host]] || LOOK.down;
       pills[m.host].className = "perm " + cls; pills[m.host].textContent = text;
     });
+    await showHelp(state);
   };
+
+  // what this computer still needs: a Cloudflare sign-in, the ssh aliases
+  async function showHelp(state) {
+    help.replaceChildren();
+    const needSignIn = hosts.find(m => state[way(m).host] === "sign-in");
+    if (needSignIn) {
+      const b = el("button", "small", "Sign in to Cloudflare");
+      b.onclick = async () => { try { toast(await working(b, "Waiting for the browser", () => invoke("access_login", { tunnel: way(needSignIn).tunnel }))); } catch (e) { toast(e); } check(); };
+      help.append(item("Sign in to Cloudflare once on this computer", "A browser opens; sign in with GitHub. Cloudflare lets in members of the team only.", null, b));
+    }
+    const ssh = await invoke("ssh_status", { machines });
+    if (ssh === "missing") {
+      const b = el("button", "small", "Set up connections");
+      b.onclick = async () => {
+        if (await ask("Set up connections on this computer?", "The app adds the lab machines to your SSH settings (~/.ssh/config) as one marked block, so ssh <account>@host-20 goes through Cloudflare. The rest of the file stays as it is, and the old file is kept as config.bak.",
+          [["cancel", "Cancel"], ["ok", "Set up connections", true]]) !== "ok") return;
+        try { toast(await working(b, "Setting up", () => invoke("ssh_setup", { machines }))); } catch (e) { toast(e); }
+        showHelp(state);
+      };
+      help.append(item("Connections are not set up on this computer", "Needed once, so ssh knows to go through Cloudflare.", null, b));
+    } else if (ssh === "current") {
+      help.append(el("p", "sub", "Connections are set up on this computer."));
+    }
+  }
   again.onclick = check;
   check();
   return sec;
