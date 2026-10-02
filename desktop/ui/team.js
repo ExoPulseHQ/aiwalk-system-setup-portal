@@ -423,7 +423,8 @@ function teamsList(a, login, person) {
   const sec = el("div");
   sec.append(el("h3", null, `Teams for ${person.name}`), el("p", "sub", "Ticking a team adds them on GitHub right away."));
   const list = el("div", "list"), msg = el("p", "sub");
-  a.teams.forEach(t => {
+  // core is the owners' team and machine-* the machines' extras (set on the Machines page): not layers to tick here
+  a.teams.filter(t => t.slug !== "core" && !t.slug.startsWith("machine-")).forEach(t => {
     const sw = switchBox(t.members.includes(login), async (on, box) => {
       box.disabled = true;
       const spin = el("span", "spinner"); box.before(spin);
@@ -774,7 +775,7 @@ async function loadTeam(viewAs) {
                           : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
     badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
-  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams, org.tree)); }
+  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams.filter(t => t.slug !== "core" && !t.slug.startsWith("machine-")), org.tree)); }
   const orgs = new Set(s.vaults.filter(v => v.access).map(v => v.access.org));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs, orgs)));
   page.replaceChildren(...parts);

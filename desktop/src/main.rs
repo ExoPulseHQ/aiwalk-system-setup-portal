@@ -216,7 +216,12 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
             let owner = org.people.get(&user).is_some_and(|p| p.grants.is_none());
             repo_grants(&mut org.people, &query(repos_query(&v.org, owner)), &user);
             stage(at + 2, steps, "Reading access requests");
-            let teams = if owner { org.teams.into_iter().filter(|t| t.slug != "core").collect() } else { vec![] };
+            // owners see every team; anyone else only the teams they are in, with no one else's name, which is
+            // enough to tell them which machines they may reach
+            let teams = if owner { org.teams } else {
+                org.teams.into_iter().filter(|t| t.members.contains(&user))
+                    .map(|mut t| { t.members.retain(|m| m == &user); t }).collect()
+            };
             let machines = machines(rules.as_deref().unwrap_or_default());
             let people = visible_to(org.people, &user);
             Access {
