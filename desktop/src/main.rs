@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use exo_core::{build_tree, org_access, org_query, vault_repos, visible_to, Node, Person, RULES_PATHS};
+use exo_core::{build_tree, org_access, org_query, vault_repos, visible_to, Node, Person, Team, RULES_PATHS};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -41,6 +41,8 @@ struct Access {
     org: String,
     tree: Node,
     people: BTreeMap<String, Person>,
+    /// Teams an owner can move people in (core excluded); empty for everyone else.
+    teams: Vec<Team>,
 }
 
 #[derive(Serialize)]
@@ -60,11 +62,20 @@ fn team_access() -> State {
     let vaults = VAULTS.iter().map(|&(name, repo, about)| {
         let access = RULES_PATHS.iter().find_map(|p| raw(repo, p).ok()).and_then(|r| vault_repos(&r)).map(|v| {
             let org = org_access(&gh(&["api", "graphql", "-f", &format!("query={}", org_query(&v.org))]).unwrap_or_default());
-            Access { tree: build_tree(&v, &org.repo_teams), people: visible_to(org.people, &user), org: v.org }
+            let owner = org.people.get(&user).is_some_and(|p| p.grants.is_none());
+            let teams = if owner { org.teams.into_iter().filter(|t| t.slug != "core").collect() } else { vec![] };
+            Access { tree: build_tree(&v, &org.repo_teams), people: visible_to(org.people, &user), teams, org: v.org }
         });
         Vault { name, repo, about, access }
     }).collect();
     State { user: Some(user), error: None, vaults }
+}
+
+/// Adds `login` to or removes them from an org team. GitHub itself refuses anyone who is not an owner.
+#[tauri::command(async)]
+fn set_team(org: String, team: String, login: String, member: bool) -> Result<(), String> {
+    let path = format!("orgs/{org}/teams/{team}/memberships/{login}");
+    if member { gh(&["api", "-X", "PUT", &path, "-f", "role=member"]) } else { gh(&["api", "-X", "DELETE", &path]) }.map(|_| ())
 }
 
 fn open_url(url: &str) {
@@ -103,7 +114,7 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![team_access, sign_in])
+        .invoke_handler(tauri::generate_handler![team_access, sign_in, set_team])
         .run(tauri::generate_context!())
         .expect("error while running aIwalk System Setup");
 }

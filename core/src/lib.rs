@@ -102,10 +102,19 @@ pub struct Person {
     pub grants: Option<BTreeMap<String, u8>>,
 }
 
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Team {
+    pub slug: String,
+    /// (repo, permission rank) this team grants.
+    pub repos: Vec<(String, u8)>,
+    pub members: BTreeSet<String>,
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct OrgAccess {
     pub people: BTreeMap<String, Person>,
     pub repo_teams: BTreeMap<String, BTreeSet<String>>,
+    pub teams: Vec<Team>,
 }
 
 /// The GraphQL query whose response `org_access` reads.
@@ -135,13 +144,16 @@ pub fn org_access(response_json: &str) -> OrgAccess {
         for (repo, _) in &repos {
             out.repo_teams.entry(repo.clone()).or_default().insert(slug.to_string());
         }
-        for m in list(&team["members"]["nodes"]) {
-            let Some(grants) = m["login"].as_str().and_then(|l| out.people.get_mut(l)).and_then(|p| p.grants.as_mut()) else { continue };
+        let members: BTreeSet<String> = list(&team["members"]["nodes"]).iter()
+            .filter_map(|m| m["login"].as_str().map(str::to_string)).collect();
+        for login in &members {
+            let Some(grants) = out.people.get_mut(login).and_then(|p| p.grants.as_mut()) else { continue };
             for (repo, rank) in &repos {
                 let g = grants.entry(repo.clone()).or_insert(0);
                 *g = (*g).max(*rank);
             }
         }
+        out.teams.push(Team { slug: slug.to_string(), repos, members });
     }
     out
 }
@@ -198,6 +210,8 @@ mod tests {
         assert_eq!(alice["exo-papers"], 2);
         assert_eq!(alice["exo-l3"], 2);
         assert!(!alice.contains_key("exo-mgmt"));
+        let l3 = a.teams.iter().find(|t| t.slug == "l3-write").unwrap();
+        assert_eq!(l3.members.iter().collect::<Vec<_>>(), ["alice"]);
         assert_eq!(org_access("garbage"), OrgAccess::default());
     }
 
