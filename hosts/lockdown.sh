@@ -64,6 +64,8 @@ ufw default deny incoming >/dev/null
 for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'registered lab machine' >/dev/null; done
 # --force answers ufw's own question; piping "yes" into it ends with SIGPIPE, which pipefail turned into an abort
 for n in $(open_rules | sort -rn); do ufw --force delete "$n" >/dev/null; done
+# a machine whose firewall was never switched on gets the rules above but would enforce none of them
+ufw --force enable >/dev/null
 
 systemctl daemon-reload
 systemctl stop "$VNC_SERVICE" || true
@@ -78,4 +80,4 @@ echo "cloudflared service file: $(stat -c %A /etc/systemd/system/cloudflared.ser
 echo "Desktops: $(sudo -u "$VNC_USER" /home/$VNC_USER/.local/bin/exo-desktop list | paste -sd' ')"
 echo "Sockets:"; ls -l /home/$VNC_USER/.vnc/desk-*.sock 2>/dev/null | awk '{print "  " $1, $NF}'
 ss -ltnH | awk '$4 ~ /:59[0-9][0-9]$/' | grep -q . && echo "  WARNING: something still listens on a 59xx TCP port" || echo "  (no VNC TCP port open)"
-echo "Firewall:"; ufw status numbered | sed '1,4d'
+echo "Firewall: $(ufw status | head -1)"; ufw status numbered | sed '1,4d'

@@ -14,16 +14,21 @@ MAX=8   # ponytail: fixed cap per machine, so desktops cannot eat a training run
 # "vncserver -list" prints a table; newer TigerVNC writes the display as "1", older as ":1"
 running() { vncserver -list 2>/dev/null | awk '$1 ~ /^:?[0-9]+$/ { sub(/^:/, "", $1); print ":" $1 }' | sort -t: -k2 -n; }
 
+# another X server (the machine's own screen, often :0 to :2) owns that display number
+taken() { ss -xl 2>/dev/null | grep -q "@/tmp/.X11-unix/X$1 "; }
+
 case "${1:-}" in
   list) running ;;
   start)
     n=${2:-}
     if [ -z "$n" ]; then
-      for i in $(seq 1 $MAX); do running | grep -qx ":$i" || { n=$i; break; }; done
+      for i in $(seq 1 $MAX); do running | grep -qx ":$i" || taken "$i" || { n=$i; break; }; done
       [ -n "$n" ] || { echo "All $MAX desktops are in use" >&2; exit 1; }
     fi
     [[ "$n" =~ ^[1-9]$ ]] && [ "$n" -le $MAX ] || { echo "Desktop number must be 1 to $MAX" >&2; exit 1; }
     running | grep -qx ":$n" && { echo ":$n"; exit 0; }
+    taken "$n" && { echo "Display :$n belongs to another X server on this machine" >&2; exit 1; }
+    rm -f "$HOME/.vnc/desk-$n.sock"   # left by a desktop that died or failed to start; vncserver refuses to reuse it
     export LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa GALLIUM_DRIVER=llvmpipe
     vncserver ":$n" -geometry 1920x1080 -depth 24 -localhost yes -rfbport -1 \
       -rfbunixpath "$HOME/.vnc/desk-$n.sock" -rfbunixmode 0600 -SecurityTypes None >/dev/null 2>&1
