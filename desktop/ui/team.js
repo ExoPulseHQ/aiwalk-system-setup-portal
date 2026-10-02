@@ -132,28 +132,40 @@ function tree(t, grants, extra) {
   return li;
 }
 
-// Code repos and the machines that carry them; write access to the repo is what opens its machine account.
-function codeTree(a, login, grants, extra) {
-  const reach = new Set(a.reach[login] || []);
-  const root = el("ul", "tree");
-  [...new Set(a.machines.map(m => m.repo))].forEach(repo => {
-    const rank = grants === null ? 4 : (grants[repo] || 0);
-    const li = el("li");
-    li.append(node(repo, "", rank, repo, extra, true));
-    const hosts = el("ul");
-    a.machines.forEach((m, i) => {
-      if (m.repo !== repo) return;
-      const ok = reach.has(i);
-      const n = el("div", "node");
-      const where = el("span", "where" + (ok ? " cmd" : ""), ok ? `ssh ${m.account}@${m.host}` : `account ${m.account}`);
-      n.append(el("span", "title", m.host), where,
-        el("span", "perm " + (!ok ? "p0" : m.ready ? "p1" : "pending"), !ok ? "No login" : m.ready ? "Ready" : "Not set up"));
-      const h = el("li"); h.append(n); hosts.append(h);
-    });
-    li.append(hosts);
-    root.append(li);
+// Lab machines, one row each, and whether this computer can connect to it right now.
+// Which project lives where is the vault plugin's job; here only the machine matters.
+function machinesSection(machines) {
+  const sec = el("div", "section");
+  const head = el("header");
+  const again = el("button", "small ghost", "Check again");
+  head.append(el("h2", null, "Lab machines"), el("span", "grow"), again);
+  sec.append(head, el("p", "sub", "Whether this computer can reach each machine right now."));
+  const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
+  const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
+  const list = el("div", "list"), pills = {};
+  hosts.forEach(m => {
+    const p = el("span", "perm checking"); p.append(el("span", "spinner"));
+    pills[m.host] = p;
+    const right = [];
+    if (m.sometimes) right.push(el("span", "tag", "Often off"));
+    if (m.via) right.push(el("span", "tag", `Through ${m.via}`));
+    list.append(item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p));
   });
-  return root;
+  sec.append(list);
+  const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], unknown: ["p0", "Not set up here"] };
+  const check = async () => {
+    Object.values(pills).forEach(p => { p.className = "perm checking"; p.replaceChildren(el("span", "spinner")); });
+    // a machine reached through another one is as reachable as that one
+    const targets = [...new Set(hosts.map(m => m.via || m.host))];
+    const state = await working(again, "Checking", () => invoke("reachable", { hosts: targets }));
+    hosts.forEach(m => {
+      const [cls, text] = LOOK[state[m.via || m.host]] || LOOK.unknown;
+      pills[m.host].className = "perm " + cls; pills[m.host].textContent = text;
+    });
+  };
+  again.onclick = check;
+  check();
+  return sec;
 }
 
 // Owners: open requests from everyone, approve (grant and close) or decline (close).
@@ -221,15 +233,12 @@ function vaultSection(v, user, viewAs) {
   }
   const owner = (a.people[user] || {}).grants === null;
   editAccess = owner ? repo => accessDialog(a, repo) : null;
-  const docs = el("ul", "tree"), code = el("div"), teams = el("div");
+  const docs = el("ul", "tree"), teams = el("div");
   const show = login => {
     const person = a.people[login] || { name: login, grants: {} };
     // only a member looking at their own view can ask for more
     const extra = (repo, rank) => !owner && login === user && rank < 2 ? requestControl(a, repo, rank) : null;
     docs.replaceChildren(tree(a.tree, person.grants, extra));
-    code.replaceChildren(el("h3", null, "Code and machines"),
-      el("p", "sub", "Write access to a code repo lets you sign in to its account on every machine that carries it. Read access does not include a login."),
-      codeTree(a, login, person.grants, extra));
     teams.replaceChildren(owner && person.grants !== null && a.teams.length ? teamsList(a, login, person) : "");
   };
   if (owner) {   // owners may look through any member's eyes
@@ -247,7 +256,7 @@ function vaultSection(v, user, viewAs) {
   const showEditable = login => { editAccess = owner ? repo => accessDialog(a, repo) : null; render(login); editAccess = null; };
   if (owner) head.querySelector("select").onchange = e => showEditable(e.target.value);
   showEditable(viewAs in a.people ? viewAs : user);
-  sec.append(el("h3", null, "Documents"), docs, code, teams);
+  sec.append(el("h3", null, "Documents"), docs, teams);
   if (owner) sec.insertBefore(el("p", "sub", "Click a permission to choose who can open that repo."), docs);
   return sec;
 }
@@ -466,6 +475,8 @@ async function loadTeam(viewAs) {
     badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
   if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams)); }
+  const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
+  if (machines.length) parts.push(machinesSection(machines));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs)));
   page.replaceChildren(...parts);
 }

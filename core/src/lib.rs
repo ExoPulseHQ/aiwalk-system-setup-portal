@@ -186,6 +186,14 @@ pub struct Machine {
     pub repo: String,
     pub account: String,
     pub ready: bool,
+    /// What the machine is, for people who do not know it by alias.
+    pub note: String,
+    /// A board that is often switched off.
+    pub sometimes: bool,
+    /// Reached only through this host.
+    pub via: Option<String>,
+    /// Everyone uses their own account there (an outside service), not a shared repo account.
+    pub personal: bool,
 }
 
 /// Every (host, code repo, account) from vault_rules.json's `machines` section.
@@ -195,8 +203,13 @@ pub fn machines(rules_json: &str) -> Vec<Machine> {
     hosts.iter().flat_map(|h| {
         let host = h["host"].as_str().unwrap_or_default().to_string();
         let ready = h["ready"].as_bool().unwrap_or(false);
+        let note = h["note"].as_str().unwrap_or_default().to_string();
+        let sometimes = h["power"] == "sometimes";
+        let via = h["via"].as_str().map(String::from);
+        let personal = h["personal"].as_bool().unwrap_or(false);
         h["repos"].as_object().into_iter().flatten().map(move |(repo, acct)| Machine {
             host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), ready,
+            note: note.clone(), sometimes, via: via.clone(), personal,
         })
     }).collect()
 }
@@ -392,11 +405,13 @@ mod tests {
 
     #[test]
     fn machines_need_write_on_the_code_repo() {
-        let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "ready": true}]}}"#;
+        let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "ready": true},
+            {"host": "hpc", "repos": {"depRL": ""}, "via": "host-20", "personal": true, "power": "sometimes", "note": "n"}]}}"#;
         let ms = machines(rules);
-        assert_eq!(ms.len(), 2);
+        assert_eq!(ms.len(), 3);
+        assert!(ms[2].personal && ms[2].sometimes && ms[2].via.as_deref() == Some("host-20") && ms[2].note == "n");
         let g = BTreeMap::from([("NTKCAP".to_string(), 2u8), ("ExoPulse".to_string(), 1)]);
-        let ok: Vec<_> = ms.iter().filter(|m| can_sign_in(m, Some(&g))).map(|m| m.account.as_str()).collect();
+        let ok: Vec<_> = ms[..2].iter().filter(|m| can_sign_in(m, Some(&g))).map(|m| m.account.as_str()).collect();
         assert_eq!(ok, ["ntkcap"]);
         assert!(ms.iter().all(|m| can_sign_in(m, None)));
         assert!(machines("{}").is_empty());

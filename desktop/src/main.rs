@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exo_core::{
-    build_tree, can_sign_in, machines, parse_gh_status, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
+    build_tree, machines, parse_gh_status, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
     vault_repos, visible_to, Machine, Node, Person, Team, RULES_PATHS,
 };
 use serde::Serialize;
@@ -145,10 +145,8 @@ struct Access {
     people: BTreeMap<String, Person>,
     /// Teams an owner can move people in (core excluded); empty for everyone else.
     teams: Vec<Team>,
-    /// Every machine and the code repo it carries (aliases only); the page marks which ones the person can reach.
+    /// Every machine and the code repo it carries (aliases only).
     machines: Vec<Machine>,
-    /// For each visible person, the indexes into `machines` they can sign in to.
-    reach: BTreeMap<String, Vec<usize>>,
     /// Open requests: an owner's are everyone's, anyone else's are their own.
     requests: Vec<Request>,
 }
@@ -218,11 +216,8 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
             let teams = if owner { org.teams.into_iter().filter(|t| t.slug != "core").collect() } else { vec![] };
             let machines = machines(rules.as_deref().unwrap_or_default());
             let people = visible_to(org.people, &user);
-            let reach = people.iter().map(|(login, p)| (login.clone(),
-                machines.iter().enumerate().filter(|(_, m)| can_sign_in(m, p.grants.as_ref())).map(|(i, _)| i).collect()))
-                .collect();
             Access {
-                tree: build_tree(&v, &org.repo_teams), people, teams, machines, reach,
+                tree: build_tree(&v, &org.repo_teams), people, teams, machines,
                 requests: open_requests(&v.org, !owner), org: v.org,
             }
         });
@@ -233,6 +228,27 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
         Vault { name, repo, about, access, permission }
     }).collect();
     State { user: Some(user), name, accounts, error: None, vaults }
+}
+
+/// Whether this computer can open an SSH connection to each machine alias right now: "up", "down", or "unknown"
+/// when this computer has no address for the alias. All checked at once, 2 seconds each.
+#[tauri::command(async)]
+fn reachable(hosts: Vec<String>) -> BTreeMap<String, &'static str> {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let check = |alias: String| {
+        // ssh -G applies ~/.ssh/config, so an alias the portal (or the person) set up resolves to its real address
+        let conf = sh("ssh", &["-G", &alias], 5).1;
+        let field = |k: &str| conf.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).map(String::from);
+        let (host, port) = (field("hostname ").unwrap_or(alias.clone()), field("port ").unwrap_or("22".into()));
+        let state = match format!("{host}:{port}").to_socket_addrs().ok().and_then(|mut a| a.next()) {
+            None => "unknown",
+            Some(addr) if TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() => "up",
+            Some(_) => "down",
+        };
+        (alias, state)
+    };
+    let jobs: Vec<_> = hosts.into_iter().map(|h| std::thread::spawn(move || check(h))).collect();
+    jobs.into_iter().filter_map(|j| j.join().ok()).collect()
 }
 
 /// Signs `login` out of gh on this computer; any other account stays signed in and gh makes one of them active.
@@ -323,14 +339,14 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access,
+    tauri::generate_handler![platform, tools, install_git, team_access, reachable,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access,
+    tauri::generate_handler![platform, tools, install_git, team_access, reachable,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
@@ -347,6 +363,11 @@ fn main() {
         let state = vm::vm_state();
         let password_saved = vm::find().is_some_and(|v| vm::load_password(&v.user).is_some());
         println!("{}", serde_json::json!({ "vm": state, "password_saved": password_saved, "phones": android::phones() }));
+        return;
+    }
+    // `--reach a b …` prints the connection check for those aliases or addresses
+    if std::env::args().nth(1).as_deref() == Some("--reach") {
+        println!("{:?}", reachable(std::env::args().skip(2).collect()));
         return;
     }
     if std::env::args().any(|a| a == "--dump") {
