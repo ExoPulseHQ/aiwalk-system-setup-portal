@@ -218,35 +218,36 @@ pub fn parse_request(body: &str) -> Option<(String, String)> {
     (!repo.is_empty() && (level == "read" || level == "write")).then_some((repo, level))
 }
 
-/// How this computer is signed in to GitHub, from `gh auth status` (the active account).
+/// One GitHub account gh is signed in to on this computer, from `gh auth status`.
 #[derive(Debug, Serialize, PartialEq, Default)]
 pub struct Auth {
     pub login: String,
+    /// The account git and this app use right now; gh keeps the others for switching.
+    pub active: bool,
     /// "account" for a browser sign-in (gho_ token), "temporary" for a fine-grained token (github_pat_, always expires).
     pub method: String,
     /// "ssh" or "https", how git talks to GitHub.
     pub protocol: String,
 }
 
-pub fn parse_gh_status(text: &str) -> Option<Auth> {
-    let mut accounts: Vec<(Auth, bool)> = vec![];
+pub fn parse_gh_status(text: &str) -> Vec<Auth> {
+    let mut accounts: Vec<Auth> = vec![];
     for line in text.lines() {
         if let Some(rest) = line.split("Logged in to github.com account ").nth(1) {
-            let login = rest.split_whitespace().next().unwrap_or_default().to_string();
-            accounts.push((Auth { login, ..Default::default() }, false));
+            accounts.push(Auth { login: rest.split_whitespace().next().unwrap_or_default().into(), ..Default::default() });
             continue;
         }
-        let Some((a, active)) = accounts.last_mut() else { continue };
+        let Some(a) = accounts.last_mut() else { continue };
         let Some((key, value)) = line.trim().trim_start_matches("- ").split_once(": ") else { continue };
         match key {
-            "Active account" => *active = value == "true",
+            "Active account" => a.active = value == "true",
             "Git operations protocol" => a.protocol = value.into(),
             "Token" if value.starts_with("github_pat_") => a.method = "temporary".into(),
             "Token" => a.method = "account".into(),
             _ => {}
         }
     }
-    accounts.into_iter().find(|(_, active)| *active).map(|(a, _)| a)
+    accounts
 }
 
 /// An age public key: "age1" then bech32 text, or a plugin recipient such as "age1yubikey1…".
@@ -405,11 +406,13 @@ mod tests {
     }
 
     #[test]
-    fn gh_status_picks_the_active_account() {
+    fn gh_status_lists_every_account() {
         let out = "github.com\n  ✓ Logged in to github.com account old (keyring)\n  - Active account: false\n  - Token: gho_****\n\
                    \n  ✓ Logged in to github.com account eddLai (keyring)\n  - Active account: true\n  - Git operations protocol: https\n  - Token: github_pat_11****\n";
-        assert_eq!(parse_gh_status(out), Some(Auth { login: "eddLai".into(), method: "temporary".into(), protocol: "https".into() }));
-        assert_eq!(parse_gh_status("You are not logged into any GitHub hosts."), None);
+        let a = parse_gh_status(out);
+        assert_eq!(a.iter().map(|a| (a.login.as_str(), a.active)).collect::<Vec<_>>(), [("old", false), ("eddLai", true)]);
+        assert_eq!((a[1].method.as_str(), a[1].protocol.as_str(), a[0].method.as_str()), ("temporary", "https", "account"));
+        assert!(parse_gh_status("You are not logged into any GitHub hosts.").is_empty());
     }
 
     #[test]

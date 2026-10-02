@@ -17,7 +17,7 @@ function badge(s) {
   const who = el("div", "who");
   who.append(el("div", "name", name), el("div", "dim", s.name ? `@${s.user}` : "Signed in on this computer"));
   const methods = el("div", "methods");
-  const a = s.auth || {};
+  const a = s.accounts.find(x => x.active) || {};
   methods.append(
     el("span", "method " + (a.method === "account" ? "m-account" : "m-off"), "GitHub account"),
     el("span", "method " + (a.method === "temporary" ? "m-temporary" : "m-off"), "Temporary credential"),
@@ -26,13 +26,30 @@ function badge(s) {
   who.append(methods);
   const out = el("button", "ghost small", "Sign out");
   out.onclick = async () => {
-    if (await ask("Sign out of GitHub on this computer?", "git and this app stop reaching your team's repos until you sign in again. Nothing on GitHub changes.",
+    const others = s.accounts.filter(x => !x.active).map(x => x.login);
+    if (await ask(`Sign out ${s.user} on this computer?`, (others.length ? `${others.join(", ")} stays signed in and takes over.`
+        : "git and this app stop reaching your team's repos until you sign in again.") + " Nothing on GitHub changes.",
       [["cancel", "Cancel"], ["out", "Sign out", true]]) !== "out") return;
-    try { await invoke("sign_out"); toast("Signed out"); } catch (e) { toast(`Could not sign out: ${e}`); }
+    try { await invoke("sign_out", { login: s.user }); toast(`Signed out ${s.user}`); } catch (e) { toast(`Could not sign out: ${e}`); }
     loadTeam();
   };
-  const actions = el("div", "actions"); actions.append(out);
-  b.append(el("div", "band"), el("div", "face", initials(name)), who, actions);
+  const actions = el("div", "actions");
+  // gh keeps several accounts; one is active for git and this app
+  const others = s.accounts.filter(x => !x.active);
+  if (others.length) {
+    const pick = el("select");
+    pick.append(new Option("Switch account", ""), ...others.map(x => new Option(x.login, x.login)));
+    pick.onchange = async () => {
+      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}`); } catch (e) { toast(`Could not switch: ${e}`); }
+      loadTeam();
+    };
+    actions.append(pick);
+  }
+  const add = el("button", "ghost small", "Add account");
+  add.onclick = () => teamPage().replaceChildren(signInView(null, true));
+  actions.append(add, out);
+  who.append(actions);
+  b.append(el("div", "band"), el("div", "face", initials(name)), who);
   return b;
 }
 
@@ -151,9 +168,15 @@ function vaultSection(v, user, viewAs) {
   const head = el("header");
   head.append(el("h2", null, v.name), el("span", "grow"));
   sec.append(head);
+  sec.append(downloadRow(v));
   const a = v.access;
   if (!a) {
-    sec.append(el("p", "sub", "This account cannot read it, or it is not split into repos yet."));
+    // one repo, not split: what counts is the permission on the repo itself
+    const t = el("ul", "tree"), li = el("li");
+    li.append(node(v.name, v.repo, v.permission, v.repo, () => null, false));
+    t.append(li);
+    sec.append(el("h3", null, "Documents"), t,
+      el("p", "sub", v.permission ? "This vault is one repo, so your access is the same everywhere in it." : "This account cannot open this vault. Ask an owner if you need it."));
     return sec;
   }
   const owner = (a.people[user] || {}).grants === null;
@@ -183,10 +206,11 @@ function vaultSection(v, user, viewAs) {
   return sec;
 }
 
-function signInView(error) {
+function signInView(error, adding) {
   const box = el("div", "empty");
-  box.append(el("h1", null, "Sign in with GitHub"),
-    el("p", "lede", "Your team access follows your GitHub account. Sign in once on this computer; the app keeps no token of its own."));
+  box.append(el("h1", null, adding ? "Add another GitHub account" : "Sign in with GitHub"),
+    el("p", "lede", adding ? "The page that opens approves whichever account your browser is signed in to. Sign in to the other account there first, or use a private window. The new account becomes the active one; switch back from the badge."
+                           : "Your team access follows your GitHub account. Sign in once on this computer; the app keeps no token of its own."));
   const code = el("p", "sub"), btn = el("button", null, "Sign in with GitHub");
   btn.onclick = async () => {
     btn.disabled = true;
@@ -199,20 +223,69 @@ function signInView(error) {
     ok ? loadTeam() : (code.textContent = "Sign-in was not finished. Try again.", btn.disabled = false);
   };
   box.append(btn, code);
+  if (adding) { const back = el("button", "ghost", "Cancel"); back.style.marginLeft = "8px"; back.onclick = () => loadTeam(); btn.after(back); }
   if (error && !/not logged|auth login/i.test(error)) box.append(el("p", "sub", error));
   return box;
 }
 
+// This computer's copy of a vault: download it, bring it up to date, open it in Obsidian.
+let local = { copies: {}, obsidian: true };
+const downloading = {};
+listen("vault-progress", e => {
+  const [repo, pct] = e.payload;
+  downloading[repo] = pct;
+  const bar = document.getElementById("dl-" + repo);
+  if (bar) { bar.hidden = false; bar.value = pct / 100; }
+});
+
+function downloadRow(v) {
+  const path = local.copies[v.repo];
+  const msg = el("span", "sub");
+  const busy = (b, work) => async () => {
+    b.disabled = true; msg.textContent = "";
+    try { toast(await work()); } catch (e) { msg.textContent = e; }
+    await refreshLocal(); loadTeam();
+  };
+  if (path) {
+    const update = el("button", "small ghost", "Get latest"), open = el("button", "small", "Open in Obsidian");
+    update.onclick = busy(update, () => invoke("vault_update", { path }));
+    open.disabled = !local.obsidian;
+    open.onclick = () => invoke("vault_open", { path });
+    return item("On this computer", path, null, msg, update, open);
+  }
+  if (!v.permission) return el("span");
+  const bar = el("progress"); bar.id = "dl-" + v.repo; bar.max = 1; bar.hidden = !(v.repo in downloading);
+  const get = el("button", "small", "Download");
+  get.onclick = busy(get, () => invoke("vault_download", { repo: v.repo }));
+  return item("Not on this computer yet", "Downloads the folders you can open into Documents/aIwalk. Large files such as papers stay on GitHub until you open them.", null, msg, bar, get);
+}
+
+async function refreshLocal() {
+  const s = lastTeam;
+  if (s) local = await invoke("vault_local", { repos: s.vaults.map(v => v.repo) });
+}
+
+function obsidianNotice() {
+  if (local.obsidian) return "";
+  const b = el("button", "small", "Install Obsidian");
+  b.onclick = async () => { b.disabled = true; try { toast(await invoke("obsidian_install")); } catch (e) { toast(e); } await refreshLocal(); loadTeam(); };
+  const box = el("div", "list");
+  box.append(item("Obsidian is not installed", "The vaults are read and edited in Obsidian.", null, b));
+  return box;
+}
+
+let lastTeam = null;
 async function loadTeam(viewAs) {
   const page = teamPage();
   if (!page.childElementCount) page.append(el("p", "dim", "Reading GitHub…"));
-  const s = await invoke("team_access");
+  const s = lastTeam = await invoke("team_access");
   if (!s.user) return page.replaceChildren(signInView(s.error));
+  await refreshLocal();
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
   const parts = [el("h1", null, "Team access"),
     el("p", "lede", owner ? "You are an owner: you can see everyone's access and approve requests."
                           : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
-    badge(s)];
+    badge(s), obsidianNotice()];
   s.vaults.forEach(v => { if (v.access && owner) parts.push(requestsSection(v.access)); parts.push(vaultSection(v, s.user, viewAs)); });
   page.replaceChildren(...parts);
 }

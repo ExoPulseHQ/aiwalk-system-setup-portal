@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 // The phone and VM modules drive a Linux desktop (adb, scrcpy, docker, GNOME keyring).
+mod vault;
 #[cfg(target_os = "linux")]
 mod android;
 #[cfg(target_os = "linux")]
@@ -91,6 +92,8 @@ struct Vault {
     about: &'static str,
     /// None when the vault is not split into repos or this account cannot read it.
     access: Option<Access>,
+    /// This account's permission on the vault repo itself (4 admin … 0 none); what counts for a vault that is one repo.
+    permission: u8,
 }
 
 #[derive(Serialize)]
@@ -136,7 +139,8 @@ struct State {
     user: Option<String>,
     /// Display name from the GitHub profile, for the badge.
     name: Option<String>,
-    auth: Option<Auth>,
+    /// Every account gh is signed in to here; the active one is `user`.
+    accounts: Vec<Auth>,
     error: Option<String>,
     vaults: Vec<Vault>,
 }
@@ -145,10 +149,10 @@ struct State {
 fn team_access() -> State {
     let (user, name) = match gh(&["api", "user", "--jq", ".login, .name"]) {
         Ok(out) => { let mut l = out.lines(); (l.next().unwrap_or_default().to_string(), l.next().filter(|n| *n != "null").map(String::from)) }
-        Err(e) => return State { user: None, name: None, auth: None, error: Some(e), vaults: vec![] },
+        Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![] },
     };
     // gh auth status writes to stderr; sh merges both
-    let auth = parse_gh_status(&sh("gh", &["auth", "status", "--hostname", "github.com"], 15).1);
+    let accounts = parse_gh_status(&sh("gh", &["auth", "status", "--hostname", "github.com"], 15).1);
     let vaults = VAULTS.iter().map(|&(name, repo, about)| {
         let rules = RULES_PATHS.iter().find_map(|p| raw(repo, p).ok());
         let access = rules.as_deref().and_then(vault_repos).map(|v| {
@@ -167,13 +171,22 @@ fn team_access() -> State {
                 requests: open_requests(&v.org, !owner), org: v.org,
             }
         });
-        Vault { name, repo, about, access }
+        let p = gh(&["api", &format!("repos/{repo}"), "--jq", ".permissions | [.admin, .maintain, .push, .triage, .pull] | map(tostring) | join(\" \")"]).unwrap_or_default();
+        let permission = match p.split_whitespace().collect::<Vec<_>>()[..] {
+            ["true", ..] => 4, [_, "true", ..] => 3, [_, _, "true", ..] => 2, [.., "true", _] | [.., "true"] => 1, _ => 0,
+        };
+        Vault { name, repo, about, access, permission }
     }).collect();
-    State { user: Some(user), name, auth, error: None, vaults }
+    State { user: Some(user), name, accounts, error: None, vaults }
 }
 
+/// Signs `login` out of gh on this computer; any other account stays signed in and gh makes one of them active.
 #[tauri::command(async)]
-fn sign_out() -> Result<(), String> { gh(&["auth", "logout", "--hostname", "github.com"]).map(|_| ()) }
+fn sign_out(login: String) -> Result<(), String> { gh(&["auth", "logout", "--hostname", "github.com", "--user", &login]).map(|_| ()) }
+
+/// Makes another signed-in account the one git and this app use.
+#[tauri::command(async)]
+fn switch_account(login: String) -> Result<(), String> { gh(&["auth", "switch", "--hostname", "github.com", "--user", &login]).map(|_| ()) }
 
 /// Adds `login` to or removes them from an org team. GitHub itself refuses anyone who is not an owner.
 #[tauri::command(async)]
@@ -219,7 +232,7 @@ fn decline_request(org: String, number: u64) -> Result<(), String> {
          "--comment", "Declined in aIwalk System Setup."]).map(|_| ())
 }
 
-fn open_url(url: &str) {
+pub fn open_url(url: &str) {
     #[cfg(target_os = "linux")]
     let _ = Command::new("xdg-open").arg(url).spawn();
     #[cfg(target_os = "macos")]
@@ -255,12 +268,14 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, team_access, sign_in, sign_out, set_team, request_access, approve_request, decline_request,
+    tauri::generate_handler![platform, team_access, sign_in, sign_out, switch_account,
+                             vault::vault_local, vault::vault_download, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, team_access, sign_in, sign_out, set_team, request_access, approve_request, decline_request]
+    tauri::generate_handler![platform, team_access, sign_in, sign_out, switch_account,
+                             vault::vault_local, vault::vault_download, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
 
 fn main() {
