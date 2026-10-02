@@ -30,7 +30,7 @@ function badge(s) {
     if (await ask(`Sign out ${s.user} on this computer?`, (others.length ? `${others.join(", ")} stays signed in and takes over.`
         : "git and this app stop reaching your team's repos until you sign in again.") + " Nothing on GitHub changes.",
       [["cancel", "Cancel"], ["out", "Sign out", true]]) !== "out") return;
-    try { await invoke("sign_out", { login: s.user }); toast(`Signed out ${s.user}`); } catch (e) { toast(`Could not sign out: ${e}`); }
+    try { await working(out, "Signing out", () => invoke("sign_out", { login: s.user })); toast(`Signed out ${s.user}`); } catch (e) { toast(`Could not sign out: ${e}`); }
     loadTeam();
   };
   const actions = el("div", "actions");
@@ -40,6 +40,7 @@ function badge(s) {
     const pick = el("select");
     pick.append(new Option("Switch account", ""), ...others.map(x => new Option(x.login, x.login)));
     pick.onchange = async () => {
+      pick.disabled = true;
       try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}`); } catch (e) { toast(`Could not switch: ${e}`); }
       loadTeam();
     };
@@ -65,9 +66,8 @@ function requestControl(a, repo, rank) {
     const note = el("input"); note.placeholder = "What you need it for";
     const send = el("button", "small", "Send request"), msg = el("span", "sub");
     send.onclick = async () => {
-      send.disabled = true;
-      try { await invoke("request_access", { org: a.org, repo, level: level.value, note: note.value }); toast("Request sent to the owners"); await loadTeam(); }
-      catch (e) { msg.textContent = `GitHub refused: ${e}`; send.disabled = false; }
+      try { await working(send, "Sending", () => invoke("request_access", { org: a.org, repo, level: level.value, note: note.value })); toast("Request sent to the owners"); await loadTeam(); }
+      catch (e) { msg.textContent = `GitHub refused: ${e}`; }
     };
     wrap.replaceChildren(level, note, send, msg);
     note.focus();
@@ -107,9 +107,10 @@ async function accessDialog(a, repo) {
     pick.value = String(now);
     pick.onchange = async () => {
       pick.disabled = true; msg.textContent = "";
+      const spin = el("span", "spinner"); pick.before(spin);
       try { toast(await invoke("set_access", { org: a.org, repo, login, level: +pick.value })); p.grants[repo] = +pick.value; }
       catch (e) { msg.textContent = e; pick.value = String(now); }
-      pick.disabled = false;
+      spin.remove(); pick.disabled = false;
     };
     row.append(pick);
     box.append(row);
@@ -170,9 +171,10 @@ function requestsSection(a) {
       const b = el("button", "small" + (ghost ? " ghost" : ""), label);
       b.onclick = async e => {
         e.stopPropagation();
-        b.parentElement.querySelectorAll("button").forEach(x => x.disabled = true);
-        try { await invoke(cmd, { org: a.org, number: r.number }); toast(cmd === "approve_request" ? `${r.author} now has ${r.level} on ${r.repo}` : "Request declined"); await loadTeam(); }
-        catch (err) { msg.textContent = `GitHub refused: ${err}`; b.parentElement.querySelectorAll("button").forEach(x => x.disabled = false); }
+        const others = [...b.parentElement.querySelectorAll("button")].filter(x => x !== b);
+        others.forEach(x => x.disabled = true);
+        try { await working(b, cmd === "approve_request" ? "Approving" : "Declining", () => invoke(cmd, { org: a.org, number: r.number })); toast(cmd === "approve_request" ? `${r.author} now has ${r.level} on ${r.repo}` : "Request declined"); await loadTeam(); }
+        catch (err) { msg.textContent = `GitHub refused: ${err}`; others.forEach(x => x.disabled = false); }
       };
       return b;
     };
@@ -190,8 +192,10 @@ function teamsList(a, login, person) {
   a.teams.forEach(t => {
     const sw = switchBox(t.members.includes(login), async (on, box) => {
       box.disabled = true;
+      const spin = el("span", "spinner"); box.before(spin);
       try { await invoke("set_team", { org: a.org, team: t.slug, login, member: on }); await loadTeam(login); }
       catch (e) { box.checked = !on; box.disabled = false; msg.textContent = `GitHub refused: ${e}`; }
+      finally { spin.remove(); }
     });
     list.append(item(t.slug, t.repos.map(([r, rank]) => `${r} ${LABEL[rank].toLowerCase()}`).join(", "), null, sw));
   });
@@ -255,14 +259,13 @@ function signInView(error, adding) {
                            : "Your team access follows your GitHub account. Sign in once on this computer; the app keeps no token of its own."));
   const code = el("p", "sub"), btn = el("button", null, "Sign in with GitHub");
   btn.onclick = async () => {
-    btn.disabled = true;
-    code.textContent = "Waiting for GitHub…";
+    code.textContent = "";
     const stop = await listen("gh-code", e => {
       code.replaceChildren("Enter this code on the GitHub page that just opened, then approve: ", el("strong", "cmd", e.payload));
     });
-    const ok = await invoke("sign_in");
+    const ok = await working(btn, "Waiting for GitHub", () => invoke("sign_in"));
     stop();
-    ok ? loadTeam() : (code.textContent = "Sign-in was not finished. Try again.", btn.disabled = false);
+    ok ? loadTeam() : (code.textContent = "Sign-in was not finished. Try again.");
   };
   box.append(btn, code);
   if (adding) { const back = el("button", "ghost", "Cancel"); back.style.marginLeft = "8px"; back.onclick = () => loadTeam(); btn.after(back); }
@@ -272,37 +275,40 @@ function signInView(error, adding) {
 
 // This computer's copy of a vault: download it, bring it up to date, open it in Obsidian.
 let local = { copies: {}, obsidian: true };
-const downloading = {};
+const stages = {};   // repo -> the stage box of a running download or update, kept across re-renders
 listen("vault-progress", e => {
-  const [repo, pct] = e.payload;
-  downloading[repo] = pct;
-  const bar = document.getElementById("dl-" + repo);
-  if (bar) { bar.hidden = false; bar.value = pct / 100; }
+  const [repo, f, text] = e.payload;
+  if (stages[repo]) stages[repo].set(f, text);
 });
 
 function downloadRow(v) {
   const path = local.copies[v.repo];
   const msg = el("span", "sub");
-  const busy = (b, work) => async () => {
-    b.disabled = true; msg.textContent = "";
-    try { toast(await work()); } catch (e) { msg.textContent = e; }
+  // a long git job: the button says what it is doing and a stage box under the text follows its steps
+  const busy = (b, label, work) => async () => {
+    msg.textContent = "";
+    stages[v.repo] = stage(label);
+    text.append(stages[v.repo]);
+    try { toast(await working(b, label, work)); } catch (e) { msg.textContent = e; }
+    delete stages[v.repo];
     await refreshLocal(); loadTeam();
   };
+  const text = el("div", "text");
   const useCopy = el("button", "small ghost", path ? "Change folder" : "Use a copy I already have");
   useCopy.onclick = async () => {
     const p = await invoke("pick_folder", { title: `Pick your copy of ${v.name}` });
     if (!p) return;
-    try { toast(await invoke("vault_link", { repo: v.repo, path: p })); await refreshLocal(); loadTeam(); }
+    try { toast(await working(useCopy, "Checking that folder", () => invoke("vault_link", { repo: v.repo, path: p }))); await refreshLocal(); loadTeam(); }
     catch (e) { msg.textContent = e; }
   };
   if (path) {
     const update = el("button", "small ghost", "Get latest"), open = el("button", "small", "Open in Obsidian");
-    update.onclick = busy(update, () => invoke("vault_update", { path }));
+    update.onclick = busy(update, "Getting the latest", () => invoke("vault_update", { repo: v.repo, path }));
     open.disabled = !local.obsidian;
     open.onclick = () => invoke("vault_open", { path });
     const box = el("div", "place");
-    const text = el("div", "text");
     text.append(el("div", "title", "On this computer"), el("div", "sub path", path), msg);
+    if (stages[v.repo]) text.append(stages[v.repo]);
     const buttons = el("div", "buttons");
     buttons.append(useCopy, update, open);
     box.append(text, buttons);
@@ -316,9 +322,8 @@ function downloadRow(v) {
   sub.append("Goes to ", where, ". Large files such as papers stay on GitHub until you open them.");
   (chosen[v.repo] ? Promise.resolve(chosen[v.repo]) : invoke("default_folder", { repo: v.repo })).then(p => where.textContent = p);
 
-  const bar = el("progress"); bar.id = "dl-" + v.repo; bar.max = 1; bar.hidden = !(v.repo in downloading);
   const get = el("button", "small", "Download");
-  get.onclick = busy(get, () => invoke("vault_download", { repo: v.repo, dest: chosen[v.repo] || null }));
+  get.onclick = busy(get, "Downloading", () => invoke("vault_download", { repo: v.repo, dest: chosen[v.repo] || null }));
   const change = el("button", "small ghost", "Change folder");
   change.onclick = async () => {
     const parent = await invoke("pick_folder", { title: `Where should ${v.name} go?` });
@@ -328,10 +333,10 @@ function downloadRow(v) {
     where.textContent = chosen[v.repo];
   };
   box.className = "place";
-  const text = el("div", "text");
   text.append(el("div", "title", "Not on this computer yet"), sub, msg);
+  if (stages[v.repo]) text.append(stages[v.repo]);
   const buttons = el("div", "buttons");
-  buttons.append(change, useCopy, bar, get);
+  buttons.append(change, useCopy, get);
   box.append(text, buttons);
   return box;
 }
@@ -345,7 +350,7 @@ async function refreshLocal() {
 function obsidianNotice() {
   if (local.obsidian) return "";
   const b = el("button", "small", "Install Obsidian");
-  b.onclick = async () => { b.disabled = true; try { toast(await invoke("obsidian_install")); } catch (e) { toast(e); } await refreshLocal(); loadTeam(); };
+  b.onclick = async () => { try { toast(await working(b, "Installing Obsidian, a few minutes", () => invoke("obsidian_install"))); } catch (e) { toast(e); } await refreshLocal(); loadTeam(); };
   const box = el("div", "list");
   box.append(item("Obsidian is not installed", "The vaults are read and edited in Obsidian.", null, b));
   return box;
@@ -383,7 +388,10 @@ async function peopleSection(org, user, teams) {
   let p;
   try { p = await invoke("org_people", { org }); } catch (e) { sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
   const msg = el("p", "sub");
-  const act = (fn, done) => async () => { msg.textContent = ""; try { toast(await fn()); await loadTeam(); } catch (e) { msg.textContent = e; done && done(); } };
+  const act = (fn, done, button, label) => async () => {
+    msg.textContent = "";
+    try { toast(await (button ? working(button, label, fn) : fn())); await loadTeam(); } catch (e) { msg.textContent = e; done && done(); }
+  };
 
   const list = el("div", "list");
   p.members.sort((x, y) => (y.owner - x.owner) || x.name.localeCompare(y.name)).forEach(m => {
@@ -403,7 +411,7 @@ async function peopleSection(org, user, teams) {
       const rm = el("button", "small ghost", "Remove");
       rm.onclick = async () => {
         if (await ask(`Remove ${m.name} from ${org}?`, "Their teams and repo access end now. Copies already on their computer stay there.",
-            [["cancel", "Cancel"], ["rm", "Remove", true]]) === "rm") act(() => invoke("remove_member", { org, login: m.login }))();
+            [["cancel", "Cancel"], ["rm", "Remove", true]]) === "rm") act(() => invoke("remove_member", { org, login: m.login }), null, rm, "Removing")();
       };
       right.push(rm);
     }
@@ -411,7 +419,7 @@ async function peopleSection(org, user, teams) {
   });
   p.invites.forEach(i => {
     const cancel = el("button", "small ghost", "Cancel invitation");
-    cancel.onclick = act(() => invoke("cancel_invite", { org, id: i.id }));
+    cancel.onclick = () => act(() => invoke("cancel_invite", { org, id: i.id }), null, cancel, "Cancelling")();
     list.append(item(i.login, `Invited ${i.created}${i.owner ? " as owner" : ""}, not accepted yet`, null, el("span", "tag", "Invited"), cancel));
   });
   sec.append(list);
@@ -429,10 +437,8 @@ async function peopleSection(org, user, teams) {
   const send = el("button", "small", "Send invitation");
   send.onclick = async () => {
     if (!who.value.trim()) return who.focus();
-    send.disabled = true;
     await act(() => invoke("invite", { org, login: who.value, owner: role.value === "owner",
-      teams: [...picks.querySelectorAll("input:checked")].map(c => c.value) }))();
-    send.disabled = false;
+      teams: [...picks.querySelectorAll("input:checked")].map(c => c.value) }), null, send, "Inviting")();
   };
   const line = el("div", "row"); line.append(who, role, send);
   form.append(el("h3", null, "Invite someone"), line, el("p", "sub", "Teams they start in:"), picks);
@@ -443,10 +449,14 @@ async function peopleSection(org, user, teams) {
 let lastTeam = null;
 async function loadTeam(viewAs) {
   const page = teamPage();
-  if (!page.childElementCount) page.append(el("p", "dim", "Reading GitHub…"));
+  // first load fills the page with the steps; later reloads keep the page and show the top line only
+  const first = !page.querySelector(".badge");
+  const progress = stage("Reading your access from GitHub");
+  if (first) page.replaceChildren(el("h1", null, "Team access"), progress);
   const t = await invoke("tools");
   if (!t.gh || !t.git) return page.replaceChildren(missingTools(t));
-  const s = lastTeam = await invoke("team_access");
+  const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
+  const s = lastTeam = await invoke("team_access").finally(stop);
   if (!s.user) return page.replaceChildren(signInView(s.error));
   await refreshLocal();
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
@@ -455,7 +465,7 @@ async function loadTeam(viewAs) {
                           : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
     badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
-  if (owner && org) parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams));
+  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams)); }
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs)));
   page.replaceChildren(...parts);
 }

@@ -191,10 +191,11 @@ fn drives(vm: &Vm) -> Vec<String> {
 
 /// Starts the VM if needed and opens its desktop. Ok once Windows is on screen; Err(WRONG_PASSWORD) when
 /// Windows refused the password (never retried, repeated wrong passwords lock the account), else Err(why).
-pub fn connect(vm: &Vm, password: &str) -> Result<(), String> {
-    if !vm.running { start(vm)? }
+pub fn connect(vm: &Vm, password: &str, progress: &dyn Fn(&str)) -> Result<(), String> {
+    if !vm.running { progress("Starting Windows"); start(vm)? }
     // Windows drops the connection until it has booted; retry for about 3 minutes
-    for _ in 0..18 {
+    for attempt in 0..18 {
+        progress(&if attempt == 0 { "Opening the Windows desktop".to_string() } else { format!("Waiting for Windows to finish starting (try {} of 18)", attempt + 1) });
         let mut args = vec!["run".to_string(), "--command=sdl-freerdp".into(), "com.freerdp.FreeRDP".into(), "/cert:ignore".into(), "+home-drive".into()];
         args.extend(drives(vm));
         args.extend(["+clipboard".into(), format!("/u:{}", vm.user), format!("/p:{password}"), "/scale:100".into(),
@@ -275,7 +276,7 @@ pub fn shortcut_main(flag: &str) {
         return open_app();
     };
     if !vm.running { notify("Starting Windows, this takes 1–2 minutes…") }
-    match connect(&vm, &password) {
+    match connect(&vm, &password, &|_| {}) {
         Err(e) if e == WRONG_PASSWORD => { notify("Windows rejected the saved password. Change it in aIwalk System Setup."); open_app() }
         Err(e) => notify(&e),
         Ok(()) => {}
@@ -350,19 +351,21 @@ pub fn vm_action(app: tauri::AppHandle, action: String, on: Option<bool>, key: O
         "open" => {
             if let Some(p) = &password { save_password(&vm.user, p)? }
             let p = load_password(&vm.user).ok_or(NEED_PASSWORD)?;
-            connect(&vm, &p).map(|_| String::new())
+            connect(&vm, &p, &|text| { let _ = app.emit("vm-step", text); }).map(|_| String::new())
         }
-        "stop" => Ok(stop(&vm)),
+        "stop" => { let _ = app.emit("vm-step", "Shutting down Windows, up to 2 minutes"); Ok(stop(&vm)) }
         "password" => save_password(&vm.user, password.as_deref().unwrap_or_default()).map(|_| "Password saved".into()),
         "card" => {
-            if vm.running { stop(&vm); }
+            if vm.running { let _ = app.emit("vm-step", "Shutting down Windows first"); stop(&vm); }
+            let _ = app.emit("vm-step", "Applying the card reader setting");
             let on = on.unwrap_or(false);
             write_and_recreate(&vm, &with_card_reader(&vm.text, on)).map_err(|e| format!("Could not apply the card reader setting: {e}"))?;
             Ok(format!("Card reader passthrough is {}", if on { "on" } else { "off" }))
         }
         "resources" => {
             let values = values.unwrap_or_default();
-            if vm.running { stop(&vm); }
+            if vm.running { let _ = app.emit("vm-step", "Shutting down Windows first"); stop(&vm); }
+            let _ = app.emit("vm-step", "Applying the new size");
             write_and_recreate(&vm, &with_env(&vm.text, &values)).map_err(|e| format!("Could not apply: {e}"))?;
             Ok(if values.contains_key("DISK_SIZE") {
                 "Applied. To use the bigger disk, extend drive C: in Windows' Disk Management after the next start.".into()

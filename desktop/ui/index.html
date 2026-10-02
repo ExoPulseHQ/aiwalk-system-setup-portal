@@ -121,6 +121,26 @@
   .place .path { overflow-wrap: anywhere; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 13px; }
   .place .buttons { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-top: 10px; }
   .place .cmd { overflow-wrap: anywhere; }
+  /* waiting: one line across the top while the app waits on GitHub or a long task, in the badge's band colours */
+  #topline { position: sticky; top: 0; height: 3px; margin-bottom: -3px; z-index: 5; overflow: hidden; visibility: hidden; }
+  #topline.on { visibility: visible; }
+  #topline::before { content: ""; position: absolute; inset: 0; width: 40%; background: linear-gradient(90deg, transparent, var(--purple), var(--orange), transparent); }
+  @media (prefers-reduced-motion: no-preference) { #topline.on::before { animation: sweep 1.3s ease-in-out infinite; } }
+  @media (prefers-reduced-motion: reduce) { #topline.on::before { width: 100%; animation: breathe 2s ease-in-out infinite; } }
+  @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+  @keyframes breathe { 50% { opacity: .35; } }
+  .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; vertical-align: -2px; flex: none; }
+  @media (prefers-reduced-motion: no-preference) { .spinner { animation: turn .8s linear infinite; } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: breathe 1.6s ease-in-out infinite; } }
+  @keyframes turn { to { transform: rotate(360deg); } }
+  button.working { display: inline-flex; gap: 8px; align-items: center; opacity: 1; }
+  .item.busy { pointer-events: none; }
+  .item.busy .title { color: var(--purple); }
+  .stage { display: flex; flex-direction: column; gap: 8px; max-width: 420px; padding: 8px 0; }
+  .stage .line { display: flex; gap: 10px; align-items: center; color: var(--muted); }
+  .meter { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .meter > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--purple), var(--orange)); border-radius: inherit; }
+  @media (prefers-reduced-motion: no-preference) { .meter > i { transition: width .35s ease-out; } }
   .banner { background: var(--peach); color: #231C33; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; }
   .empty { padding: 48px 0; max-width: 56ch; }
   .empty h2 { margin-bottom: 8px; }
@@ -147,6 +167,7 @@
   <div class="gap"></div>
 </nav>
 <main>
+  <div id="topline" role="progressbar" aria-label="Working"></div>
   <div class="page" id="android" hidden></div>
   <div class="page" id="vm" hidden></div>
   <div class="page" id="team" hidden></div>
@@ -154,8 +175,39 @@
 <div id="toast"></div>
 <dialog id="dialog"></dialog>
 <script>
-const { invoke } = window.__TAURI__.core;
 const listen = window.__TAURI__.event.listen;
+// Every call to the app's backend shows the top line while it runs, except the quiet background checks.
+const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local"]);
+let pendingCalls = 0;
+function invoke(cmd, args) {
+  const loud = !QUIET.has(cmd);
+  if (loud) document.getElementById("topline").classList.toggle("on", ++pendingCalls > 0);
+  return window.__TAURI__.core.invoke(cmd, args).finally(() => {
+    if (loud) document.getElementById("topline").classList.toggle("on", --pendingCalls > 0);
+  });
+}
+
+// The button pressed shows what is happening until `job` settles; returns job's result (or throws its error).
+async function working(button, label, job) {
+  const before = [...button.childNodes], wasDisabled = button.disabled;
+  button.disabled = true; button.classList.add("working");
+  button.replaceChildren(el("span", "spinner"), label);
+  try { return await job(); }
+  finally { if (button.isConnected) { button.replaceChildren(...before); button.disabled = wasDisabled; button.classList.remove("working"); } }
+}
+
+// A list row that was clicked: spinner on the right, no second click until the page redraws.
+function busyRow(row) { if (!row) return; row.classList.add("busy"); row.append(el("span", "spinner")); }
+
+// A spinner, a sentence and a meter, for waits with known steps. set(fraction or null, text).
+function stage(text) {
+  const box = el("div", "stage"), line = el("div", "line"), meter = el("div", "meter"), fill = el("i");
+  const words = el("span", null, text);
+  line.append(el("span", "spinner"), words); meter.append(fill); box.append(line, meter);
+  meter.hidden = true;
+  box.set = (f, t) => { if (t) words.textContent = t; if (f != null) { meter.hidden = false; fill.style.width = `${Math.round(f * 100)}%`; } };
+  return box;
+}
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 let toastTimer;

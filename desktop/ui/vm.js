@@ -4,8 +4,18 @@ let vmBusy = false, vmSig = null, cleaning = null;   // cleaning = { text, since
 // rough share of the total time each cleanup step starts at; step 8 (DISM) is the long one
 const CLEAN_STEPS = { 1: .02, 2: .04, 3: .06, 4: .08, 5: .10, 6: .13, 7: .16, 8: .20, 9: .85 };
 
-async function vmAction(action, args = {}) {
+// While an action runs, a line under the title says what Windows is doing; it can take minutes.
+const VM_STEP = { open: "Opening Windows", stop: "Shutting down Windows, up to 2 minutes", password: "Saving the password",
+  card: "Applying the card reader setting", resources: "Applying the new size", shortcut: "Updating the shortcut" };
+let vmActivity = null;
+listen("vm-step", e => vmActivity && vmActivity.set(null, e.payload));
+
+async function vmAction(action, args = {}, trigger) {
   vmBusy = true;
+  const quiet = action === "clean" || action === "clean-after-setup";   // cleanup has its own progress bar
+  if (!quiet) { vmActivity = stage(VM_STEP[action] || "Working"); document.getElementById("vm").querySelector("h1").after(vmActivity); }
+  if (trigger instanceof HTMLButtonElement) { trigger.disabled = true; trigger.classList.add("working"); trigger.prepend(el("span", "spinner")); }
+  else busyRow(trigger);
   try { const msg = await invoke("vm_action", { action, ...args }); toast(msg); return msg; }
   catch (e) {
     if (e === "need-password" || e === "wrong-password") {
@@ -14,7 +24,7 @@ async function vmAction(action, args = {}) {
     } else if (e === "needs-setup") {
       setUpHelper();
     } else toast(e);
-  } finally { vmBusy = false; vmSig = null; refreshVm(); }
+  } finally { if (vmActivity) vmActivity.remove(); vmActivity = null; vmBusy = false; vmSig = null; refreshVm(); }
 }
 
 async function askPassword(reason) {
@@ -83,14 +93,14 @@ async function refreshVm() {
 
   const actions = el("div", "list");
   actions.append(item("Open Windows", "Opens the Windows desktop in a window" + (vm.running ? "" : ", starting it first (1–2 minutes)"),
-    () => { toast(vm.running ? "Opening Windows…" : "Starting Windows, this takes 1–2 minutes…"); vmAction("open"); }));
-  if (vm.running) actions.append(item("Shut down Windows", "Frees its memory; takes up to 2 minutes", () => vmAction("stop")));
+    e => vmAction("open", {}, e.currentTarget)));
+  if (vm.running) actions.append(item("Shut down Windows", "Frees its memory; takes up to 2 minutes", e => vmAction("stop", {}, e.currentTarget)));
   page.append(actions);
 
   page.append(el("h3", null, "Settings"));
   const settings = el("div", "list");
   const pw = el("button", "small ghost", "Change password");
-  pw.onclick = async () => { const p = await askPassword(""); if (p) vmAction("password", { password: p }); };
+  pw.onclick = async () => { const p = await askPassword(""); if (p) vmAction("password", { password: p }, pw); };
   settings.append(
     item("Card reader", "Pass the USB card reader (health-insurance / citizen certificate) to Windows. Windows will not start while it is on and the reader is unplugged.", null,
       switchBox(vm.card_reader, async (on, box) => {
@@ -127,7 +137,7 @@ async function refreshVm() {
       const v = Math.min(Math.max(+i.value, +i.min), +i.max);
       if (v !== now[k]) values[k] = k === "CPU_CORES" ? String(v) : `${v}G`;
     }
-    if (await whileOff(vm.running, "Memory, CPU and disk changes")) vmAction("resources", { values });
+    if (await whileOff(vm.running, "Memory, CPU and disk changes")) vmAction("resources", { values }, apply);
   };
   res.append(item("Apply changes", null, null, apply));
 

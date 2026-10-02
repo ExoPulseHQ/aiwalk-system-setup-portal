@@ -187,21 +187,34 @@ struct State {
     vaults: Vec<Vault>,
 }
 
+/// Reads everything Team access shows; GitHub answers slowly, so each step is announced to the page as
+/// "team-stage" (step, steps, what is being read).
 #[tauri::command(async)]
-fn team_access() -> State {
+fn team_access(app: tauri::AppHandle) -> State {
+    read_access(&|i, n, text| { let _ = app.emit("team-stage", (i, n, text)); })
+}
+
+fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
+    let steps = 2 + VAULTS.len() * 3;
+    stage(1, steps, "Checking who is signed in");
     let (user, name) = match gh(&["api", "user", "--jq", ".login, .name"]) {
         Ok(out) => { let mut l = out.lines(); (l.next().unwrap_or_default().to_string(), l.next().filter(|n| *n != "null").map(String::from)) }
         Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![] },
     };
     // gh auth status writes to stderr; sh merges both
     let accounts = parse_gh_status(&sh("gh", &["auth", "status", "--hostname", "github.com"], 15).1);
-    let vaults = VAULTS.iter().map(|&(name, repo, about)| {
+    stage(2, steps, "Checking how this computer is signed in");
+    let vaults = VAULTS.iter().enumerate().map(|(k, &(name, repo, about))| {
+        let at = 3 + k * 3;
+        stage(at, steps, &format!("Reading how {name} is organised"));
         let rules = RULES_PATHS.iter().find_map(|p| raw(repo, p).ok());
         let access = rules.as_deref().and_then(vault_repos).map(|v| {
             let query = |q: String| gh(&["api", "graphql", "-f", &format!("query={q}")]).unwrap_or_default();
+            stage(at + 1, steps, &format!("Reading who can open what in {name}"));
             let mut org = org_access(&query(org_query(&v.org)));
             let owner = org.people.get(&user).is_some_and(|p| p.grants.is_none());
             repo_grants(&mut org.people, &query(repos_query(&v.org, owner)), &user);
+            stage(at + 2, steps, "Reading access requests");
             let teams = if owner { org.teams.into_iter().filter(|t| t.slug != "core").collect() } else { vec![] };
             let machines = machines(rules.as_deref().unwrap_or_default());
             let people = visible_to(org.people, &user);
@@ -337,7 +350,7 @@ fn main() {
         return;
     }
     if std::env::args().any(|a| a == "--dump") {
-        println!("{}", serde_json::to_string_pretty(&team_access()).unwrap());
+        println!("{}", serde_json::to_string_pretty(&read_access(&|_, _, _| {})).unwrap());
         return;
     }
     tauri::Builder::default()

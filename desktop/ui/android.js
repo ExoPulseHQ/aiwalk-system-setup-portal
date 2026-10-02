@@ -21,16 +21,26 @@ function silhouette(p) {
   return box;
 }
 
-async function phoneAction(action, phone, extra = {}) {
+// While an action runs, a line under the title says what the phone is doing.
+const PHONE_STEP = { keyboard: "Opening the keyboard window", mirror: "Opening the phone screen", install: "Installing on the phone",
+  desk: "Switching the desktop", wireless: "Switching the phone to Wi-Fi", disconnect: "Disconnecting Wi-Fi", reconnect: "Looking for phones on this Wi-Fi" };
+let phoneActivity = null;
+listen("phone-step", e => phoneActivity && phoneActivity.set(null, e.payload));
+
+async function phoneAction(action, phone, extra = {}, trigger) {
   phonesBusy = true;
+  phoneActivity = stage(PHONE_STEP[action] || "Working");
+  document.getElementById("android").querySelector(".row").after(phoneActivity);
+  if (trigger instanceof HTMLButtonElement) { trigger.disabled = true; trigger.classList.add("working"); trigger.prepend(el("span", "spinner")); }
+  else busyRow(trigger);
   try { toast(await invoke("phone_action", { action, phone, ...extra })); }
-  finally { phonesBusy = false; phonesSig = null; refreshPhones(true); }
+  finally { phoneActivity = null; phonesBusy = false; phonesSig = null; refreshPhones(true); }
 }
 
 function deskRow(p) {
   if (!p.root && !p.phonedesk) {
     const b = el("button", "small", "Install");
-    b.onclick = () => { b.disabled = true; phoneAction("install", p); };
+    b.onclick = () => phoneAction("install", p, {}, b);
     return item("Desktop", "Not rooted: install the Desktop Mode app first (keeps all data)", null, b);
   }
   let sub = p.root ? "Built-in setting, applies after a restart"
@@ -39,7 +49,7 @@ function deskRow(p) {
   if (!p.root && p.phonedesk_outdated) {
     sub = "The Desktop Mode app on this phone is outdated, update it first";
     const b = el("button", "small", "Update");
-    b.onclick = () => { b.disabled = true; phoneAction("install", p); };
+    b.onclick = () => phoneAction("install", p, {}, b);
     right.push(b);
   }
   right.push(switchBox(p.desk_on, async (on, box) => {
@@ -62,11 +72,11 @@ function phoneSection(p) {
   head.append(silhouette(p), text);
   const list = el("div", "list");
   list.append(
-    item("Type with this keyboard", "Use this computer's keyboard and touchpad on the phone", () => phoneAction("keyboard", p)),
-    item("Show the phone screen here", "Mirror it and control it with the mouse", () => phoneAction("mirror", p)),
+    item("Type with this keyboard", "Use this computer's keyboard and touchpad on the phone", e => phoneAction("keyboard", p, {}, e.currentTarget)),
+    item("Show the phone screen here", "Mirror it and control it with the mouse", e => phoneAction("mirror", p, {}, e.currentTarget)),
     deskRow(p),
-    p.wireless ? item("Disconnect Wi-Fi", null, () => phoneAction("disconnect", p))
-               : item("Switch to Wi-Fi", "Then you can unplug the USB cable", () => phoneAction("wireless", p)));
+    p.wireless ? item("Disconnect Wi-Fi", null, e => phoneAction("disconnect", p, {}, e.currentTarget))
+               : item("Switch to Wi-Fi", "Then you can unplug the USB cable", e => phoneAction("wireless", p, {}, e.currentTarget)));
   sec.append(head, list);
   return sec;
 }
@@ -89,7 +99,7 @@ async function refreshPhones(force) {
     empty.append(el("h2", null, "No phone found"),
       el("p", null, "On the phone, turn on USB debugging (Settings › System › Developer options) and connect it with a USB cable. For Wi-Fi, turn on Wireless debugging there instead and keep the phone on the same Wi-Fi as this computer."));
     const b = el("button", null, "Reconnect over Wi-Fi");
-    b.onclick = () => { b.disabled = true; phoneAction("reconnect", null); };
+    b.onclick = () => phoneAction("reconnect", null, {}, b);
     empty.append(b);
     page.append(empty);
   }

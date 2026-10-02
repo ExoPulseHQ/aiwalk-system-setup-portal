@@ -145,19 +145,21 @@ fn start_shizuku(serial: &str) {
     adb(Some(serial), &["shell", &lib], 60);
 }
 
-fn install_phonedesk(p: &Phone) -> String {
+fn install_phonedesk(p: &Phone, step: &dyn Fn(&str)) -> String {
     let (pd, sz) = (apk("phonedesk.apk"), apk("shizuku.apk"));
     if !pd.exists() { return "The Desktop Mode app installer is missing from this folder".into() }
     let s = Some(p.serial.as_str());
     if adb(s, &["shell", "pm path moe.shizuku.privileged.api"], 20).0 != 0
-        && adb(s, &["install", &sz.to_string_lossy()], 180).0 != 0 {
+        && { step("Installing Shizuku on the phone"); adb(s, &["install", &sz.to_string_lossy()], 180).0 != 0 } {
         return "Could not install Shizuku".into();
     }
     if p.desk_app_on {  // updating kills the running desk; leave it cleanly first
         adb(s, &["shell", &format!("am start -n {PHONEDESK}/.MainActivity")], 20);
         std::thread::sleep(Duration::from_secs(3));
     }
+    step("Installing the Desktop Mode app on the phone, about a minute");
     if adb(s, &["install", "-r", &pd.to_string_lossy()], 180).0 != 0 { return "Could not install the Desktop Mode app".into() }
+    step("Starting Shizuku");
     adb(s, &["shell", &format!("pm enable {PHONEDESK}")], 20);
     start_shizuku(&p.serial);
     format!("Desktop Mode app installed on {}. Allow Shizuku on the phone the first time you use it.", p.model)
@@ -168,13 +170,15 @@ fn ipfile() -> std::path::PathBuf { crate::home().join(".config/phone-panel/ip")
 /// One action on one phone (or, for "reconnect", on whatever is on Wi-Fi); returns the message to show.
 /// The page passes back the phone it showed, so the action works on what the person saw.
 #[tauri::command(async)]
-pub fn phone_action(action: String, phone: Option<Phone>, on: Option<bool>, reboot: Option<bool>) -> String {
+pub fn phone_action(app: tauri::AppHandle, action: String, phone: Option<Phone>, on: Option<bool>, reboot: Option<bool>) -> String {
+    use tauri::Emitter;
+    let step = |text: &str| { let _ = app.emit("phone-step", text); };
     let p = phone.unwrap_or_default();
     let s = Some(p.serial.as_str());
     match action.as_str() {
         "keyboard" => { scrcpy(&p.serial, &p.model, true); "Click the Phone keyboard window, then type".into() }
         "mirror" => { scrcpy(&p.serial, &p.model, false); String::new() }
-        "install" => install_phonedesk(&p),
+        "install" => install_phonedesk(&p, &step),
         "desk" if p.root => {
             let on = on.unwrap_or(false);
             sh_stdin(&adb_path(), &["-s", &p.serial, "shell", "su"], Some(&root_script(on)), 30);
@@ -194,6 +198,7 @@ pub fn phone_action(action: String, phone: Option<Phone>, on: Option<bool>, rebo
         }
         "wireless" => {
             if p.ip.is_empty() { return "The phone is not on Wi-Fi".into() }
+            step("Switching the phone to Wi-Fi");
             adb(s, &["tcpip", "5555"], 20);
             let _ = std::fs::create_dir_all(ipfile().parent().unwrap());
             let _ = std::fs::write(ipfile(), &p.ip);
@@ -203,6 +208,7 @@ pub fn phone_action(action: String, phone: Option<Phone>, on: Option<bool>, rebo
         }
         "disconnect" => { adb(None, &["disconnect", &p.serial], 20); "Wi-Fi disconnected".into() }
         "reconnect" => {
+            step("Looking for phones on this Wi-Fi");
             // wireless-debugging phones advertise themselves; fall back to the last saved IP
             let (_, out) = adb(None, &["mdns", "services"], 20);
             let mut targets: Vec<String> = out.lines().filter(|l| l.contains("_adb-tls-connect"))

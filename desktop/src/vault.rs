@@ -62,11 +62,17 @@ fn fetch_on_demand(tree: &Path, name: &str, path: &str, extra: &[(&str, &str)]) 
     run(tree, &["submodule", "absorbgitdirs", "--", path], extra).map(|_| ())
 }
 
+/// Reports progress: fraction of the whole job done (0..1) and what is happening now.
+pub type Progress<'a> = &'a dyn Fn(f32, &str);
+
 /// Brings every readable submodule in; (fetched, skipped) folder paths. `remote` moves each to the tip of its main.
-fn update_each(tree: &Path, remote: bool, extra: &[(&str, &str)]) -> (Vec<String>, Vec<String>) {
+/// Progress runs from `from` to 1 across the submodules.
+fn update_each(tree: &Path, remote: bool, extra: &[(&str, &str)], from: f32, progress: Progress) -> (Vec<String>, Vec<String>) {
     let lazy = on_demand(tree);
     let (mut ok, mut skipped) = (vec![], vec![]);
-    for (name, path) in submodules(tree) {
+    let all = submodules(tree);
+    for (i, (name, path)) in all.iter().cloned().enumerate() {
+        progress(from + (1.0 - from) * i as f32 / all.len() as f32, &format!("Bringing in {path} ({} of {})", i + 1, all.len()));
         let first = !tree.join(&path).join(".git").exists();
         let done = if lazy.contains(&name) && first {
             fetch_on_demand(tree, &name, &path, extra).is_ok()
@@ -92,8 +98,9 @@ fn summary(what: &str, ok: &[String], skipped: &[String]) -> String {
     }
 }
 
-/// Clones `url` into `dest`, reporting the book's download percentage through `progress`.
-pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: &dyn Fn(u32)) -> Result<String, String> {
+/// Clones `url` into `dest`: the book is the first half of the progress, its folders the second.
+pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress) -> Result<String, String> {
+    progress(0.0, "Connecting to GitHub");
     let parent = dest.parent().ok_or("bad folder")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     // shallow: members need the current notes, not years of history
@@ -105,8 +112,8 @@ pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: &dyn Fn(u
         if n == 0 { break }
         tail.push_str(&String::from_utf8_lossy(&buf[..n]));
         if tail.len() > 400 { tail = tail[tail.len() - 400..].to_string() }
-        if let Some(pct) = tail.rsplit("Receiving objects:").next().and_then(|t| t.trim().split('%').next()?.trim().parse().ok()) {
-            progress(pct);
+        if let Some(pct) = tail.rsplit("Receiving objects:").next().and_then(|t| t.trim().split('%').next()?.trim().parse::<f32>().ok()) {
+            progress(pct / 200.0, &format!("Downloading the shared notes ({pct:.0}%)"));
         }
     }
     if !child.wait().is_ok_and(|s| s.success()) {
@@ -117,18 +124,21 @@ pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: &dyn Fn(u
             format!("Download failed: {}", tail.trim().lines().last().unwrap_or("unknown error"))
         });
     }
-    let (ok, skipped) = update_each(dest, false, extra);
+    let (ok, skipped) = update_each(dest, false, extra, 0.5, progress);
+    progress(1.0, "Done");
     Ok(summary("Downloaded", &ok, &skipped))
 }
 
-pub fn pull(tree: &Path, extra: &[(&str, &str)]) -> Result<String, String> {
+pub fn pull(tree: &Path, extra: &[(&str, &str)], progress: Progress) -> Result<String, String> {
+    progress(0.0, "Getting the latest shared notes");
     match run(tree, &["pull", "--ff-only"], extra) {
         Err(e) if e.contains("local changes") || e.contains("diverg") || e.contains("would be overwritten") =>
             return Err("Could not update: your copy has changes that are not on GitHub yet".into()),
         Err(e) => return Err(format!("Could not update: {}", e.lines().last().unwrap_or_default())),
         Ok(_) => {}
     }
-    let (ok, skipped) = update_each(tree, true, extra);
+    let (ok, skipped) = update_each(tree, true, extra, 0.2, progress);
+    progress(1.0, "Done");
     Ok(summary("Up to date", &ok, &skipped))
 }
 
@@ -257,7 +267,7 @@ pub fn vault_download(app: tauri::AppHandle, repo: String, dest: Option<String>)
     if dest.exists() && std::fs::read_dir(&dest).map(|mut d| d.next().is_some()).unwrap_or(false) {
         return Err(format!("{} already has files in it; move them away first", dest.display()));
     }
-    let report = |pct: u32| { let _ = app.emit("vault-progress", (&repo, pct)); };
+    let report = |f: f32, text: &str| { let _ = app.emit("vault-progress", (&repo, f, text)); };
     let msg = clone(&format!("https://github.com/{repo}.git"), &dest, &[], &report)?;
     register(&dest);
     remember(&repo, &dest);
@@ -265,7 +275,9 @@ pub fn vault_download(app: tauri::AppHandle, repo: String, dest: Option<String>)
 }
 
 #[tauri::command(async)]
-pub fn vault_update(path: String) -> Result<String, String> { pull(Path::new(&path), &[]) }
+pub fn vault_update(app: tauri::AppHandle, repo: String, path: String) -> Result<String, String> {
+    pull(Path::new(&path), &[], &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); })
+}
 
 #[tauri::command(async)]
 pub fn vault_open(path: String) {
@@ -334,12 +346,12 @@ mod tests {
         std::fs::remove_dir_all(root.join("exo-l2.git")).unwrap();
 
         let dest = root.join("clone");
-        let msg = clone(&format!("file://{}", book.display()), &dest, &FILE, &|_| {}).unwrap();
+        let msg = clone(&format!("file://{}", book.display()), &dest, &FILE, &|_, _| {}).unwrap();
         assert!(msg.contains("2 folders") && msg.contains("L2_Platform"), "{msg}");
         assert_eq!(std::fs::read_to_string(dest.join("L1_Sensing/note.md")).unwrap(), "l1");
         assert!(dest.join("Papers/a.md").exists() && !dest.join("Papers/a.pdf").exists(), "papers arrive without PDFs");
         assert!(std::fs::read_dir(dest.join("L2_Platform")).map(|mut d| d.next().is_none()).unwrap_or(true));
-        assert!(pull(&dest, &FILE).unwrap().starts_with("Up to date"));
+        assert!(pull(&dest, &FILE, &|_, _| {}).unwrap().starts_with("Up to date"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
