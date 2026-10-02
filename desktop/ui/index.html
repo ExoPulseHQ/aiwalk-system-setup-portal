@@ -108,6 +108,12 @@
   .quiet { color: var(--muted); padding: 16px 0 0; margin: 0; }
   .item.click { cursor: pointer; border-radius: 6px; }
   .item.click:hover { background: var(--tint); }
+  /* where a vault lives on this computer: text on top, buttons on their own line so a long path never hides them */
+  .place { padding: 12px 4px; border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); margin: 12px 0; }
+  .place .title { font-weight: 700; }
+  .place .path { overflow-wrap: anywhere; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 13px; }
+  .place .buttons { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-top: 10px; }
+  .place .cmd { overflow-wrap: anywhere; }
   .banner { background: var(--peach); color: #231C33; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; }
   .empty { padding: 48px 0; max-width: 56ch; }
   .empty h2 { margin-bottom: 8px; }

@@ -184,16 +184,34 @@ fn default_dest(repo: &str) -> PathBuf {
     home().join("Documents/aIwalk").join(repo.rsplit('/').next().unwrap_or(repo))
 }
 
-/// This computer's copy of `repo`: a vault Obsidian knows whose origin is that repo, else the default folder.
-fn find(repo: &str) -> Option<String> {
-    let mut paths = obsidian_vaults();
-    paths.push(default_dest(repo).to_string_lossy().into());
-    paths.into_iter().find(|p| {
-        run(Path::new(p), &["remote", "get-url", "origin"], &[]).is_ok_and(|u| {
-            let u = u.trim().trim_end_matches('/').trim_end_matches(".git").to_lowercase();
-            u.ends_with(&format!("/{}", repo.to_lowercase())) || u.ends_with(&format!(":{}", repo.to_lowercase()))
-        })
+/// Which folder the person chose for each repo, so it wins over any other copy Obsidian knows.
+fn chosen_file() -> PathBuf { home().join(".config/aiwalk-setup/vaults.json") }
+
+fn chosen() -> serde_json::Map<String, serde_json::Value> {
+    std::fs::read_to_string(chosen_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn remember(repo: &str, path: &Path) {
+    let mut c = chosen();
+    c.insert(repo.into(), path.to_string_lossy().into());
+    let _ = std::fs::create_dir_all(chosen_file().parent().unwrap());
+    let _ = std::fs::write(chosen_file(), serde_json::Value::Object(c).to_string());
+}
+
+fn is_copy_of(path: &str, repo: &str) -> bool {
+    run(Path::new(path), &["remote", "get-url", "origin"], &[]).is_ok_and(|u| {
+        let u = u.trim().trim_end_matches('/').trim_end_matches(".git").to_lowercase();
+        u.ends_with(&format!("/{}", repo.to_lowercase())) || u.ends_with(&format!(":{}", repo.to_lowercase()))
     })
+}
+
+/// This computer's copy of `repo`: the folder chosen in this app, else a vault Obsidian knows whose origin
+/// is that repo, else the default folder.
+fn find(repo: &str) -> Option<String> {
+    let mut paths: Vec<String> = chosen().get(repo).and_then(|v| v.as_str()).map(String::from).into_iter().collect();
+    paths.extend(obsidian_vaults());
+    paths.push(default_dest(repo).to_string_lossy().into());
+    paths.into_iter().find(|p| is_copy_of(p, repo))
 }
 
 // ---------------------------------------------------------------- commands
@@ -226,12 +244,9 @@ pub fn default_folder(repo: String) -> String { default_dest(&repo).to_string_lo
 #[tauri::command(async)]
 pub fn vault_link(repo: String, path: String) -> Result<String, String> {
     let url = run(Path::new(&path), &["remote", "get-url", "origin"], &[]).map_err(|_| "That folder is not a git copy of a vault".to_string())?;
-    let u = url.trim().trim_end_matches('/').trim_end_matches(".git").to_lowercase();
-    let r = repo.to_lowercase();
-    if !(u.ends_with(&format!("/{r}")) || u.ends_with(&format!(":{r}"))) {
-        return Err(format!("That folder is a copy of {}, not {repo}", url.trim()));
-    }
+    if !is_copy_of(&path, &repo) { return Err(format!("That folder is a copy of {}, not {repo}", url.trim())) }
     register(Path::new(&path));
+    remember(&repo, Path::new(&path));
     Ok("Using the copy in that folder".into())
 }
 
@@ -245,6 +260,7 @@ pub fn vault_download(app: tauri::AppHandle, repo: String, dest: Option<String>)
     let report = |pct: u32| { let _ = app.emit("vault-progress", (&repo, pct)); };
     let msg = clone(&format!("https://github.com/{repo}.git"), &dest, &[], &report)?;
     register(&dest);
+    remember(&repo, &dest);
     Ok(msg)
 }
 

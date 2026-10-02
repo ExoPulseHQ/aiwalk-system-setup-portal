@@ -246,12 +246,25 @@ function downloadRow(v) {
     try { toast(await work()); } catch (e) { msg.textContent = e; }
     await refreshLocal(); loadTeam();
   };
+  const useCopy = el("button", "small ghost", path ? "Change folder" : "Use a copy I already have");
+  useCopy.onclick = async () => {
+    const p = await invoke("pick_folder", { title: `Pick your copy of ${v.name}` });
+    if (!p) return;
+    try { toast(await invoke("vault_link", { repo: v.repo, path: p })); await refreshLocal(); loadTeam(); }
+    catch (e) { msg.textContent = e; }
+  };
   if (path) {
     const update = el("button", "small ghost", "Get latest"), open = el("button", "small", "Open in Obsidian");
     update.onclick = busy(update, () => invoke("vault_update", { path }));
     open.disabled = !local.obsidian;
     open.onclick = () => invoke("vault_open", { path });
-    return item("On this computer", path, null, msg, update, open);
+    const box = el("div", "place");
+    const text = el("div", "text");
+    text.append(el("div", "title", "On this computer"), el("div", "sub path", path), msg);
+    const buttons = el("div", "buttons");
+    buttons.append(useCopy, update, open);
+    box.append(text, buttons);
+    return box;
   }
   if (!v.permission) return el("span");
   const name = v.repo.split("/").pop();
@@ -272,23 +285,12 @@ function downloadRow(v) {
     chosen[v.repo] = parent.replace(/[\\/]+$/, "") + (parent.includes("\\") ? "\\" : "/") + name;
     where.textContent = chosen[v.repo];
   };
-  const have = el("button", "small ghost", "Use a copy I already have");
-  have.onclick = async () => {
-    const path = await invoke("pick_folder", { title: `Pick your existing copy of ${v.name}` });
-    if (!path) return;
-    try { toast(await invoke("vault_link", { repo: v.repo, path })); await refreshLocal(); loadTeam(); }
-    catch (e) { msg.textContent = e; }
-  };
-  const row = el("div", "item");
+  box.className = "place";
   const text = el("div", "text");
-  text.append(el("div", "title", "Not on this computer yet"), sub);
-  row.append(text, bar, get);
-  const more = el("div", "row");
-  more.style.padding = "0 4px 12px";
-  more.append(change, have, msg);
-  box.append(row, more);
-  row.style.borderBottom = "0";
-  more.style.borderBottom = "1px solid var(--line)";
+  text.append(el("div", "title", "Not on this computer yet"), sub, msg);
+  const buttons = el("div", "buttons");
+  buttons.append(change, useCopy, bar, get);
+  box.append(text, buttons);
   return box;
 }
 const chosen = {};
