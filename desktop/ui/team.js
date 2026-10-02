@@ -309,10 +309,35 @@ function obsidianNotice() {
   return box;
 }
 
+// gh and git come with the app (git only on Windows); what is still missing blocks sign-in, with the fix.
+function missingTools(t) {
+  const box = el("div", "empty");
+  box.append(el("h1", null, "One more thing before signing in"),
+    el("p", "lede", "This app talks to GitHub through two small programs. This computer is missing:"));
+  const list = el("div", "list");
+  if (!t.gh) list.append(item("GitHub CLI (gh)", "It normally comes with this app. Reinstall the app, or install gh from cli.github.com.", null));
+  if (!t.git) {
+    if (t.os === "macos") {
+      const b = el("button", "small", "Install git");
+      b.onclick = async () => { b.disabled = true; try { await invoke("install_git"); toast("Follow the installer macOS opened, then come back"); } catch (e) { toast(e); b.disabled = false; } };
+      list.append(item("git", "macOS installs it with its command line tools. It takes a few minutes.", null, b));
+    } else {
+      list.append(item("git", t.os === "linux" ? "Install it from a terminal: sudo apt install git (Ubuntu, Debian), then come back."
+                                              : "It normally comes with this app. Reinstall the app.", null));
+    }
+  }
+  const again = el("button", null, "Check again");
+  again.onclick = () => loadTeam();
+  box.append(list, again);
+  return box;
+}
+
 let lastTeam = null;
 async function loadTeam(viewAs) {
   const page = teamPage();
   if (!page.childElementCount) page.append(el("p", "dim", "Reading GitHub…"));
+  const t = await invoke("tools");
+  if (!t.gh || !t.git) return page.replaceChildren(missingTools(t));
   const s = lastTeam = await invoke("team_access");
   if (!s.user) return page.replaceChildren(signInView(s.error));
   await refreshLocal();

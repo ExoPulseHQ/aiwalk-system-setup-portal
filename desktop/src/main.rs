@@ -32,8 +32,47 @@ pub fn here() -> PathBuf {
 pub fn find_tool(bundled: &str, name: &str) -> String {
     let p = here().join(bundled);
     if p.exists() { return p.to_string_lossy().into() }
-    std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.exists()))
-        .map(|p| p.to_string_lossy().into()).unwrap_or_else(|| name.into())
+    on_path(name).map(|p| p.to_string_lossy().into()).unwrap_or_else(|| name.into())
+}
+
+/// `name` as PATH would find it (with .exe on Windows).
+pub fn on_path(name: &str) -> Option<PathBuf> {
+    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join(&file)).find(|p| p.is_file()))
+}
+
+/// Puts the bundled gh and git (Windows: MinGit) ahead of PATH for this app and everything it starts, so a new
+/// member's computer needs neither. Bundles sit next to the binary (Linux folder, Windows), or in Contents/Resources (Mac).
+fn use_bundled_tools() {
+    let roots = [here(), here().join("../Resources"), here().join("../lib/aIwalk System Setup")];
+    let dirs: Vec<PathBuf> = roots.iter().flat_map(|r| [r.join("tools/gh"), r.join("tools/git/cmd")]).filter(|d| d.is_dir()).collect();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    if let Ok(joined) = std::env::join_paths(dirs.into_iter().chain(std::env::split_paths(&path))) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
+#[derive(Serialize)]
+struct Tools {
+    gh: Option<String>,
+    git: Option<String>,
+    os: &'static str,
+}
+
+/// Where gh and git come from on this computer; None when missing, and the page says how to get it.
+#[tauri::command]
+fn tools() -> Tools {
+    let s = |p: Option<PathBuf>| p.map(|p| p.to_string_lossy().into_owned());
+    Tools { gh: s(on_path("gh")), git: s(on_path("git")), os: std::env::consts::OS }
+}
+
+/// macOS: asks Apple's installer for the command line tools, which include git.
+#[tauri::command]
+fn install_git() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return Command::new("xcode-select").arg("--install").spawn().map(|_| ()).map_err(|e| e.to_string());
+    #[allow(unreachable_code)]
+    Err("Install git with your system's package manager".into())
 }
 
 /// Runs a program with optional stdin, killed after `timeout` seconds; (exit code, stdout + stderr).
@@ -270,17 +309,18 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, team_access, sign_in, sign_out, switch_account,
+    tauri::generate_handler![platform, tools, install_git, team_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, team_access, sign_in, sign_out, switch_account,
+    tauri::generate_handler![platform, tools, install_git, team_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
 
 fn main() {
+    use_bundled_tools();
     // `--dump` prints what the page would get, for checking without a window
     #[cfg(target_os = "linux")]
     if let Some(flag) = std::env::args().find(|a| a == "--windows-open" || a == "--windows-stop") {
