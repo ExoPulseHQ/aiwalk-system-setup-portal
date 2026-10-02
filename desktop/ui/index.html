@@ -220,6 +220,7 @@
 <nav>
   <div class="app">aIwalk<span>System Setup</span></div>
   <button data-page="team">Team access</button>
+  <button data-page="machines">Machines</button>
   <button data-page="android" class="linux">Android phone <span class="os">Linux</span></button>
   <button data-page="vm" class="linux">Windows VM <span class="os">Linux</span></button>
   <div class="gap"></div>
@@ -229,6 +230,7 @@
   <div class="page" id="android" hidden></div>
   <div class="page" id="vm" hidden></div>
   <div class="page" id="team" hidden></div>
+  <div class="page" id="machines" hidden></div>
 </main>
 <div id="toast"></div>
 <dialog id="dialog"></dialog>
@@ -312,7 +314,7 @@ function switchBox(on, onchange) {
   return s;
 }
 
-const pages = { team: () => loadTeam(), android: () => refreshPhones(true), vm: () => refreshVm() };
+const pages = { team: () => loadTeam(), machines: () => loadMachines(), android: () => refreshPhones(true), vm: () => refreshVm() };
 let current;
 function go(name) {
   current = name;

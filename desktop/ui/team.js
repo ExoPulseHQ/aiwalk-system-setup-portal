@@ -226,7 +226,7 @@ function machinesSection(machines) {
   const sec = el("div", "section");
   const head = el("header");
   const again = el("button", "small ghost", "Check again");
-  head.append(el("h2", null, "Machines"), el("span", "grow"), again);
+  head.append(el("h2", null, "Reachable now"), el("span", "grow"), again);
   sec.append(head, el("p", "sub", "Whether this computer can reach each machine right now, through Cloudflare."));
   const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
   const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
@@ -253,7 +253,7 @@ function machinesSection(machines) {
   sec.append(help, list);
 
   const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], "no-tunnel": ["p0", "Tunnel not set up"],
-                 "sign-in": ["pending", "Finish sign-in above"], "no-cloudflared": ["p0", "cloudflared missing"] };
+                 "sign-in": ["pending", "Finish sign-in on Team access"], "no-cloudflared": ["p0", "cloudflared missing"] };
   // a machine reached through another one shares that one's way in
   const way = m => byHost[m.via] || m;
   const check = async () => {
@@ -374,7 +374,7 @@ function machinesSection(machines) {
     return box;
   }
 
-  const timer = setInterval(() => { if (!sec.isConnected) return clearInterval(timer); if (current === "team" && !document.hidden) status(); }, 15000);
+  const timer = setInterval(() => { if (!sec.isConnected) return clearInterval(timer); if (current === "machines" && !document.hidden) status(); }, 15000);
   again.onclick = () => { check(); status(); };
   const onLab = () => { if (!sec.isConnected) return window.removeEventListener("lab-signed-in", onLab); check(); status(); };
   window.addEventListener("lab-signed-in", onLab);
@@ -761,9 +761,29 @@ async function loadTeam(viewAs) {
     badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
   if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams, org.tree)); }
-  const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
-  if (machines.length) parts.push(machinesSection(machines));
   const orgs = new Set(s.vaults.filter(v => v.access).map(v => v.access.org));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs, orgs)));
   page.replaceChildren(...parts);
+}
+
+// Machines, its own page on every OS: which lab machines this computer can reach, their load, and their desktops.
+// The list comes from the vaults' rules, read with the team's access, so it reuses Team access's last read.
+async function loadMachines() {
+  const page = document.getElementById("machines");
+  let s = lastTeam;
+  if (!s) {
+    const progress = stage("Reading your access from GitHub");
+    page.replaceChildren(el("h1", null, "Machines"), progress);
+    const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
+    s = lastTeam = await invoke("team_access").finally(stop);
+  }
+  const head = [el("h1", null, "Machines"),
+    el("p", "lede", "The lab machines, reached only through Cloudflare after you sign in with GitHub. Click a machine for its hardware and desktops.")];
+  if (!s.user) {
+    const b = el("button", null, "Go to Team access");
+    b.onclick = () => go("team");
+    return page.replaceChildren(...head, el("p", "sub", "Sign in on Team access first: the machines follow your GitHub account."), b);
+  }
+  const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
+  page.replaceChildren(...head, machines.length ? machinesSection(machines) : el("p", "sub", "No machines are listed for your team yet."));
 }
