@@ -199,6 +199,40 @@ pub fn forget_access() {
     }
 }
 
+/// Who this computer is signed in to the lab machines as: the email and expiry inside its Cloudflare Access token
+/// for `tunnel`. None when there is no sign-in. Shown next to the GitHub account so the two can be seen to match.
+#[tauri::command(async)]
+pub fn lab_identity(tunnel: String) -> Option<serde_json::Value> {
+    let cf = cloudflared()?;
+    let (code, jwt) = sh(&cf, &["access", "token", &format!("-app=https://{tunnel}")], 10);
+    if code != 0 { return None }
+    let payload = jwt.trim().split('.').nth(1)?;
+    let claims: serde_json::Value = serde_json::from_slice(&base64url(payload)?).ok()?;
+    let email = claims["email"].as_str().unwrap_or_default().to_lowercase();
+    // the GitHub account's own emails; reading them needs gh's user:email scope, so "matches" stays null without it
+    let mine = crate::gh(&["api", "user/emails", "--jq", ".[].email"]).ok()
+        .or_else(|| crate::gh(&["api", "user", "--jq", ".email // empty"]).ok().filter(|e| !e.trim().is_empty()));
+    let matches = mine.map(|m| m.lines().any(|l| l.trim().eq_ignore_ascii_case(&email)));
+    Some(serde_json::json!({ "email": email, "expires": claims["exp"], "matches": matches }))
+}
+
+/// Step 2 undone on its own: used when the lab sign-in belongs to someone other than the GitHub account here.
+#[tauri::command]
+pub fn lab_sign_out() { forget_access() }
+
+/// base64url without padding, as JWTs use it.
+fn base64url(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| match c { b'A'..=b'Z' => Some(c - b'A'), b'a'..=b'z' => Some(c - b'a' + 26), b'0'..=b'9' => Some(c - b'0' + 52),
+                                b'-' => Some(62), b'_' => Some(63), _ => None };
+    let mut out = Vec::new();
+    let (mut buf, mut bits) = (0u32, 0);
+    for c in s.bytes().filter(|&c| c != b'=') {
+        buf = (buf << 6) | val(c)? as u32; bits += 6;
+        if bits >= 8 { bits -= 8; out.push((buf >> bits) as u8); }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -215,5 +249,12 @@ mod tests {
         for f in ours { assert!(!dir.join(f).exists(), "{f} should be gone") }
         for f in keep { assert!(dir.join(f).exists(), "{f} should stay") }
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn jwt_payloads_decode() {
+        // {"email":"a@b.c","exp":1}
+        assert_eq!(super::base64url("eyJlbWFpbCI6ImFAYi5jIiwiZXhwIjoxfQ").unwrap(), br#"{"email":"a@b.c","exp":1}"#);
+        assert!(super::base64url("bad*").is_none());
     }
 }

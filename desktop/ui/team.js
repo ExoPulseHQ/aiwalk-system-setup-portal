@@ -23,7 +23,7 @@ function badge(s) {
     el("span", "method " + (a.method === "temporary" ? "m-temporary" : "m-off"), "Temporary credential"),
     el("span", "method m-off", "Security key"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, claudeLine());
+  who.append(methods, labLine(s), claudeLine());
   const out = el("button", "ghost small", "Sign out of GitHub");
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -41,7 +41,7 @@ function badge(s) {
     pick.append(new Option("Switch GitHub account", ""), ...others.map(x => new Option(x.login, x.login)));
     pick.onchange = async () => {
       pick.disabled = true;
-      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}; the lab machines will ask this account to sign in`); labSignInNext = true; }
+      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}; step 2 signs this account in to the lab machines`); labSignInNext = true; }
       catch (e) { toast(`Could not switch: ${e}`); }
       loadTeam();
     };
@@ -53,6 +53,52 @@ function badge(s) {
   who.append(actions);
   b.append(el("div", "band"), el("div", "face", initials(name)), who);
   return b;
+}
+
+// Sign-in is one thing in two steps: 1 GitHub (gh, for repos), 2 the lab machines (Cloudflare Access, its own
+// GitHub sign-in in the browser, because Access cannot take gh's token). Both must be the same person, so step 2 lives
+// here next to step 1, shows whom Cloudflare knows, and is redone whenever the GitHub account changes.
+function labLine(s) {
+  const tunnel = s.vaults.flatMap(v => (v.access && v.access.machines) || []).map(m => m.tunnel).find(Boolean);
+  const line = el("div", "claude-line");
+  if (!tunnel) return line;
+  const state = el("span", "method m-off"), msg = el("span", "sub");
+  line.append(el("span", "label", "Lab machines"), state, msg);
+  const step2 = async b => {
+    msg.textContent = "";
+    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnel })); }
+    catch (e) { msg.textContent = e; }
+    window.dispatchEvent(new Event("lab-signed-in"));
+    paint();
+  };
+  const paint = async () => {
+    line.querySelectorAll("button").forEach(b => b.remove());
+    state.className = "method m-off"; state.replaceChildren(el("span", "spinner"));
+    const id = await invoke("lab_identity", { tunnel });
+    if (!id) {
+      state.textContent = "Step 2 of 2 not done";
+      msg.textContent = "A browser opens with your GitHub account; no Cloudflare account is needed.";
+      const b = el("button", "small", "Finish signing in");
+      b.onclick = () => step2(b);
+      line.append(b);
+      if (labSignInNext) { labSignInNext = false; step2(b); }
+      return;
+    }
+    const until = new Date(id.expires * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    if (id.matches === false) {
+      // someone else's GitHub account in the browser: the machines would see a different person than this app
+      state.className = "method m-temporary"; state.textContent = `Signed in as ${id.email}`;
+      msg.textContent = `That is not ${s.user}. Sign out of GitHub in the browser (or use the right account there), then sign in again.`;
+      const b = el("button", "small", "Sign in again");
+      b.onclick = async () => { await invoke("lab_sign_out"); step2(b); };
+      line.append(b);
+      return;
+    }
+    state.className = "method m-key"; state.textContent = `Signed in as ${id.email}`;
+    msg.textContent = `until ${until}, ` + (id.matches ? `same person as @${s.user}` : `not checked against @${s.user}: this GitHub sign-in predates the email check, sign out and in once`);
+  };
+  paint();
+  return line;
 }
 
 // Claude Code on this computer: the team's vault workflow runs through it, so the badge says whether it is ready.
@@ -170,9 +216,7 @@ function tree(t, grants, extra) {
   return li;
 }
 
-// Signing in to GitHub here also signs this computer in for the lab machines, so a person signs in once.
-// Cloudflare Access cannot take gh's token, so its own GitHub sign-in runs right after, in the browser that just
-// signed in: GitHub asks to authorise the first time only.
+// Set after step 1 (GitHub) succeeds or the account switches, so the badge runs step 2 at once.
 let labSignInNext = false;
 
 // Lab machines, one row each, and whether this computer can connect to it right now. Members only ever
@@ -209,7 +253,7 @@ function machinesSection(machines) {
   sec.append(help, list);
 
   const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], "no-tunnel": ["p0", "Tunnel not set up"],
-                 "sign-in": ["pending", "Sign-in needed"], "no-cloudflared": ["p0", "cloudflared missing"] };
+                 "sign-in": ["pending", "Finish sign-in above"], "no-cloudflared": ["p0", "cloudflared missing"] };
   // a machine reached through another one shares that one's way in
   const way = m => byHost[m.via] || m;
   const check = async () => {
@@ -225,16 +269,9 @@ function machinesSection(machines) {
     await showHelp(state);
   };
 
-  // what this computer still needs: a Cloudflare sign-in, the ssh aliases
+  // what this computer still needs: the ssh aliases (the sign-in itself is step 2 on the badge)
   async function showHelp(state) {
     help.replaceChildren();
-    const needSignIn = hosts.find(m => state[way(m).host] === "sign-in");
-    if (needSignIn) {
-      const b = el("button", "small", "Sign in with GitHub");
-      b.onclick = async () => { try { toast(await working(b, "Waiting for the browser", () => invoke("access_login", { tunnel: way(needSignIn).tunnel }))); } catch (e) { toast(e); } check(); };
-      help.append(item("Finish signing in for the lab machines", "A browser opens with your GitHub account. No Cloudflare account is needed: it only checks that you are on the team.", null, b));
-      if (labSignInNext) { labSignInNext = false; b.click(); }
-    }
     const ssh = await invoke("ssh_status", { machines });
     if (ssh === "missing") {
       const b = el("button", "small", "Set up connections");
@@ -339,6 +376,8 @@ function machinesSection(machines) {
 
   const timer = setInterval(() => { if (!sec.isConnected) return clearInterval(timer); if (current === "team" && !document.hidden) status(); }, 15000);
   again.onclick = () => { check(); status(); };
+  const onLab = () => { if (!sec.isConnected) return window.removeEventListener("lab-signed-in", onLab); check(); status(); };
+  window.addEventListener("lab-signed-in", onLab);
   check(); status();
   return sec;
 }
@@ -471,14 +510,14 @@ function signInView(error, adding) {
   const box = el("div", "empty");
   box.append(el("h1", null, adding ? "Add another GitHub account" : "Sign in with GitHub"),
     el("p", "lede", adding ? "The page that opens approves whichever account your browser is signed in to. Sign in to the other account there first, or use a private window. The new account becomes the active one; switch back from the badge."
-                           : "Your team access follows your GitHub account. Sign in once on this computer; the app keeps no token of its own."));
+                           : "Your team access follows your GitHub account. Signing in has two steps in the browser: GitHub for the repos, then the same account for the lab machines. The app keeps no token of its own."));
   const code = el("p", "sub"), btn = el("button", null, "Sign in with GitHub");
   btn.onclick = async () => {
     code.textContent = "";
     const stop = await listen("gh-code", e => {
       code.replaceChildren("Enter this code on the GitHub page that just opened, then approve: ", el("strong", "cmd", e.payload));
     });
-    const ok = await working(btn, "Waiting for GitHub", () => invoke("sign_in"));
+    const ok = await working(btn, "Step 1 of 2: waiting for GitHub", () => invoke("sign_in"));
     stop();
     if (ok) { labSignInNext = true; loadTeam(); } else code.textContent = "Sign-in was not finished. Try again.";
   };
