@@ -59,14 +59,15 @@ function badge(s) {
 // GitHub sign-in in the browser, because Access cannot take gh's token). Both must be the same person, so step 2 lives
 // here next to step 1, shows whom Cloudflare knows, and is redone whenever the GitHub account changes.
 function labLine(s) {
-  const tunnel = s.vaults.flatMap(v => (v.access && v.access.machines) || []).map(m => m.tunnel).find(Boolean);
+  const tunnels = myTunnels(s);
   const line = el("div", "claude-line");
-  if (!tunnel) return line;
+  if (!tunnels.length) return line;
+  let topped = false;
   const state = el("span", "method m-off"), msg = el("span", "sub");
   line.append(el("span", "label", "Machines"), state, msg);
   const step2 = async b => {
     msg.textContent = "";
-    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnel })); }
+    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels })); }
     catch (e) { msg.textContent = e; }
     window.dispatchEvent(new Event("lab-signed-in"));
     paint();
@@ -74,7 +75,7 @@ function labLine(s) {
   const paint = async () => {
     line.querySelectorAll("button").forEach(b => b.remove());
     state.className = "method m-off"; state.replaceChildren(el("span", "spinner"));
-    const id = await invoke("lab_identity", { tunnel });
+    const id = await invoke("lab_identity", { tunnels });
     if (!id) {
       state.textContent = "Step 2 of 2 not done";
       msg.textContent = "A browser opens with your GitHub account; no Cloudflare account is needed.";
@@ -94,6 +95,8 @@ function labLine(s) {
       line.append(b);
       return;
     }
+    // a machine added or split off since the last sign-in: the team sign-in covers it without the browser
+    if (id.missing && !topped) { topped = true; const b = el("button", "small", "Finish signing in"); line.append(b); return step2(b); }
     state.className = "method m-key"; state.textContent = `Signed in as ${id.email}`;
     msg.textContent = `until ${until}, ` + (id.matches ? `same person as @${s.user}` : `not checked against @${s.user}: this GitHub sign-in predates the email check, sign out and in once`);
   };
@@ -267,6 +270,7 @@ function machinesSection(machines, org, user) {
     for (const h of Object.keys(state)) if (live.has(h)) state[h] = "up";
     lastState = state;
     hosts.forEach(m => {
+      if (org && !connectRule(way(m).host, machines, org).may(user)) { pills[m.host].className = "perm p0"; pills[m.host].textContent = "No access"; return; }
       const [cls, text] = LOOK[state[way(m).host]] || LOOK.down;
       pills[m.host].className = "perm " + cls; pills[m.host].textContent = text;
     });
@@ -796,15 +800,30 @@ async function loadMachines() {
 // Who may connect to a machine: exactly what its Cloudflare Access policy lets through. That is the members of
 // core, of the teams the machine's code repos name in vault_rules.json (machines.teams), and of machine-<host>,
 // the extra people an owner added here. Owners see everyone and add or remove extras; others see only themselves.
+function connectRule(host, machines, org) {
+  const teamsFor = [...new Set(["core", ...machines.filter(m => m.host === host).flatMap(m => m.teams || [])])];
+  const team = slug => org.teams.find(t => t.slug === slug) || { slug, members: [] };
+  const via = login => teamsFor.filter(t => team(t).members.includes(login));
+  const extra = login => team(`machine-${host}`).members.includes(login);
+  return { teamsFor, team, via, extra, may: login => via(login).length > 0 || extra(login) };
+}
+
+// The tunnels this person may use, so signing in never asks Cloudflare for a machine it would refuse.
+function myTunnels(s) {
+  const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
+  const org = (s.vaults.find(v => v.access) || {}).access;
+  const hosts = [...new Map(machines.filter(m => m.tunnel).map(m => [m.host, m.tunnel])).entries()];
+  return hosts.filter(([h]) => !org || connectRule(h, machines, org).may(s.user)).map(([, t]) => t);
+}
+
 function whoCanConnect(host, machines, org, user) {
   const box = el("div", "who-connect");
   const owner = (org.people[user] || {}).grants === null;
-  const teamsFor = [...new Set(["core", ...machines.filter(m => m.host === host).flatMap(m => m.teams || [])])];
+  const rule = connectRule(host, machines, org);
+  const { teamsFor, team, via } = rule;
   const extraSlug = `machine-${host}`;
-  const team = slug => org.teams.find(t => t.slug === slug) || { slug, members: [] };
   const paint = () => {
     const extra = new Set(team(extraSlug).members);
-    const via = login => teamsFor.filter(t => team(t).members.includes(login));
     const head = el("div", "row");
     head.append(el("span", "k", "Who can connect"), el("span", "sub", `Teams: ${teamsFor.join(", ")}, plus extra people`));
     box.replaceChildren(head);

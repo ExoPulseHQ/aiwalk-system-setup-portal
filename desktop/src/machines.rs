@@ -55,14 +55,23 @@ pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_
 
 /// Signs this computer in to Cloudflare Access for `tunnel`: a browser opens for the GitHub sign-in.
 #[tauri::command(async)]
-pub fn access_login(tunnel: String) -> Result<String, String> {
+pub fn access_login(tunnels: Vec<String>) -> Result<String, String> {
     let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
-    let (code, out) = sh(&cf, &["access", "login", &format!("https://{tunnel}")], 300);
-    if code != 0 { return Err(out.lines().last().unwrap_or("Sign-in was not finished").into()) }
-    // the status hostname sits in the same Access app; the browser already holds the session, so this one passes at once
-    let _ = sh(&cf, &["access", "login", &format!("https://{}", tunnel.replacen("ssh-", "status-", 1))], 60);
-    Ok("Signed in: the machines know you are on the team".into())
+    // each machine is its own Access app with its own token. The first sign-in may open the browser; after it,
+    // cloudflared trades the team sign-in for the others' tokens without one. Only machines the person may reach
+    // are passed in: for any other, cloudflared would open the browser on a refusal and wait.
+    let mut failed = vec![];
+    for (i, tunnel) in tunnels.iter().enumerate() {
+        if has_token(&cf, tunnel) && has_token(&cf, &tunnel.replacen("ssh-", "status-", 1)) { continue }
+        let (code, _) = sh(&cf, &["access", "login", &format!("https://{tunnel}")], if i == 0 { 300 } else { 60 });
+        if code != 0 { failed.push(tunnel.split('.').next().unwrap_or(tunnel).trim_start_matches("ssh-").to_string()); continue }
+        let _ = sh(&cf, &["access", "login", &format!("https://{}", tunnel.replacen("ssh-", "status-", 1))], 60);
+    }
+    if failed.is_empty() { Ok("Signed in: the machines know you are on the team".into()) }
+    else { Err(format!("Sign-in was not finished for {}", failed.join(", "))) }
 }
+
+fn has_token(cf: &str, host: &str) -> bool { sh(cf, &["access", "token", &format!("-app=https://{host}")], 10).0 == 0 }
 
 fn ssh_config() -> PathBuf { home().join(".ssh/config") }
 
@@ -199,13 +208,14 @@ pub fn forget_access() {
     }
 }
 
-/// Who this computer is signed in to the machines as: the email and expiry inside its Cloudflare Access token
-/// for `tunnel`. None when there is no sign-in. Shown next to the GitHub account so the two can be seen to match.
+/// Who this computer is signed in to the machines as: the email and expiry inside one of its Cloudflare Access
+/// tokens, and how many of `tunnels` still have none. None when there is no sign-in at all. Shown next to the
+/// GitHub account so the two can be seen to match.
 #[tauri::command(async)]
-pub fn lab_identity(tunnel: String) -> Option<serde_json::Value> {
+pub fn lab_identity(tunnels: Vec<String>) -> Option<serde_json::Value> {
     let cf = cloudflared()?;
-    let (code, jwt) = sh(&cf, &["access", "token", &format!("-app=https://{tunnel}")], 10);
-    if code != 0 { return None }
+    let missing = tunnels.iter().filter(|t| !has_token(&cf, t)).count();
+    let jwt = tunnels.iter().find_map(|t| { let (c, out) = sh(&cf, &["access", "token", &format!("-app=https://{t}")], 10); (c == 0).then_some(out) })?;
     let payload = jwt.trim().split('.').nth(1)?;
     let claims: serde_json::Value = serde_json::from_slice(&base64url(payload)?).ok()?;
     let email = claims["email"].as_str().unwrap_or_default().to_lowercase();
@@ -213,7 +223,7 @@ pub fn lab_identity(tunnel: String) -> Option<serde_json::Value> {
     let mine = crate::gh(&["api", "user/emails", "--jq", ".[].email"]).ok()
         .or_else(|| crate::gh(&["api", "user", "--jq", ".email // empty"]).ok().filter(|e| !e.trim().is_empty()));
     let matches = mine.map(|m| m.lines().any(|l| l.trim().eq_ignore_ascii_case(&email)));
-    Some(serde_json::json!({ "email": email, "expires": claims["exp"], "matches": matches }))
+    Some(serde_json::json!({ "email": email, "expires": claims["exp"], "matches": matches, "missing": missing }))
 }
 
 /// Step 2 undone on its own: used when the lab sign-in belongs to someone other than the GitHub account here.
