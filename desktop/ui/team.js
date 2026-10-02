@@ -187,6 +187,8 @@ function machinesSection(machines) {
   const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
   const list = el("div", "list"), pills = {}, meters = {}, specs = {};
+  const live = new Set();   // machines whose status page answered: signed in and reachable, whatever an older check said
+  let lastState = null;
   hosts.forEach(m => {
     const p = el("span", "perm checking"); p.append(el("span", "spinner"));
     pills[m.host] = p;
@@ -194,7 +196,8 @@ function machinesSection(machines) {
     if (m.sometimes) right.push(el("span", "tag", "Often off"));
     if (m.via) right.push(el("span", "tag", `Through ${m.via}`));
     meters[m.host] = el("span", "meters");
-    const row = item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, meters[m.host], ...right, p);
+    const row = item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p);
+    row.querySelector(".text").append(meters[m.host]);   // live numbers sit under the name, the right side keeps the status
     // what the machine has, opened by clicking its row once its status is known
     specs[m.host] = el("div", "specs"); specs[m.host].hidden = true;
     row.classList.add("click");
@@ -212,6 +215,8 @@ function machinesSection(machines) {
     Object.values(pills).forEach(p => { p.className = "perm checking"; p.replaceChildren(el("span", "spinner")); });
     const targets = [...new Map(hosts.map(m => [way(m).host, way(m).tunnel || null])).entries()];
     const state = await working(again, "Checking", () => invoke("reachable", { machines: targets }));
+    for (const h of Object.keys(state)) if (live.has(h)) state[h] = "up";
+    lastState = state;
     hosts.forEach(m => {
       const [cls, text] = LOOK[state[way(m).host]] || LOOK.down;
       pills[m.host].className = "perm " + cls; pills[m.host].textContent = text;
@@ -246,10 +251,11 @@ function machinesSection(machines) {
   // live numbers from each machine's status page, every 15 s while this page is on screen
   const bar = (label, pct, title) => {
     const b = el("span", "meter-mini"); b.title = title;
-    const fill = el("i"); fill.style.width = `${Math.max(0, Math.min(100, pct || 0))}%`;
-    if (pct >= 85) fill.className = "hot";
+    const v = Math.max(0, Math.min(100, pct || 0));
+    const fill = el("i"); fill.style.width = `${v}%`;
+    if (v >= 85) fill.className = "hot";
     const track = el("span", "track"); track.append(fill);
-    b.append(el("span", "k", label), track);
+    b.append(el("span", "k", label), track, el("span", "v", `${Math.round(v)}%`));
     return b;
   };
   const gb = x => x == null ? "?" : `${Math.round(x)} GB`;
@@ -260,7 +266,12 @@ function machinesSection(machines) {
     for (const [host, s] of Object.entries(all)) {
       const g = s.gpus || [];
       const gpu = g.length ? Math.max(...g.map(x => x.util || 0)) : null;
+      // its status page answered through Cloudflare, so this computer is signed in and the tunnel is up
+      live.add(host);
+      const [cls, text] = LOOK.up; pills[host].className = "perm " + cls; pills[host].textContent = text;
+      const memPct = s.mem_gb ? 100 * s.mem_used_gb / s.mem_gb : 0;
       meters[host].replaceChildren(bar("CPU", s.cpu_pct, `CPU ${s.cpu_pct}% of ${s.threads} threads, load ${s.load.join(" ")}`),
+        bar("RAM", memPct, `Memory ${s.mem_used_gb} of ${s.mem_gb} GB in use`),
         ...(gpu == null ? [] : [bar("GPU", gpu, g.map(x => `${x.name}: ${x.util}%, ${Math.round(x.mem_used_mb / 1024)}/${Math.round(x.mem_total_mb / 1024)} GB`).join("\n"))]));
       const d = [["Processor", `${s.cpu} (${s.threads} threads)`], ["Memory", `${s.mem_used_gb} of ${s.mem_gb} GB in use`],
         ...g.map((x, i) => [`GPU ${g.length > 1 ? i : ""}`.trim(), `${x.name}, ${x.util}% busy, ${(x.mem_used_mb / 1024).toFixed(1)} of ${Math.round(x.mem_total_mb / 1024)} GB, ${x.temp_c} °C`]),
@@ -268,6 +279,8 @@ function machinesSection(machines) {
       specs[host].replaceChildren(...d.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
       if (s.disk_free_gb != null && s.disk_free_gb < 20) specs[host].append(el("p", "warn", `Disk almost full: ${gb(s.disk_free_gb)} left.`));
     }
+    // a check that finished before these numbers arrived may still be asking for a sign-in
+    if (lastState && [...live].some(h => lastState[h] !== "up")) { live.forEach(h => lastState[h] = "up"); showHelp(lastState); }
   };
   const timer = setInterval(() => { if (!sec.isConnected) return clearInterval(timer); if (current === "team" && !document.hidden) status(); }, 15000);
   again.onclick = () => { check(); status(); };
