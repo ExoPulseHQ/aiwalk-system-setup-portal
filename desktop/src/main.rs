@@ -74,15 +74,24 @@ fn tools() -> Tools {
 #[tauri::command]
 fn install_git() -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    return Command::new("xcode-select").arg("--install").spawn().map(|_| ()).map_err(|e| e.to_string());
+    return crate::cmd("xcode-select").arg("--install").spawn().map(|_| ()).map_err(|e| e.to_string());
     #[allow(unreachable_code)]
     Err("Install git with your system's package manager".into())
 }
 
 /// Runs a program with optional stdin, killed after `timeout` seconds; (exit code, stdout + stderr).
 /// 124 on timeout, 1 when it could not start, as the Python app did.
+/// A child process; on Windows without the console window a GUI app's child would otherwise flash up.
+pub fn cmd(prog: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut c = Command::new(prog);
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }   // CREATE_NO_WINDOW
+    c
+}
+
 pub fn sh_stdin(prog: &str, args: &[&str], stdin: Option<&str>, timeout: u64) -> (i32, String) {
-    let child = Command::new(prog).args(args).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+    let child = crate::cmd(prog).args(args).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
     let mut child = match child { Ok(c) => c, Err(e) => return (1, e.to_string()) };
     if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) { let _ = pipe.write_all(input.as_bytes()); }
@@ -118,7 +127,7 @@ const REQUESTS: &str = "exo-access-requests";
 
 /// Runs gh; Ok(stdout) on exit 0, Err(stderr or why it could not start) otherwise.
 pub fn gh(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
+    let out = crate::cmd("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -300,17 +309,17 @@ fn decline_request(org: String, number: u64) -> Result<(), String> {
 
 pub fn open_url(url: &str) {
     #[cfg(target_os = "linux")]
-    let _ = Command::new("xdg-open").arg(url).spawn();
+    let _ = crate::cmd("xdg-open").arg(url).spawn();
     #[cfg(target_os = "macos")]
-    let _ = Command::new("open").arg(url).spawn();
+    let _ = crate::cmd("open").arg(url).spawn();
     #[cfg(windows)]
-    let _ = Command::new("cmd").args(["/c", "start", "", url]).spawn();
+    let _ = crate::cmd("cmd").args(["/c", "start", "", url]).spawn();
 }
 
 /// gh's browser sign-in: emits "gh-code" with the one-time code, true once GitHub approved.
 #[tauri::command(async)]
 fn sign_in(app: tauri::AppHandle) -> bool {
-    let Ok(mut child) = Command::new("gh")
+    let Ok(mut child) = crate::cmd("gh")
         .args(["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--scopes", "user:email"])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return false };
     // answers "Press Enter to open github.com in your browser" ahead of time

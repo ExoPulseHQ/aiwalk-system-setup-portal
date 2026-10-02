@@ -1,0 +1,58 @@
+# Builds aIwalk System Setup for every desktop OS on a version tag (v0.1.0, ...) and publishes the installers as a
+# GitHub Release. Each runner first puts that OS's own gh, cloudflared (and on Windows, MinGit) into desktop/tools/,
+# checksums verified, so a new member's computer needs none of them.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,   tools: linux-amd64,   args: "" }
+          - { os: windows-latest, tools: windows-amd64, args: "" }
+          - { os: macos-latest,   tools: macos-arm64,   args: "--target aarch64-apple-darwin", rust: aarch64-apple-darwin }
+          - { os: macos-latest,   tools: macos-amd64,   args: "--target x86_64-apple-darwin",  rust: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+      - uses: swatinem/rust-cache@v2
+      - name: Bundled tools
+        shell: bash
+        run: bash desktop/fetch-tools.sh ${{ matrix.tools }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install -g @tauri-apps/cli@2
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tauriScript: tauri
+          args: ${{ matrix.args }}
+          tagName: ${{ github.ref_name }}
+          releaseName: aIwalk System Setup ${{ github.ref_name }}
+          releaseBody: |
+            Install the file for your computer:
+            - Windows: the `.msi` or `-setup.exe`
+            - macOS, Apple silicon (M1 and later): `aarch64.dmg`; Intel: `x64.dmg`
+            - Linux: the `.deb` (Ubuntu, Debian) or the `.AppImage`
+
+            gh, git (Windows) and cloudflared come with the app. The app is not signed with a paid certificate yet:
+            Windows SmartScreen asks once (More info, Run anyway). On macOS, open it once, then System Settings,
+            Privacy & Security, Open Anyway.
+          releaseDraft: false
+          prerelease: false

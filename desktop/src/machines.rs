@@ -6,7 +6,7 @@ use exo_core::{ssh_block, with_ssh_block, Machine};
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -130,7 +130,7 @@ pub fn open_forward(host: String, tunnel: String, user: String, display: u8, soc
     }
     let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
     let local = free_port(15900 + display as u16);
-    let mut child = Command::new("ssh")
+    let mut child = crate::cmd("ssh")
         .args(["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
                "-o", "StrictHostKeyChecking=accept-new", "-o", &format!("ProxyCommand=\"{cf}\" access ssh --hostname %h"),
                "-L", &format!("127.0.0.1:{local}:{target}"), &format!("{user}@{tunnel}")])

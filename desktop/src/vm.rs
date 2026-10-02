@@ -4,7 +4,7 @@ use crate::{home, sh};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 use tauri::Emitter;
 
@@ -200,7 +200,7 @@ pub fn connect(vm: &Vm, password: &str, progress: &dyn Fn(&str)) -> Result<(), S
         args.extend(drives(vm));
         args.extend(["+clipboard".into(), format!("/u:{}", vm.user), format!("/p:{password}"), "/scale:100".into(),
                      "/dynamic-resolution".into(), format!("/v:127.0.0.1:{}", vm.rdp_port)]);
-        let Ok(mut rdp) = Command::new("flatpak").args(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+        let Ok(mut rdp) = crate::cmd("flatpak").args(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
             else { return Err("FreeRDP is not installed: flatpak install flathub com.freerdp.FreeRDP".into()) };
         let started = SystemTime::now();
         loop {
@@ -270,7 +270,7 @@ pub fn shortcut_main(flag: &str) {
         notify("Shutting down Windows (up to 2 minutes)…");
         return notify(&stop(&vm));
     }
-    let open_app = || { let _ = std::env::current_exe().map(|e| Command::new(e).spawn()); };
+    let open_app = || { let _ = std::env::current_exe().map(|e| crate::cmd(e).spawn()); };
     let Some(password) = load_password(&vm.user) else {
         notify("Set the Windows password in aIwalk System Setup first");
         return open_app();

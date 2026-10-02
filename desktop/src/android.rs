@@ -4,7 +4,7 @@
 use crate::{find_tool, here, sh_stdin};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -94,7 +94,7 @@ pub fn parse_probe(serial: &str, out: &str, root: bool, bundled: &str) -> Phone 
 }
 
 fn bundled_hash() -> String {
-    let Ok(out) = Command::new("sha256sum").arg(apk("phonedesk.apk")).output() else { return String::new() };
+    let Ok(out) = crate::cmd("sha256sum").arg(apk("phonedesk.apk")).output() else { return String::new() };
     String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_string()
 }
 
@@ -133,7 +133,7 @@ fn scrcpy(serial: &str, model: &str, keyboard_only: bool) {
         args.extend(["--keyboard=uhid".into(), format!("--window-title={model}")]);
     }
     // group scrcpy's windows under this app in the dock and show our icon inside them
-    let _ = Command::new(find_tool("tools/scrcpy/scrcpy", "scrcpy")).args(args)
+    let _ = crate::cmd(find_tool("tools/scrcpy/scrcpy", "scrcpy")).args(args)
         .env("ADB", adb_path()).env("SCRCPY_ICON_PATH", here().join("icon.png"))
         .envs([("SDL_APP_ID", APP_ID), ("SDL_VIDEO_WAYLAND_WMCLASS", APP_ID), ("SDL_VIDEO_X11_WMCLASS", APP_ID)])
         .stdout(Stdio::null()).stderr(Stdio::null()).spawn();

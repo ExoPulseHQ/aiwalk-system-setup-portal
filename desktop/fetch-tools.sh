@@ -9,12 +9,14 @@ GH=2.102.0
 MINGIT=2.56.0
 MINGIT_SHA=064b440ff870ed5198527e8f3a92cdf5bd2fd0fedf5e718af95e3fdaddeff718  # from the git-for-windows v2.56.0.windows.1 release notes
 CF=2026.9.3   # cloudflared: members reach lab machines through Cloudflare Access (Machine_Login_Identity_Summary §二)
-declare -A CF_SHA=(  # from the cloudflare/cloudflared 2026.9.3 release notes
-  [cloudflared-linux-amd64]=77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2
-  [cloudflared-darwin-arm64.tgz]=5472c1a01c84bc31b3021056a73b4e5774ddddefc572124ea8fdf6c340639f32
-  [cloudflared-darwin-amd64.tgz]=ab588b3b4db9cdb4476c30a3db2a72635b1d8327d44741fee6799a0f37b0ec07
-  [cloudflared-windows-amd64.exe]=f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2
-)
+# from the cloudflare/cloudflared 2026.9.3 release notes; a case, not an associative array, for macOS's bash 3.2
+cf_sha() { case $1 in
+  cloudflared-linux-amd64)       echo 77e26d8d900e0b8469f416239d14b5f296525fdf79fee6f511ef55609e3fbac2 ;;
+  cloudflared-darwin-arm64.tgz)  echo 5472c1a01c84bc31b3021056a73b4e5774ddddefc572124ea8fdf6c340639f32 ;;
+  cloudflared-darwin-amd64.tgz)  echo ab588b3b4db9cdb4476c30a3db2a72635b1d8327d44741fee6799a0f37b0ec07 ;;
+  cloudflared-windows-amd64.exe) echo f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2 ;;
+esac; }
+command -v sha256sum >/dev/null || sha256sum() { shasum -a 256 "$@"; }   # macOS has shasum only
 target=${1:?usage: fetch-tools.sh linux-amd64|macos-arm64|macos-amd64|windows-amd64}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 rm -rf tools/gh tools/git tools/cloudflared; mkdir -p tools/gh tools/cloudflared
@@ -40,9 +42,9 @@ cp "$bin" tools/gh/ && chmod +x tools/gh/*
 curl -fsSL -o "$tmp/$cf" "https://github.com/cloudflare/cloudflared/releases/download/$CF/$cf"
 # for the macOS .tgz files the published sum is that of the cloudflared binary inside, so check after unpacking
 case $cf in
-  *.tgz) tar -xzf "$tmp/$cf" -C tools/cloudflared && echo "${CF_SHA[$cf]}  tools/cloudflared/cloudflared" | sha256sum -c - ;;
-  *.exe) echo "${CF_SHA[$cf]}  $tmp/$cf" | sha256sum -c - && cp "$tmp/$cf" tools/cloudflared/cloudflared.exe ;;
-  *)     echo "${CF_SHA[$cf]}  $tmp/$cf" | sha256sum -c - && cp "$tmp/$cf" tools/cloudflared/cloudflared ;;
+  *.tgz) tar -xzf "$tmp/$cf" -C tools/cloudflared && echo "$(cf_sha "$cf")  tools/cloudflared/cloudflared" | sha256sum -c - ;;
+  *.exe) echo "$(cf_sha "$cf")  $tmp/$cf" | sha256sum -c - && cp "$tmp/$cf" tools/cloudflared/cloudflared.exe ;;
+  *)     echo "$(cf_sha "$cf")  $tmp/$cf" | sha256sum -c - && cp "$tmp/$cf" tools/cloudflared/cloudflared ;;
 esac
 chmod +x tools/cloudflared/*
 

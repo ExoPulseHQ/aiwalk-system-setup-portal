@@ -5,7 +5,7 @@
 use crate::{home, on_path, open_url, sh};
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tauri::Emitter;
 
 fn find() -> Option<String> {
@@ -48,7 +48,7 @@ pub fn claude_install(app: tauri::AppHandle) -> Result<String, String> {
     } else {
         ("bash", vec!["-c", "curl -fsSL https://claude.ai/install.sh | bash 2>&1"])
     };
-    let mut child = Command::new(cmd).args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
+    let mut child = crate::cmd(cmd).args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
     for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
         let line = line.trim();
         if !line.is_empty() { let _ = app.emit("claude-step", line); }
@@ -62,7 +62,7 @@ pub fn claude_install(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn claude_login(app: tauri::AppHandle) -> Result<String, String> {
     let path = find().ok_or("Claude Code is not installed")?;
-    let mut child = Command::new(&path).args(["auth", "login"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+    let mut child = crate::cmd(&path).args(["auth", "login"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn().map_err(|e| e.to_string())?;
     let err = child.stderr.take().unwrap();
     std::thread::spawn(move || { for _ in BufReader::new(err).lines() {} });

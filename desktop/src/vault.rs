@@ -15,7 +15,7 @@ const ALWAYS: [&str; 8] = ["/_manifest.json", "*.md", "*.jpg", "*.jpeg", "*.png"
 /// git that signs in with gh, never prompts, and reads git@github.com remotes over HTTPS (no SSH key needed to read).
 /// `extra` adds config, e.g. the tests' protocol.file.allow.
 fn git(dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> Command {
-    let mut c = Command::new("git");
+    let mut c = crate::cmd("git");
     let mut cfg = vec![("credential.helper", ""), ("credential.helper", "!gh auth git-credential"),
                        ("url.https://github.com/.insteadOf", "git@github.com:")];
     cfg.extend_from_slice(extra);
@@ -162,7 +162,7 @@ fn obsidian_installed() -> bool {
         .iter().map(PathBuf::from)
         .chain([home().join(".local/share/applications/obsidian.desktop"),
                 home().join(".local/share/flatpak/exports/share/applications/md.obsidian.Obsidian.desktop")])
-        .any(|p| p.exists()) || Command::new("which").arg("obsidian").output().is_ok_and(|o| o.status.success());
+        .any(|p| p.exists()) || crate::cmd("which").arg("obsidian").output().is_ok_and(|o| o.status.success());
     #[cfg(target_os = "macos")]
     return Path::new("/Applications/Obsidian.app").exists();
     #[cfg(windows)]
