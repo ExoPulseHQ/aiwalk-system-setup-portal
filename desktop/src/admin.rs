@@ -86,3 +86,13 @@ pub fn set_access(org: String, repo: String, login: String, level: u8) -> Result
     if plan.blocked_by.is_empty() { Ok(format!("{login}: {} on {repo}", ["no access", "read", "write"][level.min(2) as usize])) }
     else { Err(format!("{login} still gets more through the {} team, which also covers other repos. Change it under Teams.", plan.blocked_by.join(", "))) }
 }
+
+/// Lets one person connect to `host` beyond what their code repos give, or takes that back: membership of the
+/// GitHub team machine-<host>, which the machine's Cloudflare Access policy includes. Takes effect at their next
+/// sign-in to the machines (sessions last up to 24 hours).
+#[tauri::command(async)]
+pub fn machine_extra(org: String, host: String, login: String, add: bool) -> Result<String, String> {
+    let path = format!("orgs/{org}/teams/machine-{host}/memberships/{login}");
+    if add { gh(&["api", "-X", "PUT", &path, "-f", "role=member"])?; } else { gh(&["api", "-X", "DELETE", &path])?; }
+    Ok(format!("{login} {} {host}", if add { "may now connect to" } else { "no longer has extra access to" }))
+}

@@ -222,7 +222,7 @@ let labSignInNext = false;
 // Machines, one row each, and whether this computer can connect to it right now. Members only ever
 // connect through Cloudflare (Access for the GitHub sign-in, a tunnel for SSH), never to a machine's address.
 // Which project lives where is the vault plugin's job; here only the machine matters.
-function machinesSection(machines) {
+function machinesSection(machines, org, user) {
   const sec = el("div", "section");
   const head = el("header");
   const again = el("button", "small ghost", "Check again");
@@ -244,10 +244,14 @@ function machinesSection(machines) {
     const row = item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p);
     row.querySelector(".text").append(meters[m.host]);   // live numbers sit under the name, the right side keeps the status
     // what the machine has, opened by clicking its row once its status is known
-    specs[m.host] = el("div", "specs"); specs[m.host].hidden = true;
+    // the row opens to who may connect (always known) and, once the machine answers, its hardware and desktops
+    const detail = el("div", "specs"); detail.hidden = true;
+    specs[m.host] = el("div");
+    detail.append(specs[m.host]);
+    if (org) detail.append(whoCanConnect(m.host, machines, org, user));
     row.classList.add("click");
-    row.onclick = () => { if (specs[m.host].childElementCount) specs[m.host].hidden = !specs[m.host].hidden; };
-    list.append(row, specs[m.host]);
+    row.onclick = () => { detail.hidden = !detail.hidden; };
+    list.append(row, detail);
   });
   const help = el("div");
   sec.append(help, list);
@@ -785,5 +789,65 @@ async function loadMachines() {
     return page.replaceChildren(...head, el("p", "sub", "Sign in on Team access first: the machines follow your GitHub account."), b);
   }
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
-  page.replaceChildren(...head, machines.length ? machinesSection(machines) : el("p", "sub", "No machines are listed for your team yet."));
+  const org = (s.vaults.find(v => v.access) || {}).access;
+  page.replaceChildren(...head, machines.length ? machinesSection(machines, org, s.user) : el("p", "sub", "No machines are listed for your team yet."));
+}
+
+// Who may connect to a machine: exactly what its Cloudflare Access policy lets through. That is the members of
+// core, of the teams the machine's code repos name in vault_rules.json (machines.teams), and of machine-<host>,
+// the extra people an owner added here. Owners see everyone and add or remove extras; others see only themselves.
+function whoCanConnect(host, machines, org, user) {
+  const box = el("div", "who-connect");
+  const owner = (org.people[user] || {}).grants === null;
+  const teamsFor = [...new Set(["core", ...machines.filter(m => m.host === host).flatMap(m => m.teams || [])])];
+  const extraSlug = `machine-${host}`;
+  const team = slug => org.teams.find(t => t.slug === slug) || { slug, members: [] };
+  const paint = () => {
+    const extra = new Set(team(extraSlug).members);
+    const via = login => teamsFor.filter(t => team(t).members.includes(login));
+    const head = el("div", "row");
+    head.append(el("span", "k", "Who can connect"), el("span", "sub", `Teams: ${teamsFor.join(", ")}, plus extra people`));
+    box.replaceChildren(head);
+    if (!owner) {
+      const v = via(user);
+      box.append(el("p", "sub", v.length ? `You can connect, through ${v.join(", ")}.` : extra.has(user) ? "You can connect: an owner added you."
+        : "You can't connect to this machine. Ask an owner: write access to one of its code repos, or an extra place here."));
+      return;
+    }
+    const people = Object.keys(org.people).sort((a, b) => org.people[a].name.localeCompare(org.people[b].name));
+    const can = people.filter(l => via(l).length || extra.has(l));
+    for (const login of can) {
+      const row = el("div", "spec");
+      const tags = el("span");
+      via(login).forEach(t => tags.append(el("span", "tag", t)));
+      if (extra.has(login)) {
+        tags.append(el("span", "tag extra", "Extra"));
+        const rm = el("button", "small ghost", "Remove");
+        rm.onclick = e => { e.stopPropagation(); change(login, false, rm); };
+        tags.append(rm);
+      }
+      row.append(el("span", "k", org.people[login].name), tags);
+      box.append(row);
+    }
+    const others = people.filter(l => !can.includes(l));
+    if (others.length) {
+      const pick = el("select");
+      pick.append(new Option("Let someone connect", ""), ...others.map(l => new Option(`${org.people[l].name} (@${l})`, l)));
+      pick.onclick = e => e.stopPropagation();
+      pick.onchange = () => pick.value && change(pick.value, true, pick);
+      box.append(pick);
+    }
+    box.append(el("p", "sub", "Changes reach the machine at that person's next sign-in, within 24 hours."));
+  };
+  async function change(login, add, ctl) {
+    try {
+      toast(await working(ctl, add ? "Adding" : "Removing", () => invoke("machine_extra", { org: org.org, host, login, add })));
+      const t = team(extraSlug);
+      if (!org.teams.includes(t)) org.teams.push(t);
+      t.members = add ? [...t.members, login] : t.members.filter(x => x !== login);
+    } catch (e) { toast(`Could not change ${host}: ${e}`); }
+    paint();
+  }
+  paint();
+  return box;
 }

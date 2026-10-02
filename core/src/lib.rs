@@ -196,12 +196,16 @@ pub struct Machine {
     pub personal: bool,
     /// The machine's Cloudflare Tunnel hostname, once its tunnel exists; members connect only through it.
     pub tunnel: Option<String>,
+    /// GitHub teams whose members may connect because of this repo (`machines.teams`); core and the machine's own
+    /// `machine-<host>` team come on top. The machine's Cloudflare Access policy lists the same teams.
+    pub teams: Vec<String>,
 }
 
 /// Every (host, code repo, account) from vault_rules.json's `machines` section.
 pub fn machines(rules_json: &str) -> Vec<Machine> {
     let Ok(v) = serde_json::from_str::<Value>(rules_json) else { return vec![] };
     let Some(hosts) = v["machines"]["hosts"].as_array() else { return vec![] };
+    let by_repo = &v["machines"]["teams"];
     hosts.iter().flat_map(|h| {
         let host = h["host"].as_str().unwrap_or_default().to_string();
         let ready = h["ready"].as_bool().unwrap_or(false);
@@ -213,6 +217,7 @@ pub fn machines(rules_json: &str) -> Vec<Machine> {
         h["repos"].as_object().into_iter().flatten().map(move |(repo, acct)| Machine {
             host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), ready,
             note: note.clone(), sometimes, via: via.clone(), personal, tunnel: tunnel.clone(),
+            teams: by_repo[repo].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect(),
         })
     }).collect()
 }
@@ -485,9 +490,12 @@ mod tests {
     #[test]
     fn machines_need_write_on_the_code_repo() {
         let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "ready": true},
-            {"host": "hpc", "repos": {"depRL": ""}, "via": "host-20", "personal": true, "power": "sometimes", "note": "n"}]}}"#;
+            {"host": "hpc", "repos": {"depRL": ""}, "via": "host-20", "personal": true, "power": "sometimes", "note": "n"}],
+            "teams": {"NTKCAP": ["l1"], "ExoPulse": ["l2", "l5"]}}}"#;
         let ms = machines(rules);
         assert_eq!(ms.len(), 3);
+        let teams = |repo: &str| ms.iter().find(|m| m.repo == repo).unwrap().teams.clone();
+        assert_eq!((teams("NTKCAP"), teams("ExoPulse"), teams("depRL")), (vec!["l1".into()], vec!["l2".into(), "l5".into()], vec![]));
         assert!(ms[2].personal && ms[2].sometimes && ms[2].via.as_deref() == Some("host-20") && ms[2].note == "n");
         let g = BTreeMap::from([("NTKCAP".to_string(), 2u8), ("ExoPulse".to_string(), 1)]);
         let ok: Vec<_> = ms[..2].iter().filter(|m| can_sign_in(m, Some(&g))).map(|m| m.account.as_str()).collect();
