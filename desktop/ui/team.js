@@ -794,6 +794,11 @@ async function loadMachines() {
   }
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   const org = (s.vaults.find(v => v.access) || {}).access;
+  // coming back to the page keeps it as it was (its numbers refresh on their own); rebuild only when what it
+  // shows changed: another account, other machines or other teams
+  const key = JSON.stringify([s.user, machines, org && org.teams]);
+  if (page.dataset.key === key && page.querySelector(".section")) return;
+  page.dataset.key = key;
   page.replaceChildren(...head, machines.length ? machinesSection(machines, org, s.user) : el("p", "sub", "No machines are listed for your team yet."));
 }
 
