@@ -30,8 +30,9 @@ echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered 
 echo
 echo "== Plan"
 echo " 1. The tunnel token in the cloudflared service file becomes readable by root only."
-echo " 2. VNC desktops listen on 127.0.0.1 only (~/.vnc/config and $VNC_LAUNCHER, kept as .bak);"
-echo "    they restart once, so anyone on them is disconnected."
+echo " 2. The boot-time desktops :1-:5 are started by exo-desktop: Unix socket only, no TCP port, no VNC password"
+echo "    (a systemd override for $VNC_SERVICE; the original files stay). They restart once, so anyone on them"
+echo "    is disconnected; afterwards they open from the portal's Open desktop."
 echo " 3. SSH (22) is allowed only from: $PEERS"
 echo "    Rules that open 22, 80 or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
@@ -42,6 +43,18 @@ chmod 600 /etc/systemd/system/cloudflared.service
 systemctl daemon-reload
 
 if grep -q '^localhost=' "$VNC_CONFIG"; then sed -i 's/^localhost=.*/localhost=yes/' "$VNC_CONFIG"; else echo localhost=yes >> "$VNC_CONFIG"; fi
+# desktops come from exo-desktop (socket, no password); the old launcher stays for reference
+mkdir -p "/etc/systemd/system/$VNC_SERVICE.d"
+cat > "/etc/systemd/system/$VNC_SERVICE.d/exo-desktop.conf" <<CONF
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=
+ExecStart=/bin/bash -c 'for i in 1 2 3 4 5; do /home/$VNC_USER/.local/bin/exo-desktop start \$i; done'
+ExecStop=
+ExecStop=/bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do /home/$VNC_USER/.local/bin/exo-desktop stop \$i || true; done'
+CONF
+[ -x "/home/$VNC_USER/.local/bin/exo-desktop" ] || { echo "exo-desktop is missing in /home/$VNC_USER/.local/bin; desktops will not start"; }
 if [ -f "$VNC_LAUNCHER" ] && grep -q -- '-localhost no' "$VNC_LAUNCHER"; then
   cp -p "$VNC_LAUNCHER" "$VNC_LAUNCHER.bak"
   sed -i 's/-localhost no/-localhost yes/g' "$VNC_LAUNCHER"
@@ -51,12 +64,16 @@ ufw default deny incoming >/dev/null
 for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'registered lab machine' >/dev/null; done
 for n in $(open_rules | sort -rn); do yes | ufw delete "$n" >/dev/null; done
 
-systemctl restart "$VNC_SERVICE"
+systemctl daemon-reload
+systemctl stop "$VNC_SERVICE" || true
+for i in 1 2 3 4 5 6 7 8; do sudo -u "$VNC_USER" vncserver -kill ":$i" >/dev/null 2>&1 || true; done   # the old TCP ones
+systemctl start "$VNC_SERVICE"
 sleep 3
 
 echo
 echo "== Check"
 echo "cloudflared service file: $(stat -c %A /etc/systemd/system/cloudflared.service) (want -rw-------)"
-echo "VNC listening on:"; ss -ltnH | awk '$4 ~ /:59[0-9][0-9]$/ {print "  " $4}' | sort -u
-ss -ltnH | awk '$4 ~ /:59[0-9][0-9]$/' | grep -vqE '127\.0\.0\.1|\[::1\]' && echo "  WARNING: a desktop still listens beyond 127.0.0.1" || echo "  (all on 127.0.0.1)"
+echo "Desktops: $(sudo -u "$VNC_USER" /home/$VNC_USER/.local/bin/exo-desktop list | paste -sd' ')"
+echo "Sockets:"; ls -l /home/$VNC_USER/.vnc/desk-*.sock 2>/dev/null | awk '{print "  " $1, $NF}'
+ss -ltnH | awk '$4 ~ /:59[0-9][0-9]$/' | grep -q . && echo "  WARNING: something still listens on a 59xx TCP port" || echo "  (no VNC TCP port open)"
 echo "Firewall:"; ufw status numbered | sed '1,4d'

@@ -93,7 +93,7 @@ pub fn ssh_setup(machines: Vec<Machine>) -> Result<String, String> {
 // A VNC desktop on a lab machine listens on that machine's 127.0.0.1 only. The app forwards a local port to it over
 // SSH through Cloudflare, so the person's own VNC viewer connects to 127.0.0.1:<local port> and nothing else is open.
 
-/// "host:remote port" -> (ssh process, local port). Closed when the person stops it or the app quits.
+/// "host:display" -> (ssh process, local port). Closed when the person stops it or the app quits.
 static FORWARDS: Mutex<BTreeMap<String, (Child, u16)>> = Mutex::new(BTreeMap::new());
 
 fn free_port(preferred: u16) -> u16 {
@@ -101,11 +101,17 @@ fn free_port(preferred: u16) -> u16 {
     TcpListener::bind(("127.0.0.1", 0)).and_then(|l| l.local_addr()).map(|a| a.port()).unwrap_or(preferred)
 }
 
-/// Opens (or reuses) a forward from 127.0.0.1:<local> to <remote_port> on the machine; returns the local port.
+/// Opens (or reuses) a forward from 127.0.0.1:<local> to a desktop on the machine: its Unix socket when it has one
+/// (no port, no VNC password), else its TCP port on the machine's 127.0.0.1. Returns the local port.
 /// Err when SSH could not get in, with its last line, so the page can say why.
 #[tauri::command(async)]
-pub fn open_forward(host: String, tunnel: String, user: String, remote_port: u16) -> Result<u16, String> {
-    let key = format!("{host}:{remote_port}");
+pub fn open_forward(host: String, tunnel: String, user: String, display: u8, socket: Option<String>, port: Option<u16>) -> Result<u16, String> {
+    let key = format!("{host}:{display}");
+    let target = match (&socket, port) {
+        (Some(path), _) => path.clone(),
+        (None, Some(p)) => format!("127.0.0.1:{p}"),
+        (None, None) => return Err("This desktop has neither a socket nor a port".into()),
+    };
     {
         let mut f = FORWARDS.lock().unwrap();
         if let Some((child, port)) = f.get_mut(&key) {
@@ -114,11 +120,11 @@ pub fn open_forward(host: String, tunnel: String, user: String, remote_port: u16
         }
     }
     let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
-    let local = free_port(remote_port.saturating_add(10000));
+    let local = free_port(15900 + display as u16);
     let mut child = Command::new("ssh")
         .args(["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
                "-o", "StrictHostKeyChecking=accept-new", "-o", &format!("ProxyCommand=\"{cf}\" access ssh --hostname %h"),
-               "-L", &format!("127.0.0.1:{local}:127.0.0.1:{remote_port}"), &format!("{user}@{tunnel}")])
+               "-L", &format!("127.0.0.1:{local}:{target}"), &format!("{user}@{tunnel}")])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     let addr: SocketAddr = ([127, 0, 0, 1], local).into();
     let start = Instant::now();
@@ -142,11 +148,11 @@ pub fn open_forward(host: String, tunnel: String, user: String, remote_port: u16
 }
 
 #[tauri::command]
-pub fn close_forward(host: String, remote_port: u16) {
-    if let Some((mut child, _)) = FORWARDS.lock().unwrap().remove(&format!("{host}:{remote_port}")) { let _ = child.kill(); }
+pub fn close_forward(host: String, display: u8) {
+    if let Some((mut child, _)) = FORWARDS.lock().unwrap().remove(&format!("{host}:{display}")) { let _ = child.kill(); }
 }
 
-/// Open forwards as "host:remote port" -> local port, for the page to show after a redraw.
+/// Open forwards as "host:display" -> local port, for the page to show after a redraw.
 #[tauri::command]
 pub fn forwards() -> BTreeMap<String, u16> {
     let mut f = FORWARDS.lock().unwrap();

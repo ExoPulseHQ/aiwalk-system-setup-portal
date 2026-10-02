@@ -297,8 +297,8 @@ function machinesSection(machines) {
     head.append(el("span", "k", "Desktops"), add, msg);
     box.append(head);
     desktops.forEach(d => {
-      const r = el("div", "desk"), msg = el("span", "sub");
-      const name = `${d.display}  ${d.geometry || ""}  (${d.user})`;
+      const r = el("div", "desk"), msg = el("span", "sub"), num = +d.display.slice(1);
+      const name = `${d.display}  ${d.geometry || ""}  (${d.user})${d.socket ? "" : "  password"}`;
       const show = port => {
         r.replaceChildren(el("span", null, name));
         // closing ends the desktop for everyone on it, since desktops are shared by the account
@@ -308,8 +308,8 @@ function machinesSection(machines) {
           if (await ask(`Close desktop ${d.display} on ${m.host}?`, "Anyone working on this desktop loses it, along with any unsaved work in it.",
             [["cancel", "Cancel"], ["close", "Close desktop", true]]) !== "close") return;
           try {
-            await invoke("close_forward", { host: m.host, remotePort: d.port });
-            toast(await working(close, "Closing", () => invoke("desktop", { tunnel: m.tunnel, user: d.user, action: "stop", display: +d.display.slice(1) })));
+            await invoke("close_forward", { host: m.host, display: num });
+            toast(await working(close, "Closing", () => invoke("desktop", { tunnel: m.tunnel, user: d.user, action: "stop", display: num })));
             status();
           } catch (err) { msg.textContent = err; r.append(msg); }
         };
@@ -317,7 +317,7 @@ function machinesSection(machines) {
           const b = el("button", "small ghost", "Open desktop");
           b.onclick = async e => {
             e.stopPropagation();
-            try { show(await working(b, "Connecting", () => invoke("open_forward", { host: m.host, tunnel: m.tunnel, user: d.user, remotePort: d.port }))); }
+            try { show(await working(b, "Connecting", () => invoke("open_forward", { host: m.host, tunnel: m.tunnel, user: d.user, display: num, socket: d.socket || null, port: d.port || null }))); }
             catch (err) { msg.textContent = err; r.append(msg); }
           };
           r.append(b, close);
@@ -327,10 +327,10 @@ function machinesSection(machines) {
         const copy = el("button", "small ghost", "Copy"), view = el("button", "small ghost", "Open viewer"), stop = el("button", "small ghost", "Disconnect");
         copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(addr).then(() => toast(`Copied ${addr}`), () => toast(addr)); };
         view.onclick = e => { e.stopPropagation(); invoke("open_viewer", { port }); };
-        stop.onclick = async e => { e.stopPropagation(); await invoke("close_forward", { host: m.host, remotePort: d.port }); show(null); };
+        stop.onclick = async e => { e.stopPropagation(); await invoke("close_forward", { host: m.host, display: num }); show(null); };
         r.append(el("span", "sub", "VNC at"), el("strong", "cmd", addr), copy, view, stop, close);
       };
-      show(open[`${m.host}:${d.port}`]);
+      show(open[`${m.host}:${num}`]);
       box.append(r);
     });
     return box;

@@ -355,7 +355,9 @@ fn main() {
     // `--forward <host> <tunnel> <user> <port>` opens one desktop forward, prints the VNC greeting it gets, closes it
     if std::env::args().nth(1).as_deref() == Some("--forward") {
         let a: Vec<String> = std::env::args().skip(2).collect();
-        match machines::open_forward(a[0].clone(), a[1].clone(), a[2].clone(), a[3].parse().unwrap_or(5901)) {
+        // a path is a desktop's socket, a number its TCP port
+        let (socket, port) = if a[3].starts_with('/') { (Some(a[3].clone()), None) } else { (None, a[3].parse().ok()) };
+        match machines::open_forward(a[0].clone(), a[1].clone(), a[2].clone(), 9, socket, port) {
             Ok(p) => {
                 use std::io::Read;
                 let mut buf = [0u8; 12];

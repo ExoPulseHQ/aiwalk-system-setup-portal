@@ -65,8 +65,10 @@ def desktops(ps_out):
         args = parts[2:]
         opt = lambda k: args[args.index(k) + 1] if k in args and args.index(k) + 1 < len(args) else None
         port = int(opt("-rfbport") or 5900 + int(disp[1:]))
-        out.append({"user": parts[0], "display": disp, "port": port, "geometry": opt("-geometry") or ""})
-    return sorted(out, key=lambda d: d["port"])
+        # a desktop on a Unix socket has no TCP port; the portal forwards to the socket instead
+        out.append({"user": parts[0], "display": disp, "port": port if port > 0 else None,
+                    "socket": opt("-rfbunixpath"), "geometry": opt("-geometry") or ""})
+    return sorted(out, key=lambda d: int(d["display"][1:]))
 
 
 def static():
@@ -129,8 +131,10 @@ def selftest():
     assert g[1]["mem_total_mb"] is None
     d = desktops("ntk /usr/bin/Xtigervnc :2 -localhost=0 -desktop x -geometry 1920x1080 -rfbport 5902\n"
                  "ntk bash -c grep Xtigervnc :9\nroot /usr/bin/Xvnc :7\n")
-    assert d == [{"user": "ntk", "display": ":2", "port": 5902, "geometry": "1920x1080"},
-                 {"user": "root", "display": ":7", "port": 5907, "geometry": ""}], d
+    assert d == [{"user": "ntk", "display": ":2", "port": 5902, "socket": None, "geometry": "1920x1080"},
+                 {"user": "root", "display": ":7", "port": 5907, "socket": None, "geometry": ""}], d
+    s6 = desktops("ntk /usr/bin/Xtigervnc :6 -rfbport -1 -rfbunixpath /home/ntk/.vnc/desk-6.sock -geometry 1920x1080\n")
+    assert s6 == [{"user": "ntk", "display": ":6", "port": None, "socket": "/home/ntk/.vnc/desk-6.sock", "geometry": "1920x1080"}], s6
     a = answer(); assert {"cpu", "threads", "mem_gb", "cpu_pct", "gpus", "disk_free_gb"} <= set(a) and 0 <= a["cpu_pct"] <= 100
     assert answer() is a, "answers are reused within the cache window"
     print("exo-status: all checks passed")

@@ -1,6 +1,8 @@
 #!/bin/bash
 # VNC desktops on a lab machine, one at a time, for aIwalk System Setup (run as the desktops' owner, no sudo).
-# Every desktop listens on 127.0.0.1 only; people reach it through the portal's Open desktop (SSH through Cloudflare).
+# Every desktop listens on a Unix socket only (~/.vnc/desk-N.sock, mode 600): no TCP port and no VNC password, since
+# only the account itself can open the socket, and people reach the account only through SSH via Cloudflare
+# (the portal's Open desktop forwards a local port to the socket).
 # Software rendering, as gpu-free-vnc did, so desktops never take GPU memory from training.
 #
 #   exo-desktop list          displays now running, one per line (":2")
@@ -23,7 +25,8 @@ case "${1:-}" in
     [[ "$n" =~ ^[1-9]$ ]] && [ "$n" -le $MAX ] || { echo "Desktop number must be 1 to $MAX" >&2; exit 1; }
     running | grep -qx ":$n" && { echo ":$n"; exit 0; }
     export LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa GALLIUM_DRIVER=llvmpipe
-    vncserver ":$n" -geometry 1920x1080 -depth 24 -localhost yes >/dev/null 2>&1
+    vncserver ":$n" -geometry 1920x1080 -depth 24 -localhost yes -rfbport -1 \
+      -rfbunixpath "$HOME/.vnc/desk-$n.sock" -rfbunixmode 0600 -SecurityTypes None >/dev/null 2>&1
     echo ":$n" ;;
   stop)
     [[ "${2:-}" =~ ^[1-9]$ ]] || { echo "Which desktop? exo-desktop stop N" >&2; exit 1; }
