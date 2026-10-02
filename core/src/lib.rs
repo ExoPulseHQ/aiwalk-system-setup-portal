@@ -124,7 +124,8 @@ pub fn org_query(org: &str) -> String {
              repositories(first:50) {{ edges {{ permission node {{ name }} }} }} }} }} }} }}")
 }
 
-/// Who can reach which repo, from the `org_query` response. Default when the response is unreadable.
+/// Owners, members and teams from the `org_query` response; grants stay empty until `repo_grants`.
+/// Default when the response is unreadable.
 pub fn org_access(response_json: &str) -> OrgAccess {
     let mut out = OrgAccess::default();
     let Ok(v) = serde_json::from_str::<Value>(response_json) else { return out };
@@ -146,16 +147,75 @@ pub fn org_access(response_json: &str) -> OrgAccess {
         }
         let members: BTreeSet<String> = list(&team["members"]["nodes"]).iter()
             .filter_map(|m| m["login"].as_str().map(str::to_string)).collect();
-        for login in &members {
-            let Some(grants) = out.people.get_mut(login).and_then(|p| p.grants.as_mut()) else { continue };
-            for (repo, rank) in &repos {
-                let g = grants.entry(repo.clone()).or_insert(0);
-                *g = (*g).max(*rank);
-            }
-        }
         out.teams.push(Team { slug: slug.to_string(), repos, members });
     }
     out
+}
+
+/// Per-repo permissions. Owners may list every repo's collaborators (team and direct grants alike);
+/// anyone else can only ask for their own permission on the repos they can see.
+pub fn repos_query(org: &str, owner: bool) -> String {
+    let field = if owner { "collaborators(first:100, affiliation:ALL) { edges { permission node { login } } }" } else { "viewerPermission" };
+    format!("{{ organization(login:\"{org}\") {{ repositories(first:100) {{ nodes {{ name {field} }} }} }} }}")
+}
+
+/// Fills `people`'s grants from a `repos_query` response; `viewer` is who ran it.
+pub fn repo_grants(people: &mut BTreeMap<String, Person>, response_json: &str, viewer: &str) {
+    let Ok(v) = serde_json::from_str::<Value>(response_json) else { return };
+    let Some(repos) = v["data"]["organization"]["repositories"]["nodes"].as_array() else { return };
+    let mut set = |login: &str, repo: &str, perm: &str| {
+        if let Some(g) = people.get_mut(login).and_then(|p| p.grants.as_mut()) {
+            g.insert(repo.to_string(), perm_rank(perm));
+        }
+    };
+    for r in repos {
+        let Some(name) = r["name"].as_str() else { continue };
+        if let Some(edges) = r["collaborators"]["edges"].as_array() {
+            for e in edges {
+                if let (Some(l), Some(p)) = (e["node"]["login"].as_str(), e["permission"].as_str()) { set(l, name, p) }
+            }
+        } else if let Some(p) = r["viewerPermission"].as_str() {
+            set(viewer, name, p);
+        }
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct Machine {
+    pub host: String,
+    pub repo: String,
+    pub account: String,
+    pub ready: bool,
+}
+
+/// Every (host, code repo, account) from vault_rules.json's `machines` section.
+pub fn machines(rules_json: &str) -> Vec<Machine> {
+    let Ok(v) = serde_json::from_str::<Value>(rules_json) else { return vec![] };
+    let Some(hosts) = v["machines"]["hosts"].as_array() else { return vec![] };
+    hosts.iter().flat_map(|h| {
+        let host = h["host"].as_str().unwrap_or_default().to_string();
+        let ready = h["ready"].as_bool().unwrap_or(false);
+        h["repos"].as_object().into_iter().flatten().map(move |(repo, acct)| Machine {
+            host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), ready,
+        })
+    }).collect()
+}
+
+/// Machine logins come with write access to the code repo; read access does not include one.
+pub fn can_sign_in(m: &Machine, grants: Option<&BTreeMap<String, u8>>) -> bool {
+    grants.map_or(true, |g| g.get(&m.repo).copied().unwrap_or(0) >= 2)
+}
+
+/// An access request travels as an issue; the body carries what is asked for, the author is who asks.
+pub fn request_body(repo: &str, level: &str, note: &str) -> String {
+    format!("repo: {repo}\nlevel: {level}\n\n{note}\n\n<!-- sent by aIwalk System Setup -->")
+}
+
+/// (repo, level) from a request body; None unless both are there and level is read or write.
+pub fn parse_request(body: &str) -> Option<(String, String)> {
+    let field = |k: &str| body.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string());
+    let (repo, level) = (field("repo:")?, field("level:")?);
+    (!repo.is_empty() && (level == "read" || level == "write")).then_some((repo, level))
 }
 
 /// What `user` may see: org owners see everyone (for View as), anyone else only their own grants.
@@ -202,17 +262,47 @@ mod tests {
         assert_eq!(vault_repos("not json"), None);
     }
 
+    const REPOS_OWNER: &str = r#"{"data": {"organization": {"repositories": {"nodes": [
+        {"name": "exo-l3", "collaborators": {"edges": [{"permission": "WRITE", "node": {"login": "alice"}},
+                                                       {"permission": "ADMIN", "node": {"login": "owner"}}]}},
+        {"name": "NTKCAP", "collaborators": {"edges": [{"permission": "READ", "node": {"login": "alice"}}]}}]}}}}"#;
+
     #[test]
-    fn grants_take_the_highest_team_and_owners_get_everything() {
+    fn grants_come_from_repo_permissions() {
         let a = org_access(ORG);
         assert_eq!(a.people["owner"].grants, None);
-        let alice = a.people["alice"].grants.as_ref().unwrap();
-        assert_eq!(alice["exo-papers"], 2);
-        assert_eq!(alice["exo-l3"], 2);
-        assert!(!alice.contains_key("exo-mgmt"));
         let l3 = a.teams.iter().find(|t| t.slug == "l3-write").unwrap();
         assert_eq!(l3.members.iter().collect::<Vec<_>>(), ["alice"]);
         assert_eq!(org_access("garbage"), OrgAccess::default());
+
+        let mut people = org_access(ORG).people;
+        repo_grants(&mut people, REPOS_OWNER, "owner");
+        let alice = people["alice"].grants.as_ref().unwrap();
+        assert_eq!((alice["exo-l3"], alice["NTKCAP"]), (2, 1));
+        assert_eq!(people["owner"].grants, None);
+
+        let mut people = org_access(ORG).people;
+        repo_grants(&mut people, r#"{"data":{"organization":{"repositories":{"nodes":[{"name":"exo-l3","viewerPermission":"READ"}]}}}}"#, "alice");
+        assert_eq!(people["alice"].grants.as_ref().unwrap()["exo-l3"], 1);
+    }
+
+    #[test]
+    fn machines_need_write_on_the_code_repo() {
+        let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "ready": true}]}}"#;
+        let ms = machines(rules);
+        assert_eq!(ms.len(), 2);
+        let g = BTreeMap::from([("NTKCAP".to_string(), 2u8), ("ExoPulse".to_string(), 1)]);
+        let ok: Vec<_> = ms.iter().filter(|m| can_sign_in(m, Some(&g))).map(|m| m.account.as_str()).collect();
+        assert_eq!(ok, ["ntkcap"]);
+        assert!(ms.iter().all(|m| can_sign_in(m, None)));
+        assert!(machines("{}").is_empty());
+    }
+
+    #[test]
+    fn request_round_trip() {
+        assert_eq!(parse_request(&request_body("exo-l3", "write", "for the gait study")), Some(("exo-l3".into(), "write".into())));
+        assert_eq!(parse_request("repo: exo-l3\nlevel: admin"), None);
+        assert_eq!(parse_request("hello"), None);
     }
 
     #[test]

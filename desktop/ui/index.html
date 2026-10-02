@@ -27,6 +27,14 @@
   button { font: inherit; padding: 6px 16px; border-radius: 8px; border: 0; background: #8C54D9; color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; }
   .code { font-weight: 600; }
+  h3 { font-size: 1em; margin: 16px 0 4px; }
+  button.small { padding: 2px 10px; font-size: .9em; }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  .req { display: inline-flex; gap: 6px; align-items: center; }
+  .req input, select { font: inherit; padding: 2px 6px; }
+  .tag { font-size: .85em; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; }
+  .pending { border: 1px dashed #F5843C; color: #F5843C; font-weight: normal; }
+  .requests .row { margin: 6px 0; }
   .teams h3 { font-size: 1em; margin: 16px 0 4px; }
   label.team { display: flex; gap: 8px; align-items: center; margin: 4px 0; }
   .p0 { border: 1px dashed var(--dim); color: var(--dim); font-weight: normal; }
@@ -42,23 +50,99 @@
 const LABEL = { 4: "Admin", 3: "Write", 2: "Write", 1: "Read", 0: "No access" };
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-function tree(node, grants, org) {
+function pill(rank, title) { const p = el("span", "perm p" + rank, LABEL[rank]); p.title = title; return p; }
+
+// A member asks for more on one repo: pick read or write, add a note, it lands as an issue the owners see.
+function requestControl(a, repo, rank) {
+  const pending = a.requests.find(r => r.repo === repo);
+  if (pending) return el("span", "tag", `Requested ${pending.level}`);
+  const wrap = el("span", "req"), btn = el("button", "small", "Request");
+  btn.onclick = () => {
+    const level = el("select");
+    if (rank < 1) level.append(new Option("Read", "read"));
+    level.append(new Option("Write", "write"));
+    const note = el("input"); note.placeholder = "What you need it for";
+    const send = el("button", "small", "Send"), msg = el("span", "dim");
+    send.onclick = async () => {
+      send.disabled = true;
+      try { await invoke("request_access", { org: a.org, repo, level: level.value, note: note.value }); await load(); }
+      catch (e) { msg.textContent = `GitHub refused: ${e}`; send.disabled = false; }
+    };
+    wrap.replaceChildren(level, note, send, msg);
+  };
+  wrap.append(btn);
+  return wrap;
+}
+
+function tree(node, grants, extra) {
   const li = el("li", node.children.length ? "group" : "");
   const row = el("div", "row");
   row.append(el("span", "title", node.title), el("span", "detail", node.detail));
   if (node.repo) {
     const rank = grants === null ? 4 : (grants[node.repo] || 0);
-    const pill = el("span", "perm p" + rank, LABEL[rank]);
-    pill.title = org + "/" + node.repo;
-    row.append(pill);
+    row.append(pill(rank, node.repo));
+    const x = extra(node.repo, rank);
+    if (x) row.append(x);
   }
   li.append(row);
   if (node.children.length) {
     const ul = el("ul");
-    node.children.forEach(c => ul.append(tree(c, grants, org)));
+    node.children.forEach(c => ul.append(tree(c, grants, extra)));
     li.append(ul);
   }
   return li;
+}
+
+// Code repos and the machines that carry them; write access to the repo is what opens its machine account.
+function codeSection(a, login, grants, extra) {
+  const box = el("div");
+  box.append(el("h3", null, "Code and machines"),
+    el("p", "dim", "Write access to a code repo lets you sign in to its account on every machine that carries it. Read access does not include a login."));
+  const reach = new Set(a.reach[login] || []);
+  const ul = el("ul", "tree");
+  [...new Set(a.machines.map(m => m.repo))].forEach(repo => {
+    const rank = grants === null ? 4 : (grants[repo] || 0);
+    const li = el("li", "group"), row = el("div", "row");
+    row.append(el("span", "title", repo), el("span", "detail", ""), pill(rank, repo));
+    const x = extra(repo, rank);
+    if (x) row.append(x);
+    const hosts = el("ul");
+    a.machines.forEach((m, i) => {
+      if (m.repo !== repo) return;
+      const r = el("div", "row");
+      const ok = reach.has(i);
+      r.append(el("span", "title", m.host), el("span", "detail", ok ? `ssh ${m.account}@${m.host}` : m.account),
+        el("span", "perm " + (!ok ? "p0" : m.ready ? "p1" : "pending"), !ok ? "No login" : m.ready ? "Ready" : "Not set up yet"));
+      const h = el("li"); h.append(r); hosts.append(h);
+    });
+    li.append(row, hosts);
+    ul.append(li);
+  });
+  box.append(ul);
+  return box;
+}
+
+// Owners: open requests from everyone, approve (grant and close) or decline (close).
+function requestsSection(a) {
+  const box = el("div", "requests");
+  box.append(el("h3", null, a.requests.length ? `Requests (${a.requests.length})` : "No open requests"));
+  a.requests.forEach(r => {
+    const row = el("div", "row"), msg = el("span", "dim");
+    const note = r.body.split("\n").slice(3).join(" ").replace(/<!--.*?-->/g, "").trim();
+    row.append(el("span", "title", r.author), el("span", "detail", `${r.level} on ${r.repo}${note ? "  " + note : ""}`));
+    const act = (cmd, label) => {
+      const b = el("button", "small" + (cmd === "decline_request" ? " ghost" : ""), label);
+      b.onclick = async () => {
+        row.querySelectorAll("button").forEach(x => x.disabled = true);
+        try { await invoke(cmd, { org: a.org, number: r.number }); await load(); }
+        catch (e) { msg.textContent = `GitHub refused: ${e}`; row.querySelectorAll("button").forEach(x => x.disabled = false); }
+      };
+      return b;
+    };
+    row.append(act("approve_request", "Approve"), act("decline_request", "Decline"), msg);
+    box.append(row);
+  });
+  return box;
 }
 
 function vaultCard(v, user, viewAs) {
@@ -66,11 +150,15 @@ function vaultCard(v, user, viewAs) {
   card.append(el("h2", null, v.name), el("div", "dim", v.about));
   const a = v.access;
   if (!a) { card.append(el("p", "dim", "No access tree: this account cannot read the vault, or it is not split into repos.")); return card; }
-  const box = el("ul", "tree");
-  const teams = el("div", "teams");
+  const owner = (a.people[user] || {}).grants === null;
+  if (owner) card.append(requestsSection(a));
+  const box = el("ul", "tree"), code = el("div"), teams = el("div", "teams");
   const show = login => {
     const person = a.people[login] || { grants: {} };
-    box.replaceChildren(tree(a.tree, person.grants, a.org));
+    // only a member looking at their own view can ask for more
+    const extra = (repo, rank) => !owner && login === user && rank < 2 ? requestControl(a, repo, rank) : null;
+    box.replaceChildren(tree(a.tree, person.grants, extra));
+    code.replaceChildren(codeSection(a, login, person.grants, extra));
     teams.replaceChildren();
     if (!a.teams.length || person.grants === null) return;   // owners already reach everything
     const alertLine = el("p", "dim");
@@ -91,8 +179,7 @@ function vaultCard(v, user, viewAs) {
     });
     teams.append(alertLine);
   };
-  const me = a.people[user];
-  if (me && me.grants === null) {   // owners may preview any member's view
+  if (owner) {   // owners may preview any member's view
     const pick = el("select");
     Object.keys(a.people).sort((x, y) => (x !== user) - (y !== user) || a.people[x].name.localeCompare(a.people[y].name))
       .forEach(l => pick.append(new Option(a.people[l].name === l ? l : `${a.people[l].name} (${l})`, l)));
@@ -103,7 +190,7 @@ function vaultCard(v, user, viewAs) {
     card.append(label);
   }
   show(viewAs in a.people ? viewAs : user);
-  card.append(box, teams);
+  card.append(el("h3", null, "Documents"), box, code, teams);
   return card;
 }
 
