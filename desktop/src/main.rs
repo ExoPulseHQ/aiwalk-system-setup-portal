@@ -109,7 +109,7 @@ fn platform() -> &'static str { std::env::consts::OS }
 
 // ponytail: vault list is hard-coded, same as the Python app; move to a config file when teams need different lists
 const VAULTS: [(&str, &str, &str); 2] = [
-    ("ExoPulse docs", "eddLai/ExoPulse_docs", "The team's technical documents, papers and progress notes"),
+    ("ExoPulse docs", "ExoPulseHQ/exo-book", "The team's technical documents, papers and progress notes"),
     ("aIwalk Corp", "eddLai/aIwalk_Corp", "Company records, founders only"),
 ];
 /// Where access requests travel, as issues; the org's members can open issues there but not write.
