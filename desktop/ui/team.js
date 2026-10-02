@@ -200,7 +200,7 @@ function machinesSection(machines) {
   sec.append(help, list);
 
   const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], "no-tunnel": ["p0", "Tunnel not set up"],
-                 "sign-in": ["pending", "Sign in needed"], "no-cloudflared": ["p0", "cloudflared missing"] };
+                 "sign-in": ["pending", "Sign-in needed"], "no-cloudflared": ["p0", "cloudflared missing"] };
   // a machine reached through another one shares that one's way in
   const way = m => byHost[m.via] || m;
   const check = async () => {
@@ -219,9 +219,9 @@ function machinesSection(machines) {
     help.replaceChildren();
     const needSignIn = hosts.find(m => state[way(m).host] === "sign-in");
     if (needSignIn) {
-      const b = el("button", "small", "Sign in to Cloudflare");
+      const b = el("button", "small", "Sign in with GitHub");
       b.onclick = async () => { try { toast(await working(b, "Waiting for the browser", () => invoke("access_login", { tunnel: way(needSignIn).tunnel }))); } catch (e) { toast(e); } check(); };
-      help.append(item("Sign in to Cloudflare once on this computer", "A browser opens; sign in with GitHub. Cloudflare lets in members of the team only.", null, b));
+      help.append(item("Sign in once to reach the lab machines", "A browser opens; sign in with your GitHub account. No Cloudflare account is needed: Cloudflare only checks that you are on the team.", null, b));
     }
     const ssh = await invoke("ssh_status", { machines });
     if (ssh === "missing") {

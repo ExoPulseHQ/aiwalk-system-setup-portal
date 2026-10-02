@@ -56,7 +56,7 @@ pub fn access_login(tunnel: String) -> Result<String, String> {
     if code != 0 { return Err(out.lines().last().unwrap_or("Sign-in was not finished").into()) }
     // the status hostname sits in the same Access app; the browser already holds the session, so this one passes at once
     let _ = sh(&cf, &["access", "login", &format!("https://{}", tunnel.replacen("ssh-", "status-", 1))], 60);
-    Ok("Signed in to Cloudflare".into())
+    Ok("Signed in: the lab machines know you are on the team".into())
 }
 
 fn ssh_config() -> PathBuf { home().join(".ssh/config") }
