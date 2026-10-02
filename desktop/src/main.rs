@@ -19,7 +19,9 @@ mod android;
 #[cfg(target_os = "linux")]
 mod vm;
 
-pub fn home() -> PathBuf { PathBuf::from(std::env::var_os("HOME").unwrap_or_default()) }
+/// The person's home folder on every OS: $HOME on Linux and Mac, the user profile folder on Windows (which has no $HOME).
+#[allow(deprecated)] // home_dir is correct on Windows since Rust 1.85
+pub fn home() -> PathBuf { std::env::home_dir().unwrap_or_default() }
 
 /// The app's folder: bundled tools (tools/), phone apps (apk/) and icon.png sit next to the binary.
 pub fn here() -> PathBuf {
