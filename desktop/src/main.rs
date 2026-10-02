@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 // The phone and VM modules drive a Linux desktop (adb, scrcpy, docker, GNOME keyring).
+mod admin;
 mod vault;
 #[cfg(target_os = "linux")]
 mod android;
@@ -113,7 +114,7 @@ const VAULTS: [(&str, &str, &str); 2] = [
 const REQUESTS: &str = "exo-access-requests";
 
 /// Runs gh; Ok(stdout) on exit 0, Err(stderr or why it could not start) otherwise.
-fn gh(args: &[&str]) -> Result<String, String> {
+pub fn gh(args: &[&str]) -> Result<String, String> {
     let out = Command::new("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -309,13 +310,15 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access, sign_in, sign_out, switch_account,
+    tauri::generate_handler![platform, tools, install_git, team_access,
+                             admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access, sign_in, sign_out, switch_account,
+    tauri::generate_handler![platform, tools, install_git, team_access,
+                             admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
 

@@ -218,6 +218,40 @@ pub fn parse_request(body: &str) -> Option<(String, String)> {
     (!repo.is_empty() && (level == "read" || level == "write")).then_some((repo, level))
 }
 
+/// How to give `login` exactly `level` (0 none, 1 read, 2 write) on `repo`.
+#[derive(Debug, PartialEq, Default)]
+pub struct AccessPlan {
+    /// The repo's own write team (it grants only this repo) to join.
+    pub join: Option<String>,
+    /// Single-repo teams that give more than `level`, to leave.
+    pub leave: Vec<String>,
+    /// The direct grant to set: None removes it, Some("pull" | "push") sets it.
+    pub direct: Option<&'static str>,
+    /// Teams that also cover other repos and still give more than `level`; changing them would change those repos too.
+    pub blocked_by: Vec<String>,
+}
+
+pub fn plan_access(teams: &[Team], login: &str, repo: &str, level: u8) -> AccessPlan {
+    let mut plan = AccessPlan::default();
+    let gives = |t: &Team| t.repos.iter().find(|(r, _)| r == repo).map(|(_, rank)| *rank);
+    let own = |t: &Team| t.slug != "core" && t.repos.len() == 1;
+    for t in teams.iter().filter(|t| t.members.contains(login)) {
+        match gives(t) {
+            Some(rank) if rank > level && own(t) => plan.leave.push(t.slug.clone()),
+            Some(rank) if rank > level => plan.blocked_by.push(t.slug.clone()),
+            _ => {}
+        }
+    }
+    let team_write = teams.iter().find(|t| own(t) && gives(t) == Some(2));
+    match (level, team_write) {
+        (2, Some(t)) => { if !t.members.contains(login) { plan.join = Some(t.slug.clone()) } }
+        (2, None) => plan.direct = Some("push"),
+        (1, _) => plan.direct = Some("pull"),
+        _ => {}
+    }
+    plan
+}
+
 /// One GitHub account gh is signed in to on this computer, from `gh auth status`.
 #[derive(Debug, Serialize, PartialEq, Default)]
 pub struct Auth {
@@ -413,6 +447,18 @@ mod tests {
         assert_eq!(a.iter().map(|a| (a.login.as_str(), a.active)).collect::<Vec<_>>(), [("old", false), ("eddLai", true)]);
         assert_eq!((a[1].method.as_str(), a[1].protocol.as_str(), a[0].method.as_str()), ("temporary", "https", "account"));
         assert!(parse_gh_status("You are not logged into any GitHub hosts.").is_empty());
+    }
+
+    #[test]
+    fn access_plans_use_the_layer_team_and_name_shared_teams() {
+        let t = |slug: &str, repos: &[(&str, u8)], members: &[&str]| Team { slug: slug.into(),
+            repos: repos.iter().map(|(r, k)| (r.to_string(), *k)).collect(), members: members.iter().map(|m| m.to_string()).collect() };
+        let teams = [t("l3", &[("exo-l3", 2)], &["bob"]), t("members", &[("exo-book", 2), ("exo-papers", 2)], &["bob"]), t("core", &[("exo-l3", 4)], &[])];
+        assert_eq!(plan_access(&teams, "amy", "exo-l3", 2), AccessPlan { join: Some("l3".into()), ..Default::default() });
+        assert_eq!(plan_access(&teams, "bob", "exo-l3", 1), AccessPlan { leave: vec!["l3".into()], direct: Some("pull"), ..Default::default() });
+        assert_eq!(plan_access(&teams, "bob", "exo-l3", 0), AccessPlan { leave: vec!["l3".into()], ..Default::default() });
+        assert_eq!(plan_access(&teams, "bob", "exo-book", 1).blocked_by, ["members"]);
+        assert_eq!(plan_access(&teams, "amy", "NTKCAP", 2).direct, Some("push"));
     }
 
     #[test]

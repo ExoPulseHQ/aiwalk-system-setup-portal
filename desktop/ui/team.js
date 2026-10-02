@@ -76,11 +76,47 @@ function requestControl(a, repo, rank) {
   return wrap;
 }
 
+// Set by vaultSection for owners: clicking a permission opens who-can-open-this for that repo.
+let editAccess = null;
+
 function node(title, where, rank, repo, extra, group) {
   const n = el("div", "node" + (group ? " group" : ""));
   n.append(el("span", "title", title), el("span", "where", where || ""));
-  if (repo) { n.append(pill(rank, repo)); const x = extra(repo, rank); if (x) n.append(x); }
+  if (repo) {
+    const p = pill(rank, repo);
+    if (editAccess) { const ed = editAccess; p.classList.add("edit"); p.tabIndex = 0; p.title = `Who can open ${repo}`; p.onclick = () => ed(repo); p.onkeydown = e => e.key === "Enter" && ed(repo); }
+    n.append(p);
+    const x = extra(repo, rank); if (x) n.append(x);
+  }
   return n;
+}
+
+// Owners: everyone's level on one repo, changed in place.
+async function accessDialog(a, repo) {
+  const box = el("div", "access-list");
+  const msg = el("p", "sub");
+  Object.entries(a.people).sort(([, x], [, y]) => x.name.localeCompare(y.name)).forEach(([login, p]) => {
+    const row = el("div", "item");
+    const text = el("div", "text");
+    text.append(el("div", "title", p.name === login ? login : p.name), el("div", "sub", login));
+    row.append(text);
+    if (p.grants === null) { row.append(pill(4, "Owners can open every repo")); box.append(row); return; }
+    const now = Math.min(p.grants[repo] || 0, 2);
+    const pick = el("select");
+    [["0", "No access"], ["1", "Read"], ["2", "Write"]].forEach(([v, l]) => pick.append(new Option(l, v)));
+    pick.value = String(now);
+    pick.onchange = async () => {
+      pick.disabled = true; msg.textContent = "";
+      try { toast(await invoke("set_access", { org: a.org, repo, login, level: +pick.value })); p.grants[repo] = +pick.value; }
+      catch (e) { msg.textContent = e; pick.value = String(now); }
+      pick.disabled = false;
+    };
+    row.append(pick);
+    box.append(row);
+  });
+  box.append(msg);
+  await ask(`Who can open ${repo}`, "Changes apply on GitHub as soon as you pick them.", [["done", "Done", true]], box);
+  loadTeam();
 }
 
 function tree(t, grants, extra) {
@@ -180,6 +216,7 @@ function vaultSection(v, user, viewAs) {
     return sec;
   }
   const owner = (a.people[user] || {}).grants === null;
+  editAccess = owner ? repo => accessDialog(a, repo) : null;
   const docs = el("ul", "tree"), code = el("div"), teams = el("div");
   const show = login => {
     const person = a.people[login] || { name: login, grants: {} };
@@ -201,8 +238,13 @@ function vaultSection(v, user, viewAs) {
     label.append(pick);
     head.append(label);
   }
-  show(viewAs in a.people ? viewAs : user);
+  const render = show;
+  // keep pills editable for re-renders under View as
+  const showEditable = login => { editAccess = owner ? repo => accessDialog(a, repo) : null; render(login); editAccess = null; };
+  if (owner) head.querySelector("select").onchange = e => showEditable(e.target.value);
+  showEditable(viewAs in a.people ? viewAs : user);
   sec.append(el("h3", null, "Documents"), docs, code, teams);
+  if (owner) sec.insertBefore(el("p", "sub", "Click a permission to choose who can open that repo."), docs);
   return sec;
 }
 
@@ -332,6 +374,72 @@ function missingTools(t) {
   return box;
 }
 
+// Owners: the organisation's people, invitations and owner role.
+async function peopleSection(org, user, teams) {
+  const sec = el("div", "section");
+  const head = el("header");
+  head.append(el("h2", null, "People"), el("span", "grow"));
+  sec.append(head, el("p", "sub", `Everyone in ${org} on GitHub. Owners can open every repo and change everyone's access.`));
+  let p;
+  try { p = await invoke("org_people", { org }); } catch (e) { sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
+  const msg = el("p", "sub");
+  const act = (fn, done) => async () => { msg.textContent = ""; try { toast(await fn()); await loadTeam(); } catch (e) { msg.textContent = e; done && done(); } };
+
+  const list = el("div", "list");
+  p.members.sort((x, y) => (y.owner - x.owner) || x.name.localeCompare(y.name)).forEach(m => {
+    const role = el("select");
+    role.append(new Option("Member", "member"), new Option("Owner", "owner"));
+    role.value = m.owner ? "owner" : "member";
+    role.disabled = m.login === user;   // an owner does not demote themselves here
+    role.onchange = async () => {
+      const toOwner = role.value === "owner";
+      if (await ask(toOwner ? `Make ${m.name} an owner?` : `Make ${m.name} a member?`,
+          toOwner ? "Owners can open every repo, change everyone's access, invite and remove people." : "They keep only the access their teams and grants give them.",
+          [["cancel", "Cancel"], ["ok", toOwner ? "Make owner" : "Make member", true]]) !== "ok") { role.value = m.owner ? "owner" : "member"; return; }
+      act(() => invoke("set_role", { org, login: m.login, owner: toOwner }), () => role.value = m.owner ? "owner" : "member")();
+    };
+    const right = [role];
+    if (m.login !== user) {
+      const rm = el("button", "small ghost", "Remove");
+      rm.onclick = async () => {
+        if (await ask(`Remove ${m.name} from ${org}?`, "Their teams and repo access end now. Copies already on their computer stay there.",
+            [["cancel", "Cancel"], ["rm", "Remove", true]]) === "rm") act(() => invoke("remove_member", { org, login: m.login }))();
+      };
+      right.push(rm);
+    }
+    list.append(item(m.name === m.login ? m.login : m.name, m.name === m.login ? null : m.login, null, ...right));
+  });
+  p.invites.forEach(i => {
+    const cancel = el("button", "small ghost", "Cancel invitation");
+    cancel.onclick = act(() => invoke("cancel_invite", { org, id: i.id }));
+    list.append(item(i.login, `Invited ${i.created}${i.owner ? " as owner" : ""}, not accepted yet`, null, el("span", "tag", "Invited"), cancel));
+  });
+  sec.append(list);
+
+  // invite: a GitHub username, a role, and the teams they start in
+  const form = el("div", "invite");
+  const who = el("input"); who.placeholder = "GitHub username";
+  const role = el("select"); role.append(new Option("Member", "member"), new Option("Owner", "owner"));
+  const picks = el("div", "picks");
+  teams.forEach(t => {
+    const l = el("label", "pick"); const c = el("input"); c.type = "checkbox"; c.value = t.slug;
+    c.checked = t.slug === "members";   // everyone on the team reads the book
+    l.append(c, ` ${t.slug} `, el("span", "sub", `(${t.repos.map(([r]) => r).join(", ")})`)); picks.append(l);
+  });
+  const send = el("button", "small", "Send invitation");
+  send.onclick = async () => {
+    if (!who.value.trim()) return who.focus();
+    send.disabled = true;
+    await act(() => invoke("invite", { org, login: who.value, owner: role.value === "owner",
+      teams: [...picks.querySelectorAll("input:checked")].map(c => c.value) }))();
+    send.disabled = false;
+  };
+  const line = el("div", "row"); line.append(who, role, send);
+  form.append(el("h3", null, "Invite someone"), line, el("p", "sub", "Teams they start in:"), picks);
+  sec.append(form, msg);
+  return sec;
+}
+
 let lastTeam = null;
 async function loadTeam(viewAs) {
   const page = teamPage();
@@ -346,6 +454,8 @@ async function loadTeam(viewAs) {
     el("p", "lede", owner ? "You are an owner: you can see everyone's access and approve requests."
                           : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
     badge(s), obsidianNotice()];
-  s.vaults.forEach(v => { if (v.access && owner) parts.push(requestsSection(v.access)); parts.push(vaultSection(v, s.user, viewAs)); });
+  const org = (s.vaults.find(v => v.access) || {}).access;
+  if (owner && org) parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams));
+  s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs)));
   page.replaceChildren(...parts);
 }
