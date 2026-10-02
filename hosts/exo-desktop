@@ -1,0 +1,33 @@
+#!/bin/bash
+# VNC desktops on a lab machine, one at a time, for aIwalk System Setup (run as the desktops' owner, no sudo).
+# Every desktop listens on 127.0.0.1 only; people reach it through the portal's Open desktop (SSH through Cloudflare).
+# Software rendering, as gpu-free-vnc did, so desktops never take GPU memory from training.
+#
+#   exo-desktop list          displays now running, one per line (":2")
+#   exo-desktop start [N]     start display N, or the lowest free one; prints it
+#   exo-desktop stop N        stop display N
+set -euo pipefail
+MAX=8   # ponytail: fixed cap per machine, so desktops cannot eat a training run's memory; per-machine setting if needed
+
+# "vncserver -list" prints a table; newer TigerVNC writes the display as "1", older as ":1"
+running() { vncserver -list 2>/dev/null | awk '$1 ~ /^:?[0-9]+$/ { sub(/^:/, "", $1); print ":" $1 }' | sort -t: -k2 -n; }
+
+case "${1:-}" in
+  list) running ;;
+  start)
+    n=${2:-}
+    if [ -z "$n" ]; then
+      for i in $(seq 1 $MAX); do running | grep -qx ":$i" || { n=$i; break; }; done
+      [ -n "$n" ] || { echo "All $MAX desktops are in use" >&2; exit 1; }
+    fi
+    [[ "$n" =~ ^[1-9]$ ]] && [ "$n" -le $MAX ] || { echo "Desktop number must be 1 to $MAX" >&2; exit 1; }
+    running | grep -qx ":$n" && { echo ":$n"; exit 0; }
+    export LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa GALLIUM_DRIVER=llvmpipe
+    vncserver ":$n" -geometry 1920x1080 -depth 24 -localhost yes >/dev/null 2>&1
+    echo ":$n" ;;
+  stop)
+    [[ "${2:-}" =~ ^[1-9]$ ]] || { echo "Which desktop? exo-desktop stop N" >&2; exit 1; }
+    vncserver -kill ":$2" >/dev/null 2>&1 || { echo "Desktop :$2 was not running" >&2; exit 1; }
+    echo "stopped :$2" ;;
+  *) sed -n '2,8p' "$0"; exit 1 ;;
+esac

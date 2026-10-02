@@ -12,6 +12,7 @@ MACHINES="120.126.83.20 120.126.83.112 120.126.83.1 120.126.83.67 120.126.83.76 
 VNC_USER=ntk
 VNC_CONFIG=/home/$VNC_USER/.vnc/config
 VNC_SERVICE=gpu-free-vnc.service
+VNC_LAUNCHER=/usr/local/bin/gpu-free-vnc   # starts the boot-time desktops; its own "-localhost no" beats ~/.vnc/config
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 systemctl is-active --quiet cloudflared || { echo "cloudflared is not running. After this the tunnel is the way in, so nothing was changed."; exit 1; }
@@ -29,7 +30,8 @@ echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered 
 echo
 echo "== Plan"
 echo " 1. The tunnel token in the cloudflared service file becomes readable by root only."
-echo " 2. VNC desktops listen on 127.0.0.1 only; they restart once, so anyone on them is disconnected."
+echo " 2. VNC desktops listen on 127.0.0.1 only (~/.vnc/config and $VNC_LAUNCHER, kept as .bak);"
+echo "    they restart once, so anyone on them is disconnected."
 echo " 3. SSH (22) is allowed only from: $PEERS"
 echo "    Rules that open 22, 80 or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
@@ -40,6 +42,10 @@ chmod 600 /etc/systemd/system/cloudflared.service
 systemctl daemon-reload
 
 if grep -q '^localhost=' "$VNC_CONFIG"; then sed -i 's/^localhost=.*/localhost=yes/' "$VNC_CONFIG"; else echo localhost=yes >> "$VNC_CONFIG"; fi
+if [ -f "$VNC_LAUNCHER" ] && grep -q -- '-localhost no' "$VNC_LAUNCHER"; then
+  cp -p "$VNC_LAUNCHER" "$VNC_LAUNCHER.bak"
+  sed -i 's/-localhost no/-localhost yes/g' "$VNC_LAUNCHER"
+fi
 
 ufw default deny incoming >/dev/null
 for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'registered lab machine' >/dev/null; done
