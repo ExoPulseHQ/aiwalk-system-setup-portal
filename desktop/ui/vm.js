@@ -101,13 +101,13 @@ async function refreshVm() {
     item("VM folder", vm.compose.replace(/\/[^/]*$/, ""), null));
   page.append(settings);
 
-  page.append(el("h3", null, "Shortcuts"), el("div", "dim", "Added to the desktop and the app menu"));
+  page.append(el("h3", null, "Shortcuts"), el("div", "sub", "Added to the desktop and the app menu"));
   const shortcuts = el("div", "list");
   s.shortcuts.forEach(([key, name, comment, on]) =>
     shortcuts.append(item(name, comment, null, switchBox(on, v => vmAction("shortcut", { key, on: v })))));
   page.append(shortcuts);
 
-  page.append(el("h3", null, "Resources"), el("div", "dim", "Applied while Windows is off"));
+  page.append(el("h3", null, "Resources"), el("div", "sub", "Applied while Windows is off"));
   const res = el("div", "list"), num = t => parseInt(String(t).replace(/\D/g, "")) || 0;
   const now = { RAM_SIZE: num(vm.ram), CPU_CORES: num(vm.cpus), DISK_SIZE: num(vm.disk) };
   const apply = el("button", "small", "Apply"); apply.disabled = true;

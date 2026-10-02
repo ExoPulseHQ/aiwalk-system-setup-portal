@@ -218,6 +218,75 @@ pub fn parse_request(body: &str) -> Option<(String, String)> {
     (!repo.is_empty() && (level == "read" || level == "write")).then_some((repo, level))
 }
 
+/// How this computer is signed in to GitHub, from `gh auth status` (the active account).
+#[derive(Debug, Serialize, PartialEq, Default)]
+pub struct Auth {
+    pub login: String,
+    /// "account" for a browser sign-in (gho_ token), "temporary" for a fine-grained token (github_pat_, always expires).
+    pub method: String,
+    /// "ssh" or "https", how git talks to GitHub.
+    pub protocol: String,
+}
+
+pub fn parse_gh_status(text: &str) -> Option<Auth> {
+    let mut accounts: Vec<(Auth, bool)> = vec![];
+    for line in text.lines() {
+        if let Some(rest) = line.split("Logged in to github.com account ").nth(1) {
+            let login = rest.split_whitespace().next().unwrap_or_default().to_string();
+            accounts.push((Auth { login, ..Default::default() }, false));
+            continue;
+        }
+        let Some((a, active)) = accounts.last_mut() else { continue };
+        let Some((key, value)) = line.trim().trim_start_matches("- ").split_once(": ") else { continue };
+        match key {
+            "Active account" => *active = value == "true",
+            "Git operations protocol" => a.protocol = value.into(),
+            "Token" if value.starts_with("github_pat_") => a.method = "temporary".into(),
+            "Token" => a.method = "account".into(),
+            _ => {}
+        }
+    }
+    accounts.into_iter().find(|(_, active)| *active).map(|(a, _)| a)
+}
+
+/// An age public key: "age1" then bech32 text, or a plugin recipient such as "age1yubikey1…".
+pub fn is_age_public_key(k: &str) -> bool {
+    k.starts_with("age1") && k.len() >= 58 && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// An age-key request carries only the public key; the issue's author is who it belongs to.
+pub fn age_request_body(public_key: &str) -> String {
+    format!("age-key: {public_key}\n\n<!-- sent by aIwalk System Setup; the private key never leaves the computer -->")
+}
+
+pub fn parse_age_request(body: &str) -> Option<String> {
+    body.lines().find_map(|l| l.strip_prefix("age-key:")).map(str::trim).filter(|k| is_age_public_key(k)).map(String::from)
+}
+
+/// exo-secrets' recipients.txt: `login age1…` per line, the list of who can decrypt. Comments start with #.
+pub fn parse_recipients(text: &str) -> Vec<(String, String)> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once(char::is_whitespace))
+        .map(|(who, key)| (who.to_string(), key.trim().to_string()))
+        .filter(|(_, k)| is_age_public_key(k)).collect()
+}
+
+/// Adds or replaces `login`'s key (one key per person), or drops `login` when `key` is None.
+pub fn with_recipient(text: &str, login: &str, key: Option<&str>) -> String {
+    let mut list: Vec<(String, String)> = parse_recipients(text).into_iter().filter(|(w, _)| w != login).collect();
+    if let Some(k) = key { list.push((login.into(), k.into())) }
+    list.sort();
+    let body: String = list.iter().map(|(w, k)| format!("{w} {k}\n")).collect();
+    format!("# Who can decrypt this repo: GitHub login and age public key. Changed by aIwalk System Setup;\n\
+             # .sops.yaml is generated from this file.\n{body}")
+}
+
+/// .sops.yaml encrypting every file to every recipient.
+pub fn sops_config(recipients: &[(String, String)]) -> String {
+    let keys: Vec<&str> = recipients.iter().map(|(_, k)| k.as_str()).collect();
+    format!("# Generated from recipients.txt by aIwalk System Setup; edit that file instead.\ncreation_rules:\n  - age: >-\n      {}\n", keys.join(",\n      "))
+}
+
 /// What `user` may see: org owners see everyone (for View as), anyone else only their own grants.
 pub fn visible_to(mut people: BTreeMap<String, Person>, user: &str) -> BTreeMap<String, Person> {
     if people.get(user).is_some_and(|p| p.grants.is_none()) {
@@ -311,6 +380,36 @@ mod tests {
         let member = visible_to(org_access(ORG).people, "alice");
         assert_eq!(member.keys().collect::<Vec<_>>(), ["alice"]);
         assert!(visible_to(org_access(ORG).people, "stranger").is_empty());
+    }
+
+    const K1: &str = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+    const K2: &str = "age1yubikey1qwt50d05nh5vutpdzmlg5wn80xq5negm4uj9ghv0snvdd3yysf5yw3rhl3t";
+
+    #[test]
+    fn age_requests_carry_only_a_valid_public_key() {
+        assert_eq!(parse_age_request(&age_request_body(K1)).as_deref(), Some(K1));
+        assert_eq!(parse_age_request("age-key: AGE-SECRET-KEY-1QQQ"), None);
+        assert_eq!(parse_age_request("age-key: age1short"), None);
+    }
+
+    #[test]
+    fn recipients_add_replace_and_remove() {
+        let t = with_recipient("", "bob", Some(K1));
+        let t = with_recipient(&t, "alice", Some(K2));
+        assert_eq!(parse_recipients(&t), [("alice".into(), K2.into()), ("bob".into(), K1.into())]);
+        let t = with_recipient(&t, "alice", Some(K1));
+        assert_eq!(parse_recipients(&t).len(), 2);
+        let t = with_recipient(&t, "bob", None);
+        assert_eq!(parse_recipients(&t), [("alice".to_string(), K1.to_string())]);
+        assert!(sops_config(&parse_recipients(&with_recipient(&t, "bob", Some(K2)))).contains(&format!("{K1},\n      {K2}")));
+    }
+
+    #[test]
+    fn gh_status_picks_the_active_account() {
+        let out = "github.com\n  ✓ Logged in to github.com account old (keyring)\n  - Active account: false\n  - Token: gho_****\n\
+                   \n  ✓ Logged in to github.com account eddLai (keyring)\n  - Active account: true\n  - Git operations protocol: https\n  - Token: github_pat_11****\n";
+        assert_eq!(parse_gh_status(out), Some(Auth { login: "eddLai".into(), method: "temporary".into(), protocol: "https".into() }));
+        assert_eq!(parse_gh_status("You are not logged into any GitHub hosts."), None);
     }
 
     #[test]

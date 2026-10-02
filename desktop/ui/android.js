@@ -81,7 +81,7 @@ async function refreshPhones(force) {
   const top = el("div", "row");
   const again = el("button", "small ghost", "Look again");
   again.onclick = () => { phonesSig = null; refreshPhones(true); };
-  top.append(el("h1", null, "Android Phone"), el("span", "detail", ""), again);
+  top.append(el("h1", null, "Android phone"), el("span", "detail", ""), again);
   page.replaceChildren(top);
   if (waiting) page.append(el("div", "banner", "A phone is connected but has not allowed debugging. Unlock it and tap Allow on the USB debugging prompt."));
   if (!phones.length) {

@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exo_core::{
-    build_tree, can_sign_in, machines, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
+    build_tree, can_sign_in, machines, parse_gh_status, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
     vault_repos, visible_to, Machine, Node, Person, Team, RULES_PATHS,
 };
 use serde::Serialize;
@@ -134,16 +134,21 @@ fn open_requests(org: &str, mine: bool) -> Vec<Request> {
 struct State {
     /// Signed-in GitHub login, None when gh is missing or signed out.
     user: Option<String>,
+    /// Display name from the GitHub profile, for the badge.
+    name: Option<String>,
+    auth: Option<Auth>,
     error: Option<String>,
     vaults: Vec<Vault>,
 }
 
 #[tauri::command(async)]
 fn team_access() -> State {
-    let user = match gh(&["api", "user", "--jq", ".login"]) {
-        Ok(login) => login.trim().to_string(),
-        Err(e) => return State { user: None, error: Some(e), vaults: vec![] },
+    let (user, name) = match gh(&["api", "user", "--jq", ".login, .name"]) {
+        Ok(out) => { let mut l = out.lines(); (l.next().unwrap_or_default().to_string(), l.next().filter(|n| *n != "null").map(String::from)) }
+        Err(e) => return State { user: None, name: None, auth: None, error: Some(e), vaults: vec![] },
     };
+    // gh auth status writes to stderr; sh merges both
+    let auth = parse_gh_status(&sh("gh", &["auth", "status", "--hostname", "github.com"], 15).1);
     let vaults = VAULTS.iter().map(|&(name, repo, about)| {
         let rules = RULES_PATHS.iter().find_map(|p| raw(repo, p).ok());
         let access = rules.as_deref().and_then(vault_repos).map(|v| {
@@ -164,8 +169,11 @@ fn team_access() -> State {
         });
         Vault { name, repo, about, access }
     }).collect();
-    State { user: Some(user), error: None, vaults }
+    State { user: Some(user), name, auth, error: None, vaults }
 }
+
+#[tauri::command(async)]
+fn sign_out() -> Result<(), String> { gh(&["auth", "logout", "--hostname", "github.com"]).map(|_| ()) }
 
 /// Adds `login` to or removes them from an org team. GitHub itself refuses anyone who is not an owner.
 #[tauri::command(async)]
@@ -247,12 +255,12 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, team_access, sign_in, set_team, request_access, approve_request, decline_request,
+    tauri::generate_handler![platform, team_access, sign_in, sign_out, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, team_access, sign_in, set_team, request_access, approve_request, decline_request]
+    tauri::generate_handler![platform, team_access, sign_in, sign_out, set_team, request_access, approve_request, decline_request]
 }
 
 fn main() {
