@@ -210,9 +210,35 @@ pub fn vault_local(repos: Vec<String>) -> Local {
     Local { copies: repos.into_iter().filter_map(|r| Some((r.clone(), find(&r)?))).collect(), obsidian: obsidian_installed() }
 }
 
+/// The OS's own folder picker; None when cancelled.
 #[tauri::command(async)]
-pub fn vault_download(app: tauri::AppHandle, repo: String) -> Result<String, String> {
-    let dest = default_dest(&repo);
+pub fn pick_folder(app: tauri::AppHandle, title: String) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog().file().set_title(title).set_directory(home()).blocking_pick_folder()
+        .and_then(|f| f.into_path().ok()).map(|p| p.to_string_lossy().into())
+}
+
+/// Where a download goes unless the person picks another folder: Documents/aIwalk/<repo> in their home folder.
+#[tauri::command]
+pub fn default_folder(repo: String) -> String { default_dest(&repo).to_string_lossy().into() }
+
+/// Uses a copy the person already has: it must be a clone of `repo`.
+#[tauri::command(async)]
+pub fn vault_link(repo: String, path: String) -> Result<String, String> {
+    let url = run(Path::new(&path), &["remote", "get-url", "origin"], &[]).map_err(|_| "That folder is not a git copy of a vault".to_string())?;
+    let u = url.trim().trim_end_matches('/').trim_end_matches(".git").to_lowercase();
+    let r = repo.to_lowercase();
+    if !(u.ends_with(&format!("/{r}")) || u.ends_with(&format!(":{r}"))) {
+        return Err(format!("That folder is a copy of {}, not {repo}", url.trim()));
+    }
+    register(Path::new(&path));
+    Ok("Using the copy in that folder".into())
+}
+
+/// Downloads into `dest`, or into the default folder when the person did not pick one.
+#[tauri::command(async)]
+pub fn vault_download(app: tauri::AppHandle, repo: String, dest: Option<String>) -> Result<String, String> {
+    let dest = dest.map(PathBuf::from).unwrap_or_else(|| default_dest(&repo));
     if dest.exists() && std::fs::read_dir(&dest).map(|mut d| d.next().is_some()).unwrap_or(false) {
         return Err(format!("{} already has files in it; move them away first", dest.display()));
     }

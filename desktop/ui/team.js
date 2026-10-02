@@ -254,11 +254,44 @@ function downloadRow(v) {
     return item("On this computer", path, null, msg, update, open);
   }
   if (!v.permission) return el("span");
+  const name = v.repo.split("/").pop();
+  const box = el("div");
+  const where = el("span", "cmd");
+  const sub = el("div", "sub");
+  sub.append("Goes to ", where, ". Large files such as papers stay on GitHub until you open them.");
+  (chosen[v.repo] ? Promise.resolve(chosen[v.repo]) : invoke("default_folder", { repo: v.repo })).then(p => where.textContent = p);
+
   const bar = el("progress"); bar.id = "dl-" + v.repo; bar.max = 1; bar.hidden = !(v.repo in downloading);
   const get = el("button", "small", "Download");
-  get.onclick = busy(get, () => invoke("vault_download", { repo: v.repo }));
-  return item("Not on this computer yet", "Downloads the folders you can open into Documents/aIwalk. Large files such as papers stay on GitHub until you open them.", null, msg, bar, get);
+  get.onclick = busy(get, () => invoke("vault_download", { repo: v.repo, dest: chosen[v.repo] || null }));
+  const change = el("button", "small ghost", "Change folder");
+  change.onclick = async () => {
+    const parent = await invoke("pick_folder", { title: `Where should ${v.name} go?` });
+    if (!parent) return;
+    // the vault gets its own folder inside the one picked
+    chosen[v.repo] = parent.replace(/[\\/]+$/, "") + (parent.includes("\\") ? "\\" : "/") + name;
+    where.textContent = chosen[v.repo];
+  };
+  const have = el("button", "small ghost", "Use a copy I already have");
+  have.onclick = async () => {
+    const path = await invoke("pick_folder", { title: `Pick your existing copy of ${v.name}` });
+    if (!path) return;
+    try { toast(await invoke("vault_link", { repo: v.repo, path })); await refreshLocal(); loadTeam(); }
+    catch (e) { msg.textContent = e; }
+  };
+  const row = el("div", "item");
+  const text = el("div", "text");
+  text.append(el("div", "title", "Not on this computer yet"), sub);
+  row.append(text, bar, get);
+  const more = el("div", "row");
+  more.style.padding = "0 4px 12px";
+  more.append(change, have, msg);
+  box.append(row, more);
+  row.style.borderBottom = "0";
+  more.style.borderBottom = "1px solid var(--line)";
+  return box;
 }
+const chosen = {};
 
 async function refreshLocal() {
   const s = lastTeam;

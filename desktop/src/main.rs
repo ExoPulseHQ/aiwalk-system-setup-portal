@@ -271,13 +271,13 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, team_access, sign_in, sign_out, switch_account,
-                             vault::vault_local, vault::vault_download, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
+                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, team_access, sign_in, sign_out, switch_account,
-                             vault::vault_local, vault::vault_download, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
+                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
 
 fn main() {
@@ -298,6 +298,7 @@ fn main() {
         return;
     }
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(handlers())
         .run(tauri::generate_context!())
         .expect("error while running aIwalk System Setup");
