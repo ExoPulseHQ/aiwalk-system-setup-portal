@@ -555,13 +555,21 @@ function downloadRow(v) {
     delete stages[v.repo];
     await refreshLocal(); loadTeam();
   };
+  // the vault gets its own folder inside the one picked
+  const into = parent => parent.replace(/[\\/]+$/, "") + (parent.includes("\\") ? "\\" : "/") + v.repo.split("/").pop();
   const text = el("div", "text");
   const useCopy = el("button", "small ghost", path ? "Change folder" : "Use a copy I already have");
   useCopy.onclick = async () => {
     const p = await invoke("pick_folder", { title: `Pick the folder that holds your copy of ${v.name}` });
     if (!p) return;
-    try { toast(await working(useCopy, "Checking that folder", () => invoke("vault_link", { repo: v.repo, path: p }))); await refreshLocal(); loadTeam(); }
-    catch (e) { msg.textContent = e; }
+    try { toast(await working(useCopy, "Checking that folder", () => invoke("vault_link", { repo: v.repo, path: p }))); await refreshLocal(); loadTeam(); return; }
+    catch (e) { if (!/^No copy of/.test(String(e))) return msg.textContent = e; }
+    // nothing there yet: the picked folder is where the vault should live, so offer a download into it
+    const dest = into(p);
+    const other = path ? ` The copy in ${path} stays where it is; delete it yourself once you no longer need it.` : "";
+    if (await ask(`Download ${v.name} into ${p}?`, `There is no copy there yet. A new one goes to ${dest}.${other}`,
+      [["cancel", "Cancel"], ["get", "Download here", true]]) !== "get") return;
+    await busy(useCopy, "Downloading", () => invoke("vault_download", { repo: v.repo, dest }))();
   };
   if (path) {
     const update = el("button", "small ghost", "Get latest"), open = el("button", "small", "Open in Obsidian");
@@ -577,7 +585,6 @@ function downloadRow(v) {
     return box;
   }
   if (!v.permission) return el("span");
-  const name = v.repo.split("/").pop();
   const box = el("div");
   const where = el("span", "cmd");
   const sub = el("div", "sub");
@@ -590,8 +597,7 @@ function downloadRow(v) {
   change.onclick = async () => {
     const parent = await invoke("pick_folder", { title: `Where should ${v.name} go?` });
     if (!parent) return;
-    // the vault gets its own folder inside the one picked
-    chosen[v.repo] = parent.replace(/[\\/]+$/, "") + (parent.includes("\\") ? "\\" : "/") + name;
+    chosen[v.repo] = into(parent);
     where.textContent = chosen[v.repo];
   };
   box.className = "place";
