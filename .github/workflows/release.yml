@@ -26,7 +26,8 @@ jobs:
       - name: The tag is the app's version
         shell: bash
         # the app compares its own version with the newest tag to offer an update, so the two must agree
-        run: test "v$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)" = "$GITHUB_REF_NAME"
+        # a tag ending in -rcN is a trial of that version: published as a pre-release, which the update check ignores
+        run: test "v$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)" = "${GITHUB_REF_NAME%-rc*}"
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |
@@ -62,4 +63,4 @@ jobs:
             Windows SmartScreen asks once (More info, Run anyway). On macOS, open it once, then System Settings,
             Privacy & Security, Open Anyway.
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
