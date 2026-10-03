@@ -12,28 +12,42 @@ use std::time::{Duration, Instant};
 
 fn cloudflared() -> Option<String> { on_path("cloudflared").map(|p| p.to_string_lossy().into_owned()) }
 
-/// ssh options that reach `tunnel` through Cloudflare. Where the machine's Access application signs SSH certificates,
-/// a fresh one is fetched (they last minutes) and offered first, so the machine's log names the person; where it
-/// does not, or the machine does not trust them yet, ssh goes on to the person's own keys.
-fn through(cf: &str, tunnel: &str) -> Vec<String> {
-    let mut o = vec!["-o".to_string(), format!("ProxyCommand=\"{cf}\" access ssh --hostname %h")];
+/// The ProxyCommand option that carries ssh to `tunnel`: this app itself (`--ssh-proxy`, access.rs) when this
+/// computer holds a usable Access token for it, else cloudflared; None with neither. ssh's own config keeps cloudflared.
+fn proxy(cf: Option<&str>, tunnel: &str) -> Option<String> {
+    let own = crate::access::token(tunnel).ok().and(std::env::current_exe().ok())
+        .map(|e| e.to_string_lossy().replace('%', "%%")).filter(|e| !e.contains('"'));   // % is ssh's token marker
+    match (own, cf) {
+        (Some(exe), _) => Some(format!("ProxyCommand=\"{exe}\" --ssh-proxy %h")),
+        (None, Some(cf)) => Some(format!("ProxyCommand=\"{cf}\" access ssh --hostname %h")),
+        (None, None) => None,
+    }
+}
+
+/// ssh options that reach `tunnel` through Cloudflare; None when neither this app nor cloudflared can. Where the
+/// machine's Access application signs SSH certificates, a fresh one is fetched (they last minutes; the app's own
+/// request first, cloudflared's ssh-gen if that fails) and offered first, so the machine's log names the person;
+/// where it does not, or the machine does not trust them yet, ssh goes on to the person's own keys.
+fn through(cf: Option<&str>, tunnel: &str) -> Option<Vec<String>> {
+    let mut o = vec!["-o".to_string(), proxy(cf, tunnel)?];
     let key = home().join(".cloudflared").join(format!("{tunnel}-cf_key"));
     let cert = std::path::PathBuf::from(format!("{}-cert.pub", key.display()));
     let fresh = std::fs::metadata(&cert).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e < Duration::from_secs(120)));
-    if fresh || (sh(cf, &["access", "ssh-gen", "--hostname", tunnel], 20).0 == 0 && cert.exists()) {
+    if fresh || crate::access::ssh_cert(tunnel).is_ok()
+        || (cf.is_some_and(|cf| sh(cf, &["access", "ssh-gen", "--hostname", tunnel], 20).0 == 0) && cert.exists()) {
         o.extend(["-o".into(), format!("IdentityFile={}", key.display()), "-o".into(), format!("CertificateFile={}", cert.display())]);
     }
-    o
+    Some(o)
 }
 
 /// "no-tunnel" (none set up yet), "no-cloudflared", "sign-in" (no Cloudflare sign-in on this computer yet),
 /// "up" (the machine's SSH answered through the tunnel), "down" (it did not).
 fn state(tunnel: Option<&str>) -> &'static str {
     let Some(t) = tunnel else { return "no-tunnel" };
-    let Some(cf) = cloudflared() else { return "no-cloudflared" };
+    let cf = cloudflared();
+    let Some(proxy) = proxy(cf.as_deref(), t) else { return "no-cloudflared" };
     // only probe with a sign-in already here: otherwise cloudflared would open a browser on its own
-    if sh(&cf, &["access", "token", &format!("-app=https://{t}")], 10).0 != 0 { return "sign-in" }
-    let proxy = format!("ProxyCommand=\"{cf}\" access ssh --hostname %h");
+    if !proxy.contains("--ssh-proxy") && cf.is_some_and(|cf| sh(&cf, &["access", "token", &format!("-app=https://{t}")], 10).0 != 0) { return "sign-in" }
     let (_, out) = sh("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", &proxy, &format!("probe@{t}"), "true"], 30);
     // sshd asking who we are means the whole path works; it refuses "probe", which is fine
@@ -53,11 +67,14 @@ pub fn reachable(machines: Vec<(String, Option<String>)>) -> BTreeMap<String, &'
 /// Cloudflare can take several seconds, so each gets 15.
 #[tauri::command(async)]
 pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_json::Value> {
-    let Some(cf) = cloudflared() else { return BTreeMap::new() };
+    let cf = cloudflared();
     let jobs: Vec<_> = tunnels.into_iter().map(|(host, tunnel)| {
         let cf = cf.clone();
         std::thread::spawn(move || {
             let url = format!("https://{}/", tunnel.replacen("ssh-", "status-", 1));
+            // the app's own request first (access.rs); cloudflared when that fails
+            if let Some(v) = crate::access::get(&url).ok().and_then(|b| serde_json::from_str(&b).ok()) { return Some((host, v)) }
+            let cf = cf?;
             // without a sign-in cloudflared would open a browser; the page asks for the sign-in instead
             if sh(&cf, &["access", "token", &format!("-app={url}")], 10).0 != 0 { return None }
             let (code, out) = sh(&cf, &["access", "curl", &url, "-s", "--max-time", "15"], 20);
@@ -150,11 +167,11 @@ pub fn open_forward(host: String, tunnel: String, user: String, display: u8, soc
             f.remove(&key);
         }
     }
-    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
+    let via = through(cloudflared().as_deref(), &tunnel).ok_or("cloudflared is missing; reinstall the app")?;
     let local = free_port(15900 + display as u16);
     let mut child = crate::cmd("ssh")
         .args(["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
-               "-o", "StrictHostKeyChecking=accept-new"]).args(through(&cf, &tunnel))
+               "-o", "StrictHostKeyChecking=accept-new"]).args(via)
         .args(["-L", &format!("127.0.0.1:{local}:{target}"), &format!("{user}@{tunnel}")])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     let addr: SocketAddr = ([127, 0, 0, 1], local).into();
@@ -205,9 +222,8 @@ pub fn open_viewer(port: u16) { crate::open_url(&format!("vnc://127.0.0.1:{port}
 #[tauri::command(async)]
 pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Result<String, String> {
     if action != "start" && action != "stop" { return Err(format!("unknown action {action}")) }
-    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
+    let via = through(cloudflared().as_deref(), &tunnel).ok_or("cloudflared is missing; reinstall the app")?;
     let arg = if display == 0 { String::new() } else { display.to_string() };
-    let via = through(&cf, &tunnel);
     let (target, run) = (format!("{user}@{tunnel}"), format!("~/.local/bin/exo-desktop {action} {arg}"));
     let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
     args.extend(via.iter().map(String::as_str));
