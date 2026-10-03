@@ -207,7 +207,9 @@
   .empty { padding: 48px 0; max-width: 56ch; }
   .terms { max-width: 70ch; }
   .terms .text { max-height: 52vh; overflow-y: auto; padding: 4px 20px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-  .terms .text h2 { font-size: 17px; margin: 18px 0 8px; }
+  /* a formal text: Times New Roman for Latin, 標楷體 for Chinese (DFKai-SB on Windows, BiauKai / Kaiti TC on macOS) */
+  .terms .text { font-family: "Times New Roman", "Liberation Serif", Times, "DFKai-SB", "標楷體", "BiauKaiTC", "BiauKai", "Kaiti TC", serif; font-size: 17px; }
+  .terms .text h2 { font-size: 19px; margin: 18px 0 8px; }
   .terms .text li { margin: 6px 0; line-height: 1.6; }
   .terms .lang { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 8px; }
   .terms .lang button.on { background: var(--purple); color: #fff; border-color: var(--purple); }
