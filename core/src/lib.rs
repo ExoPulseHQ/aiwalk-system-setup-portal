@@ -1,6 +1,8 @@
 //! Logic shared by every platform. Nothing here runs a process or touches the network:
 //! callers fetch the JSON (desktop through `gh api`, Android over HTTPS) and pass it in.
 
+pub mod vault_ship;
+
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
