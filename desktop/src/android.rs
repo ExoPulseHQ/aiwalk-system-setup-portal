@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const PHONEDESK: &str = "com.eddlai.phonedesk";
+const SHIZUKU: &str = "moe.shizuku.privileged.api";
 const APP_ID: &str = "com.aiwalk.SystemSetup";
 const P_FIRST: &str = "persist.wm.debug.force_desktop_first_on_default_display_for_testing";
 const P_RESTRICT: &str = "persist.wm.debug.desktop_mode_enforce_device_restrictions";
@@ -139,17 +140,28 @@ fn scrcpy(serial: &str, model: &str, keyboard_only: bool) {
         .stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
+/// Starts Shizuku, then sets up what lets it come back by itself (Shizuku 13.6's BootCompleteReceiver, Android 13+):
+/// after a restart on Wi-Fi it switches wireless debugging on and starts over it, if it may write secure settings and
+/// remembers that it was last started by adb. The one thing a computer cannot do for it is the pairing with the
+/// phone's wireless debugging, which Android takes only on the phone; the install message asks for it.
 fn start_shizuku(serial: &str) {
-    let (_, path) = adb(Some(serial), &["shell", "pm path moe.shizuku.privileged.api"], 20);
+    let s = Some(serial);
+    let (_, path) = adb(s, &["shell", &format!("pm path {SHIZUKU}")], 20);
     let lib = path.replace("package:", "").replace("base.apk", "lib/arm64/libshizuku.so");
-    adb(Some(serial), &["shell", &lib], 60);
+    adb(s, &["shell", &lib], 60);
+    adb(s, &["shell", &format!("pm grant {SHIZUKU} android.permission.WRITE_SECURE_SETTINGS")], 20);
+    // battery saving must not stop the server or the app that restarts it
+    adb(s, &["shell", &format!("dumpsys deviceidle whitelist +{SHIZUKU}")], 20);
+    // its home screen is where it writes down "last started by adb"; a moment for it to see the running server
+    adb(s, &["shell", &format!("am start -n {SHIZUKU}/moe.shizuku.manager.MainActivity")], 20);
+    std::thread::sleep(Duration::from_secs(2));
 }
 
 fn install_phonedesk(p: &Phone, step: &dyn Fn(&str)) -> String {
     let (pd, sz) = (apk("phonedesk.apk"), apk("shizuku.apk"));
     if !pd.exists() { return "The Desktop Mode app installer is missing from this folder".into() }
     let s = Some(p.serial.as_str());
-    if adb(s, &["shell", "pm path moe.shizuku.privileged.api"], 20).0 != 0
+    if adb(s, &["shell", &format!("pm path {SHIZUKU}")], 20).0 != 0
         && { step("Installing Shizuku on the phone"); adb(s, &["install", &sz.to_string_lossy()], 180).0 != 0 } {
         return "Could not install Shizuku".into();
     }
@@ -162,7 +174,9 @@ fn install_phonedesk(p: &Phone, step: &dyn Fn(&str)) -> String {
     step("Starting Shizuku");
     adb(s, &["shell", &format!("pm enable {PHONEDESK}")], 20);
     start_shizuku(&p.serial);
-    format!("Desktop Mode app installed on {}. Allow Shizuku on the phone the first time you use it.", p.model)
+    format!("Desktop Mode app installed on {}. Allow Shizuku on the phone the first time you use it. One more step on the \
+             phone, once: in Shizuku choose Start via Wireless debugging, then Pairing. After that Shizuku restarts by itself \
+             when the phone restarts on Wi-Fi, and you can start it without a computer.", p.model)
 }
 
 fn ipfile() -> std::path::PathBuf { crate::home().join(".config/phone-panel/ip") }
