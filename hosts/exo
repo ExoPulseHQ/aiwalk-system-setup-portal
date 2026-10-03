@@ -28,6 +28,10 @@ def git(repo, *args, timeout=10):
     return r.stdout.rstrip() if r.returncode == 0 else None   # rstrip: porcelain lines start with a meaningful space
 
 
+def strip_git(url):   # str.removesuffix needs Python 3.9; ox runs Ubuntu 20.04 with 3.8
+    return url[:-4] if url.endswith(".git") else url
+
+
 def count(repo, *rng):
     n = git(repo, "rev-list", "--count", *rng)
     return int(n) if n is not None else None
@@ -61,7 +65,7 @@ def worktrees(repo):
             cur = {}
         elif line.startswith("worktree "): cur["path"] = line[9:]
         elif line.startswith("HEAD "): cur["head"] = line[5:12]
-        elif line.startswith("branch "): cur["branch"] = line[7:].removeprefix("refs/heads/")
+        elif line.startswith("branch "): cur["branch"] = line[7:][11:] if line[7:].startswith("refs/heads/") else line[7:]
         elif line == "detached": cur["branch"] = None
     return wts
 
@@ -97,7 +101,7 @@ def status(repo, fetch):
         rows.append(row)
     with_wt = {r["branch"] for r in rows}
     loose = [b for b in (git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads") or "").splitlines() if b not in with_wt]
-    return {"repo": os.path.basename(repo), "path": repo, "remote": url.split(":", 1)[-1].removesuffix(".git"),
+    return {"repo": os.path.basename(repo), "path": repo, "remote": strip_git(url.split(":", 1)[-1]),
             "default": dflt, "fetch": fetched, "worktrees": rows, "no_worktree": loose}
 
 
@@ -205,7 +209,7 @@ def main(argv):
     want = {n.lower() for n in names.split(",") if n}
     paths = [os.path.abspath(os.path.expanduser(p)) for p in rest if not p.startswith("--") and p != names] or find_repos(os.path.expanduser("~"))
     if want:   # the remote's last part, so a second clone of the same repo shows up too (and can be flagged)
-        paths = [p for p in paths if (git(p, "remote", "get-url", "origin") or "").rstrip("/").removesuffix(".git").rsplit("/", 1)[-1].lower() in want]
+        paths = [p for p in paths if strip_git((git(p, "remote", "get-url", "origin") or "").rstrip("/")).rsplit("/", 1)[-1].lower() in want]
     with ThreadPoolExecutor(max_workers=8) as ex:
         repos = list(ex.map(lambda p: status(p, fetch), paths))
     print(json.dumps({"host": socket.gethostname(), "user": os.environ.get("USER"), "checked": datetime.now(timezone.utc).isoformat(timespec="seconds"),

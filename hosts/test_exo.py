@@ -1,4 +1,4 @@
-"""Builds a throwaway origin and clone, then checks every state `exo code status` reports. Run: python3 host/test_exo.py"""
+"""Builds a throwaway origin and clone, then checks every state `exo code status` reports. Run: python3 hosts/test_exo.py"""
 import json, os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
