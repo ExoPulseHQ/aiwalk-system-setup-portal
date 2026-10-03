@@ -224,6 +224,7 @@ let internsNow = [];
 async function accessDialog(a, repo) {
   const box = el("div", "access-list");
   const msg = el("p", "sub");
+  let changed = false;   // the page is read again only when something was changed here
   // one row with a level to pick; `after(level)` keeps the caller's own record in step
   const row = (title, sub, tag, now, login, after) => {
     const r = el("div", "item"), text = el("div", "text");
@@ -236,7 +237,7 @@ async function accessDialog(a, repo) {
     pick.onchange = async () => {
       pick.disabled = true; msg.textContent = "";
       const spin = el("span", "spinner"); pick.before(spin);
-      try { toast(await invoke("set_access", { org: a.org, repo, login, level: +pick.value })); now = +pick.value; after(now); }
+      try { toast(await invoke("set_access", { org: a.org, repo, login, level: +pick.value })); now = +pick.value; after(now); changed = true; }
       catch (e) { msg.textContent = e; pick.value = String(now); }
       spin.remove(); pick.disabled = false;
     };
@@ -264,7 +265,7 @@ async function accessDialog(a, repo) {
   });
   box.append(msg);
   await ask(`Who can open ${repo}`, "Changes apply on GitHub as soon as you pick them.", [["done", "Done", true]], box);
-  loadTeam();
+  if (changed) loadTeam();
 }
 
 function tree(t, grants, extra) {
