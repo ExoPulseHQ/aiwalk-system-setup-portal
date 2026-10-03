@@ -1010,6 +1010,11 @@ function cloudflareSection() {
         };
         extra.unshift(see, change);
       }
+      if ((st.left || []).length) {
+        // someone who knew the token and the key is an owner no longer: say so until both are changed
+        const w = el("p", "warn", `${st.left.join(", ")} ${st.left.length > 1 ? "are" : "is"} no longer an owner but knew the team's token and key. Renew the token (or paste a new one), then make a new key and tell it to the owners.`);
+        rows.push(w);
+      }
       rows.push(item(st.shared ? "Shared with the other owners" : "Only on this computer",
         st.shared ? "The token is in the owners' repo, locked with the team key. The other owners enter that key once."
                   : "Share it and the other owners connect with one key instead of making tokens of their own.", null, ...extra));

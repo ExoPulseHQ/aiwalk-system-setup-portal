@@ -522,8 +522,21 @@ pub fn newer(tag: &str, current: &str) -> bool {
     matches!((nums(tag), nums(current)), (Some(t), Some(c)) if t > c)
 }
 
+/// Logins on `then` (one per line, the owners when a secret was last shared) that are not among `now`.
+/// GitHub logins compare without regard to case.
+pub fn owners_gone(then: &str, now: &[String]) -> Vec<String> {
+    then.lines().map(str::trim).filter(|l| !l.is_empty() && !now.iter().any(|n| n.eq_ignore_ascii_case(l))).map(String::from).collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owners_who_left_since_a_secret_was_shared() {
+        let now = vec!["eddLai".to_string(), "gnaixihZ".to_string()];
+        assert_eq!(owners_gone("eddLai\ngnaixihz\nchengloutai\n\n", &now), ["chengloutai"]);
+        assert!(owners_gone("eddlai\n", &now).is_empty() && owners_gone("", &now).is_empty());
+    }
+
     #[test]
     fn later_versions() {
         assert!(newer("v0.3.0", "0.2.0") && newer("v0.10.0", "0.9.0") && newer("1.0.0", "0.9.9"));

@@ -87,7 +87,7 @@ pub fn cancel_invite(org: String, id: u64) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn set_role(org: String, login: String, owner: bool) -> Result<String, String> {
     github::send("PUT", &format!("orgs/{org}/memberships/{login}"), Some(serde_json::json!({ "role": if owner { "admin" } else { "member" } })))?;
-    Ok(format!("{login} is now {}", if owner { "an owner" } else { "a member" }))
+    Ok(format!("{login} is now {}.{}", if owner { "an owner" } else { "a member" }, crate::cloudflare::owner_left_note(&login)))
 }
 
 /// Takes `login` out of the organisation: every team and repo grant goes with it, and their sign-in to the machines
@@ -97,7 +97,7 @@ pub fn remove_member(org: String, login: String) -> Result<String, String> {
     // their GitHub number, read before they are gone: Cloudflare knows people by it
     let id = github::get(&format!("users/{login}")).ok().and_then(|u| u["id"].as_u64());
     github::send("DELETE", &format!("orgs/{org}/memberships/{login}"), None)?;
-    Ok(format!("{login} left the organisation.{}", crate::cloudflare::after_removal(id)))
+    Ok(format!("{login} left the organisation.{}{}", crate::cloudflare::after_removal(id), crate::cloudflare::owner_left_note(&login)))
 }
 
 /// Gives `login` exactly `level` (0 none, 1 read, 2 write) on `repo`, through the repo's own team where it has one.

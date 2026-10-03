@@ -99,6 +99,30 @@ fn verify(token: &str) -> Result<String, String> {
 
 const SHARED_REPO: &str = "exo-secrets";
 const SHARED_FILE: &str = "cloudflare-token.age";
+/// Who the owners were when the token was last shared, one login per line. Someone on this list who is no longer an
+/// owner still knows the team key and has seen the token, so both must be changed; the page says so until they are.
+const SHARED_WITH: &str = "cloudflare-token.owners";
+
+fn owners_now() -> Result<Vec<String>, String> {
+    Ok(crate::github::all(&format!("orgs/{}/members?role=admin", org()))?.iter().filter_map(|m| m["login"].as_str().map(String::from)).collect())
+}
+
+/// Writes one file in the owners' repo, replacing what was there.
+fn put(file: &str, bytes: &[u8], message: &str) -> Result<(), String> {
+    use base64::Engine;
+    let path = format!("repos/{}/{SHARED_REPO}/contents/{file}", org());
+    let sha = crate::github::get(&path).ok().and_then(|f| f["sha"].as_str().map(String::from));
+    let mut body = serde_json::json!({ "message": message, "content": base64::engine::general_purpose::STANDARD.encode(bytes) });
+    if let Some(sha) = sha { body["sha"] = sha.into() }
+    crate::github::send("PUT", &path, Some(body)).map(|_| ())
+}
+
+/// Owners who knew the key at the last share and are owners no longer; empty when nothing was shared.
+pub fn left_since_shared() -> Vec<String> {
+    let Ok(then) = crate::github::raw(&format!("{}/{SHARED_REPO}", org()), SHARED_WITH) else { return vec![] };
+    let Ok(now) = owners_now() else { return vec![] };
+    exo_core::owners_gone(&then, &now)
+}
 
 fn org() -> String { crate::VAULTS[0].1.split('/').next().unwrap_or_default().to_string() }
 
@@ -139,15 +163,13 @@ fn unlock(file: &[u8], key: &str) -> Result<String, String> {
     Ok(token.trim().to_string())
 }
 
-/// Puts the kept token into the team's repo, locked with `key`.
-fn publish(token: &str, key: &str) -> Result<(), String> {
-    use base64::Engine;
-    let path = format!("repos/{}/{SHARED_REPO}/contents/{SHARED_FILE}", org());
-    let sha = crate::github::get(&path).ok().and_then(|f| f["sha"].as_str().map(String::from));
-    let mut body = serde_json::json!({ "message": "chore: the owners' Cloudflare token, locked with the team key",
-        "content": base64::engine::general_purpose::STANDARD.encode(lock(token, key)?) });
-    if let Some(sha) = sha { body["sha"] = sha.into() }
-    crate::github::send("PUT", &path, Some(body)).map(|_| ())
+/// Puts the kept token into the team's repo, locked with `key`. `fresh` says the token or the key is new, so
+/// today's owners are the ones who know them; otherwise the list of who knew is left as it was.
+fn publish(token: &str, key: &str, fresh: bool) -> Result<(), String> {
+    put(SHARED_FILE, &lock(token, key)?, "chore: the owners' Cloudflare token, locked with the team key")?;
+    let known = crate::github::raw(&format!("{}/{SHARED_REPO}", org()), SHARED_WITH).is_ok();
+    if fresh || !known { put(SHARED_WITH, (owners_now()?.join("\n") + "\n").as_bytes(), "chore: who the owners were when the Cloudflare token was shared")?; }
+    Ok(())
 }
 
 /// The token from the team's repo, opened with `key`; None when the owners have not shared one.
@@ -177,6 +199,8 @@ pub fn cf_state() -> Value {
     };
     state["shared"] = shared.into();
     state["has_key"] = key.is_some().into();
+    // someone who knew the key and the token is an owner no longer: both must change
+    if shared { state["left"] = left_since_shared().into(); }
     state
 }
 
@@ -187,7 +211,7 @@ pub fn cf_connect(token: String) -> Result<String, String> {
     let token = token.trim();
     let expires = verify(token)?;
     store::save("token", token)?;
-    let also = match store::load("key") { Some(k) => match publish(token, &k) { Ok(()) => " The other owners get it too.", Err(_) => " The shared copy could not be renewed; share it again." }, None => "" };
+    let also = match store::load("key") { Some(k) => match publish(token, &k, false) { Ok(()) => " The other owners get it too.", Err(_) => " The shared copy could not be renewed; share it again." }, None => "" };
     Ok(format!("Cloudflare connected{}.{also}", if expires.is_empty() { String::new() } else { format!("; the token runs until {expires}") }))
 }
 
@@ -196,8 +220,10 @@ pub fn cf_connect(token: String) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn cf_share(fresh: bool) -> Result<String, String> {
     let token = store::load("token").ok_or("Connect Cloudflare on this computer first")?;
-    let key = match store::load("key").filter(|_| !fresh) { Some(k) => k, None => new_key()? };
-    publish(&token, &key)?;
+    let kept = store::load("key").filter(|_| !fresh);
+    let made = kept.is_none();
+    let key = match kept { Some(k) => k, None => new_key()? };
+    publish(&token, &key, made)?;
     store::save("key", &key)?;
     Ok(key)
 }
@@ -231,7 +257,7 @@ pub fn cf_renew() -> Result<String, String> {
     let new = attempt("user/tokens/verify", "user/tokens").or_else(|_| attempt(&format!("accounts/{ACCOUNT}/tokens/verify"), &format!("accounts/{ACCOUNT}/tokens")))
         .map_err(|e| format!("This token may not renew itself ({e}). Give it \"API Tokens: Edit\" in Cloudflare, or use Roll there and paste the new one here."))?;
     store::save("token", &new)?;
-    let also = match store::load("key") { Some(k) => match publish(&new, &k) { Ok(()) => " The other owners get it too.", Err(_) => " The shared copy could not be renewed; share it again." }, None => "" };
+    let also = match store::load("key") { Some(k) => match publish(&new, &k, false) { Ok(()) => " The other owners get it too.", Err(_) => " The shared copy could not be renewed; share it again." }, None => "" };
     Ok(format!("The token is renewed; the old one no longer works.{also}"))
 }
 
@@ -282,6 +308,13 @@ pub fn selfcheck(token: &str) -> Result<(), String> {
     println!("token is back in the keyring: {}", store::load("token").is_some_and(|t| t == token.trim()));
     println!("join by typing the key in lower case with spaces: {}", cf_join(key.to_lowercase().replace('-', " ")).is_ok());
     Ok(())
+}
+
+/// What to tell an owner who just changed `login`'s role or removed them, when `login` knew the shared token.
+pub fn owner_left_note(login: &str) -> &'static str {
+    if left_since_shared().iter().any(|l| l.eq_ignore_ascii_case(login)) {
+        " They knew the team's Cloudflare token and key: renew the token and make a new key on the Machines page."
+    } else { "" }
 }
 
 #[cfg(test)]
