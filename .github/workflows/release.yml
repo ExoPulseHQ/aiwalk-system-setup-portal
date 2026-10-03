@@ -17,6 +17,9 @@ jobs:
           - { os: windows-latest, tools: windows-amd64, args: "" }
           - { os: macos-latest,   tools: macos-arm64,   args: "--target aarch64-apple-darwin", rust: aarch64-apple-darwin }
           - { os: macos-latest,   tools: macos-amd64,   args: "--target x86_64-apple-darwin",  rust: x86_64-apple-darwin }
+    # members may push branches and tags here; only an owner's tag ships a release to everyone's computer
+    # ponytail: owners listed by hand (GITHUB_TOKEN cannot read org roles); keep in step with the org's Owners
+    if: contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor)
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
