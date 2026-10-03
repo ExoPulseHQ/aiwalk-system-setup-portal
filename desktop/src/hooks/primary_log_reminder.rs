@@ -1,11 +1,8 @@
 //! `.claude/hooks/primary_log_reminder.py`: PreToolUse on Edit/Write/MultiEdit. Editing a primary log (a file named
 //! `_*.md`) gets a reminder of CLAUDE.md §Primary Log Editing Rule; when the log has an ownership block, also whether
-//! its generated half is stale now, from the vault's `scripts/sync_ownership.py --check`.
-//!
-//! That check is the vault's own Python script, so it needs Python: found the way the app's Python badge finds it.
-//! Without one the reminder goes out without the ownership part, as the Python does when the check cannot start.
+//! its generated half is stale now: the same check as `aiwalk-setup vault sync-ownership --check`, run in-process.
 
-use super::git_discipline_reminder::{context, fill, py_or, py_strip, program, tool_input};
+use super::git_discipline_reminder::{context, fill, py_or, py_strip, tool_input};
 use super::new_repo_worktree_check::abspath;
 use super::{text, texts, Out};
 use std::path::Path;
@@ -46,30 +43,20 @@ fn relpath(path: &str, start: &str) -> Option<String> {
     Some(if rel.is_empty() { ".".into() } else { rel.join("\\") })
 }
 
-/// The program and leading arguments that start Python 3 here (the Python hook uses its own interpreter).
-fn python() -> Option<Vec<String>> {
-    let cmd = crate::python::python_state()["command"].as_str()?.to_string();
-    // ponytail: the badge gives one string; a path with spaces is taken whole when it is a file, else split on spaces
-    Some(if Path::new(&cmd).is_file() { vec![cmd] } else { cmd.split_whitespace().map(String::from).collect() })
-}
-
-/// The ownership sentence, or None where the Python's try block gives up and says nothing about it.
+/// The ownership sentence, or None when the log has no ownership block (or sits on another drive than the vault).
 fn ownership(fp: &str, root: &str, t: &serde_json::Value) -> Option<String> {
     let body = std::fs::read_to_string(fp).ok()?;
     if !body.contains("<!-- ownership:start -->") { return None }
-    let script = Path::new(root).join("scripts").join("sync_ownership.py").to_string_lossy().into_owned();
-    let py = python()?;
-    let args: Vec<&str> = py[1..].iter().map(String::as_str).chain([script.as_str(), "--check", fp]).collect();
-    let (code, _, err) = program(&py[0], &args, 20)?;
-    let state = match code {
-        1 => text(t, "state_stale"),
-        0 => text(t, "state_ok"),
-        _ => {
-            let err: String = py_strip(&err).chars().take(120).collect();
-            fill(&text(t, "state_failed"), &[("stderr", if err.is_empty() { "?" } else { &err })])
+    let rel = relpath(fp, root)?;
+    let state = match crate::vaultcli::ownership(Path::new(root), Path::new(fp), &rel) {
+        Ok(Some(_)) => text(t, "state_stale"),
+        Ok(None) => text(t, "state_ok"),
+        Err(e) => {
+            let e: String = py_strip(&e).chars().take(120).collect();
+            fill(&text(t, "state_failed"), &[("stderr", if e.is_empty() { "?" } else { &e })])
         }
     };
-    Some(fill(&text(t, "ownership"), &[("state", &state), ("path", &relpath(fp, root)?)]))
+    Some(fill(&text(t, "ownership"), &[("state", &state), ("path", &rel)]))
 }
 
 pub fn run(stdin: &[u8]) -> Out {
@@ -81,7 +68,7 @@ pub fn run(stdin: &[u8]) -> Out {
     let t = texts("primary_log_reminder", EMBEDDED);
     let mut reminder = fill(&text(&t, "reminder"), &[("file", base)]);
     if let Some(root) = super::project_dir().map(|p| p.to_string_lossy().into_owned()) {
-        if Path::new(&root).join("scripts").join("sync_ownership.py").exists() && Path::new(&fp).exists() {
+        if Path::new(&fp).exists() {
             reminder += &ownership(&fp, &root, &t).unwrap_or_default();
         }
     }

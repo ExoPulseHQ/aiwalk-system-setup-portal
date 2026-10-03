@@ -5,7 +5,7 @@
   "ident": "--name {login} --email {email}",
   "ident_unknown": "--name <gh login> --email <id>+<login>@users.noreply.github.com",
   "header": "⚠ Git 規則（CLAUDE.md §Git Rules）必觸發提醒：",
-  "identity": "• 身分＝gh 登入的帳號，**不問使用者**：`{login} <{email}>`。commit 一律帶 `git -c user.name={login} -c user.email={email} commit …`（vault 走 `scripts/vault_ship.py`，同一個身分）。push 前確認要推的 commit 作者都是這個身分；gh 切到別的帳號時身分跟著變，這是設計。",
+  "identity": "• 身分＝gh 登入的帳號，**不問使用者**：`{login} <{email}>`。commit 一律帶 `git -c user.name={login} -c user.email={email} commit …`（vault 走 `sh scripts/aiwalk vault ship`，同一個身分）。push 前確認要推的 commit 作者都是這個身分；gh 切到別的帳號時身分跟著變，這是設計。",
   "identity_unknown": "• 身分＝gh 登入的帳號，但 **gh 沒登入或讀不到**：停下，請使用者在 aIwalk System Setup 登入 GitHub 後再 commit／push，不要用本機 git config 的身分。",
   "push": "• `git push`：若推的是共用 code repo，先確認變更都在 branch、已過測試集 merge gate。",
   "merge": "• `git merge`：共用 code repo（NTKCAP/depRL/Patient Cloud）merge 回 main 前**必過回歸測試集 merge gate**（見 [[Function_Validation_Protocol]] §2/§3；事件與歸屬見 [[Test_dataset_CICD_Preservation_Summary]]），且 merge 在 **worktree 副本內**執行、不切回 `~/NTKCAP` 本體。",

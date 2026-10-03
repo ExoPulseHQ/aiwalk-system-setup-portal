@@ -328,7 +328,9 @@ fn is_new_doc(fp: &str, cwd: &str, root: Option<&str>) -> bool {
     !exists(&ap)
 }
 
-/// Paths a shell command would create. ponytail: regex + shlex per segment, as the Python; misses exotic forms.
+/// Paths a shell command would create. ponytail: one regex for redirections and shlex per command; misses exotic
+/// forms (env prefixes, sudo, subshells). Unlike the Python it reads quoted names, skips option values and input
+/// redirections, and takes a lone `&` as the end of a command.
 fn bash_targets(cmd: &str, cwd: &str) -> Vec<String> {
     // a remote command creates files on the other machine; its heredoc is not ours to gate
     if re(r"^\s*(?:\w+=\S+\s+)*ssh\s").is_match(cmd).unwrap_or(false) { return vec![] }
@@ -336,35 +338,48 @@ fn bash_targets(cmd: &str, cwd: &str) -> Vec<String> {
     // heredoc bodies and quoted strings are text, not shell; keep the tail of a heredoc's opener line
     let heredoc = re(r#"(?s)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n.*?\n\1[ \t]*(?=\n|$)"#);
     let shell = heredoc.try_replacen(cmd, 0, |c: &fancy_regex::Captures<str>| g(c, 2).to_string()).map(|s| s.into_owned()).unwrap_or_else(|_| cmd.to_string());
-    let shell = re(r#"'[^']*'|"[^"]*""#).replace_all(&shell, "").into_owned();
-    out.extend(re(r#"(?<![<>=])>>?\s*([^\s"'&|;)]+)"#).captures_iter(shell.as_str()).flatten().map(|c| g(&c, 1).to_string()));
-    // re.split(r"&&|\|\||;|\|"): a lone & is not a separator
-    let (mut segs, mut rest) = (vec![], shell.as_str());
-    loop {
-        let next = rest.char_indices().find_map(|(i, c)| match (c, &rest[i..]) {
-            (_, r) if r.starts_with("&&") || r.starts_with("||") => Some((i, 2)),
-            (';' | '|', _) => Some((i, 1)),
-            _ => None,
-        });
-        let Some((i, n)) = next else { segs.push(rest); break };
-        segs.push(&rest[..i]);
-        rest = &rest[i + n..];
+    let masked = super::pycompat::mask_quotes(&shell);
+    // a `>` outside quotes; what it writes to is one bare word or one quoted string
+    for m in re(r"(?<![<>=])>>?\s*").find_iter(&masked).flatten() {
+        let tail = &shell[m.end()..];
+        let word = match tail.chars().next() {
+            Some(q @ ('\'' | '"')) => tail[1..].split(q).next().unwrap_or(""),
+            _ => tail.split(|c: char| py_space(c) || "\"'&|;)".contains(c)).next().unwrap_or(""),
+        };
+        if !word.is_empty() { out.push(word.to_string()) }
     }
-    for seg in segs {
-        let Some(argv) = shlex_split(seg.trim_matches(py_space)) else { continue };
-        let argv: Vec<String> = argv.into_iter().filter(|a| !a.starts_with('-')).collect();
-        let Some(first) = argv.first() else { continue };
-        match basename(first) {
-            "tee" if argv.len() > 1 => out.extend(argv[1..].iter().cloned()),
-            "cp" | "mv" | "install" if argv.len() > 2 => {
-                let dst = &argv[argv.len() - 1];
+    for (a, b) in super::pycompat::segments(&masked) {
+        let Some(argv) = shlex_split(shell[a..b].trim_matches(py_space)) else { continue };
+        let Some(prog) = argv.first().map(|f| basename(f)) else { continue };
+        // options that take the next word as their value; -t names the folder everything else goes into
+        let valued: &[&str] = match prog { "touch" => &["-d", "-r", "-t"], "cp" | "mv" => &["-S", "-t"], "install" => &["-m", "-o", "-g", "-S", "-t"], _ => &[] };
+        let (mut names, mut into, mut it) = (vec![], None, argv[1..].iter());
+        while let Some(a) = it.next() {
+            let op = a.trim_start_matches(|c: char| c.is_ascii_digit());
+            if op.starts_with(['<', '>']) {   // a redirection: its target is the regex's business, never an operand
+                if op.trim_start_matches(['<', '>']).is_empty() { it.next(); }
+            } else if a == "--" {
+                names.extend(it.by_ref().cloned())
+            } else if valued.contains(&a.as_str()) {
+                let v = it.next();
+                if a == "-t" && prog != "touch" { into = v.cloned() }
+            } else if let Some(v) = a.strip_prefix("--target-directory=") {
+                into = Some(v.to_string())
+            } else if !a.starts_with('-') {
+                names.push(a.clone())
+            }
+        }
+        match (prog, into) {
+            ("tee" | "touch", _) => out.extend(names),
+            ("cp" | "mv" | "install", Some(dir)) => out.extend(names.iter().map(|s| join(&dir, basename(s)))),
+            ("cp" | "mv" | "install", None) if names.len() > 1 => {
+                let dst = &names[names.len() - 1];
                 if std::path::Path::new(&join(cwd, &expanduser(dst))).is_dir() {
-                    out.extend(argv[1..argv.len() - 1].iter().map(|s| join(dst, basename(s))));
+                    out.extend(names[..names.len() - 1].iter().map(|s| join(dst, basename(s))));
                 } else {
                     out.push(dst.clone());
                 }
             }
-            "touch" => out.extend(argv[1..].iter().cloned()),
             _ => {}
         }
     }
@@ -471,7 +486,7 @@ fn deny(texts: &Value, names: &[&str]) -> String {
 pub fn run(stdin: &[u8]) -> Out {
     match hook(stdin) {
         Ok(stdout) => Out { stdout, ..Out::default() },
-        Err(e) => Out { stderr: format!("{NAME}: {e}\n"), code: 1, ..Out::default() },
+        Err(e) => Out { stderr: format!("{NAME}: {e}\n"), ..Out::default() },   // say why, never fail the tool call
     }
 }
 
@@ -546,14 +561,22 @@ mod tests {
     fn bash_target_extraction() {
         let t = |c: &str| bash_targets(c, "/nonexistent-cwd");
         assert_eq!(t("echo hi > a.md && cat b >> c.txt"), ["a.md", "c.txt"]);
-        assert_eq!(t("touch x.md; tee -a y.md < z | cat"), ["x.md", "y.md", "<", "z"]);   // as the Python: < and z too
+        assert_eq!(t("touch x.md; tee -a y.md < z | cat"), ["x.md", "y.md"]);
         assert_eq!(t("cp a b c.md"), ["c.md"]);
         assert_eq!(t("python3 - <<'EOF'\nopen('n.md','w').write('x > q')\nEOF"), ["n.md"]);
         assert_eq!(t("cat <<EOF > out.md\nbody > not\nEOF"), ["out.md"]);
         assert_eq!(t("echo 'a > b' \"c > d\" x=>y 2>&1"), Vec::<String>::new());
         assert_eq!(t("ssh host 'echo > x.md'"), Vec::<String>::new());
         assert_eq!(t("touch $S/x.py f(s /dev/null 中文.md"), ["中文.md"]);
-        assert_eq!(t("sleep 1 & touch q.md"), Vec::<String>::new());   // a lone & does not split, as in the Python
+        assert_eq!(t("sleep 1 & touch q.md"), ["q.md"]);
+        // what the Python missed or mistook
+        assert_eq!(t("touch \"a b.md\" 'c.md'"), ["a b.md", "c.md"]);
+        assert_eq!(t("cp x \"new.md\""), ["new.md"]);
+        assert_eq!(t("echo hi > \"q r.md\" 2> 'e.log'"), ["q r.md", "e.log"]);
+        assert_eq!(t("touch -d 2020-01-01 d.md"), ["d.md"]);
+        assert_eq!(t("cp -t out a.md b.md && mv --target-directory=o2 c.md"), ["out/a.md", "out/b.md", "o2/c.md"]);
+        assert_eq!(t("touch a.md > log.txt 2>&1"), ["log.txt", "a.md"]);
+        assert_eq!(t("echo 'touch no.md; x > no2.md'"), Vec::<String>::new());
     }
 
     #[test]

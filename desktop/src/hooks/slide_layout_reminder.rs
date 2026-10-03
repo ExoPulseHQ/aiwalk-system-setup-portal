@@ -1,8 +1,8 @@
 //! `.claude/hooks/slide_layout_reminder.py`: before Edit/Write/MultiEdit on an internal `*_Slide.md` deck, the two
 //! layout rules that only show once the deck is rendered, and how many of its figure pages use the two-column layout.
-//! Like the Python it writes to stderr and exits 0.
+//! The Python wrote it to stderr with exit 0, which Claude Code shows to nobody; this one answers as additionalContext.
 
-use super::pycompat::{basename, fill, read_text};
+use super::pycompat::{basename, context_json, fill, read_text};
 use super::{text, texts, Out};
 use serde_json::Value;
 use std::path::Path;
@@ -29,7 +29,7 @@ pub fn run(stdin: &[u8]) -> Out {
         let state = text(&t, if two == figs { "state_all" } else if two == 0 { "state_none" } else { "state_half" });
         lines.push(fill(&text(&t, "status"), &[("figures", &figs.to_string()), ("two_column", &two.to_string()), ("state", &state)]));
     }
-    Out { stderr: lines.join("\n") + "\n", ..Out::quiet() }
+    Out { stdout: context_json("PreToolUse", &lines.join("\n"), ""), ..Out::quiet() }
 }
 
 #[cfg(test)]

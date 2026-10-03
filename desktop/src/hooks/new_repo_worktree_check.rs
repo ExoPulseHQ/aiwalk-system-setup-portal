@@ -71,7 +71,8 @@ pub fn run(stdin: &[u8]) -> Out {
     }
     // a linked worktree's git dir is <main>/.git/worktrees/<name>
     let gd = git(&d, &["rev-parse", "--absolute-git-dir"]).unwrap_or_default();
-    if gd.contains(&format!("{MAIN_SEPARATOR}worktrees{MAIN_SEPARATOR}")) { return Out::quiet() }
+    // git prints forward slashes on Windows too, which the Python (os.sep) never matched
+    if gd.replace('\\', "/").contains("/worktrees/") { return Out::quiet() }
 
     let t = texts("new_repo_worktree_check", EMBEDDED);
     context(&fill(&text(&t, "reminder"), &[("repo", &top_r)]))

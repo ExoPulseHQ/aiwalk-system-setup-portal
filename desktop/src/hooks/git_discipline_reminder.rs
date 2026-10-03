@@ -58,6 +58,19 @@ fn lab_host(cmd: &str, hosts: &[String]) -> Option<String> {
     m.get(1).map(|g| g.as_str().to_string()).filter(|h| !h.is_empty())
 }
 
+/// The lab machine a commit or push in this command would run on, and which of the two: (host, commit, push).
+/// Only the `ssh` command's own text counts (its quoted remote command, or the heredoc it is fed), so a local
+/// `git push` after `ssh dragon git status;` is not taken for a push on dragon, as the Python took it.
+fn lab_target(scan: &str, hosts: &[String]) -> Option<(String, bool, bool)> {
+    let masked = super::pycompat::mask_quotes(scan);
+    super::pycompat::segments(&masked).into_iter().find_map(|(a, b)| {
+        let seg = if masked[a..b].contains("<<") { &scan[a..] } else { &scan[a..b] };
+        let host = lab_host(seg, hosts)?;
+        let (commit, push) = (has(seg, "commit"), has(seg, "push"));
+        (commit || push).then_some((host, commit, push))
+    })
+}
+
 /// (login, noreply address) of the account gh is signed in to; None when there is none or GitHub does not answer.
 fn gh_identity() -> Option<(String, String)> {
     let u = crate::github::get("user").ok()?;
@@ -75,8 +88,8 @@ pub fn run(stdin: &[u8]) -> Out {
     let (push, merge, commit) = (has(&scan, "push"), has(&scan, "merge"), has(&scan, "commit"));
     if !(push || merge || commit) { return Out::quiet() }
 
-    let host = lab_host(&scan, &machines());
-    if let Some(host) = host.filter(|_| (commit || push) && !cmd.contains("EXO_RAW=1")) {
+    let target = lab_target(&scan, &machines()).filter(|_| !cmd.contains("EXO_RAW=1"));
+    if let Some((host, commit, push)) = target {
         let ident = match gh_identity() {
             Some((login, email)) => fill(&text(&t, "ident"), &[("login", &login), ("email", &email)]),
             None => text(&t, "ident_unknown"),
@@ -223,6 +236,13 @@ mod tests {
         assert_eq!(lab_host("ssh ntk@dragonfly git push", &h), None);
         assert_eq!(lab_host("echo dragon; ssh x git push", &h), None);
         assert_eq!(lab_host("git push", &h), None);
+        let t = |c: &str| lab_target(c, &h);
+        assert_eq!(t("ssh ntk@dragon 'cd r && git commit -am x; git push'"), Some(("dragon".into(), true, true)));
+        assert_eq!(t("ssh ntk@dragon git commit -am x && git push"), Some(("dragon".into(), true, false)));
+        assert_eq!(t("ssh ntk@dragon git status; git push"), None);
+        assert_eq!(t("git push && ssh horse 'git -C r push'"), Some(("horse".into(), false, true)));
+        assert_eq!(t("ssh tiger bash <<'EOF'\ncd r\ngit push\nEOF"), Some(("tiger".into(), false, true)));
+        assert_eq!(t("ssh ntk@dragon 'git -C r merge x'"), None);
         assert_eq!(lab_host("ssh a.b-c@tiger x", &["ti.ger".into(), "tiger".into()]).as_deref(), Some("tiger"));
     }
 

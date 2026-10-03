@@ -61,6 +61,38 @@ pub fn py_re(p: &str) -> Regex {
     Regex::new(&out).unwrap_or_else(|e| panic!("{p}: {e}"))
 }
 
+/// `cmd` with every quoted span (quotes included) overwritten by `x`, byte for byte: offsets carry over to `cmd`,
+/// and what is left is shell syntax only. An unclosed quote masks to the end.
+pub fn mask_quotes(cmd: &str) -> String {
+    let (mut out, mut quote, mut esc) = (String::with_capacity(cmd.len()), None, false);
+    for c in cmd.chars() {
+        let masked = match quote {
+            Some(open) => { if esc { esc = false } else if c == '\\' && open == '"' { esc = true } else if c == open { quote = None } true }
+            None if esc => { esc = false; false }
+            None => { if c == '\\' { esc = true } else if c == '\'' || c == '"' { quote = Some(c) } quote.is_some() }
+        };
+        if masked { out.extend(std::iter::repeat_n('x', c.len_utf8())) } else { out.push(c) }
+    }
+    out
+}
+
+/// Byte ranges of the commands in a shell line, given its mask_quotes form: split at `;`, `|`, `&` and newlines
+/// (so `&&` and `||` leave an empty range between). `>&` and `&>` are redirections, not separators.
+pub fn segments(masked: &str) -> Vec<(usize, usize)> {
+    let b = masked.as_bytes();
+    let (mut out, mut start) = (vec![], 0);
+    for i in 0..b.len() {
+        let sep = match b[i] {
+            b';' | b'\n' | b'|' => true,
+            b'&' => !(i > 0 && b[i - 1] == b'>') && b.get(i + 1) != Some(&b'>'),
+            _ => false,
+        };
+        if sep { out.push((start, i)); start = i + 1 }
+    }
+    out.push((start, b.len()));
+    out
+}
+
 /// A file's text as Python's open(encoding="utf-8") reads it: universal newlines, so \r\n and \r are \n.
 /// None where Python raises (missing, a directory, not UTF-8).
 pub fn read_text(path: &std::path::Path) -> Option<String> {
@@ -82,6 +114,17 @@ mod tests {
         assert_eq!(dumps_str("a\"\\\n\t\x01\x7f é ⚠ 😀"), concat!(r#""a\"\\\n\t\u0001\u007f "#, r"\u00e9 \u26a0 \ud83d\ude00", "\""));
         assert_eq!(context_json("E", "x", ", \"suppressOutput\": true"),
                    "{\"hookSpecificOutput\": {\"hookEventName\": \"E\", \"additionalContext\": \"x\"}, \"suppressOutput\": true}\n");
+    }
+
+    #[test]
+    fn shell_syntax() {
+        let c = "a 'b; c' \"d \\\" | e\" ; f 2>&1 & g && h é'é'";
+        let m = mask_quotes(c);
+        assert_eq!(m.len(), c.len());
+        assert_eq!(m, "a xxxxxx xxxxxxxxxx ; f 2>&1 & g && h éxxxx");
+        let segs: Vec<&str> = segments(&m).into_iter().map(|(a, b)| c[a..b].trim()).filter(|s| !s.is_empty()).collect();
+        assert_eq!(segs, ["a 'b; c' \"d \\\" | e\"", "f 2>&1", "g", "h é'é'"]);
+        assert_eq!(mask_quotes("it's open"), "itxxxxxxx");
     }
 
     #[test]

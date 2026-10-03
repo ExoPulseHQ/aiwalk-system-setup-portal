@@ -190,15 +190,15 @@ fn today(vault: &Path) -> Option<(i64, i64, i64)> {
     vs::local_date(&sh(vault, &["git", "-c", "user.name=x", "-c", "user.email=x", "var", "GIT_COMMITTER_IDENT"], false))
 }
 
-/// `python3 scripts/sync_ownership.py <log>` as ship runs it: output dropped, any failure leaves the file alone.
-fn sync_ownership(vault: &Path, p: &str) {
+/// The primary log at `path` with the generated half of its ownership block rebuilt: Some(new text) when that
+/// differs from the file, None when it is up to date or has no generated half. `rel` is the path as the block prints it.
+pub(crate) fn ownership(vault: &Path, path: &Path, rel: &str) -> Result<Option<String>, String> {
     let mut names = HashMap::new();
     glob_index(vault, &mut names);
-    let Ok(team) = std::fs::read_to_string(vault.join(vs::TEAM)) else { return };
+    let team = std::fs::read_to_string(vault.join(vs::TEAM)).map_err(|e| format!("{}: {e}", vs::TEAM))?;
     let people = vs::team(&vs::py_text(&team));
-    let Some(day) = today(vault) else { return };
-    let path = vault.join(p);
-    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let day = today(vault).ok_or("git did not give today's date")?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{rel}: {e}"))?;
     let subdoc = |target: &str| -> Result<Option<String>, String> {
         let base = if cfg!(windows) { target.rsplit(['/', '\\']).next() } else { target.rsplit('/').next() }.unwrap_or(target);
         let Some(found) = names.get(base).or_else(|| names.get(&format!("{base}.md"))) else { return Ok(None) };
@@ -206,9 +206,53 @@ fn sync_ownership(vault: &Path, p: &str) {
         let bytes = std::fs::read(found).map_err(|e| e.to_string())?;
         Ok(Some(vs::py_text(&String::from_utf8_lossy(&bytes))))
     };
-    if let Ok(Some(new)) = vs::sync_ownership(&vs::py_text(&text), &native(p), &people, &subdoc, day) {
-        let _ = write_text(&path, &new);
+    vs::sync_ownership(&vs::py_text(&text), rel, &people, &subdoc, day)
+}
+
+/// The sync as ship runs it: nothing printed, any failure leaves the file alone.
+fn sync_ownership(vault: &Path, p: &str) {
+    let path = vault.join(p);
+    if let Ok(Some(new)) = ownership(vault, &path, &native(p)) { let _ = write_text(&path, &new); }
+}
+
+/// `aiwalk-setup vault sync-ownership [--check] [--all] [logs…]`, as scripts/sync_ownership.py: the same lines on
+/// stdout, exit 1 when --check finds a log that would change, 2 on a usage error.
+fn sync_cli(vault: &Path, a: &[String]) -> i32 {
+    let check = a.iter().any(|x| x == "--check");
+    let mut args: Vec<PathBuf> = a.iter().filter(|x| !x.starts_with("--")).map(PathBuf::from).collect();
+    if a.iter().any(|x| x == "--all") {
+        // every log in main.md's table
+        let main = std::fs::read_to_string(vault.join("main.md")).unwrap_or_default();
+        let mut names = HashMap::new();
+        glob_index(vault, &mut names);
+        let mut seen = HashSet::new();
+        args = fancy_regex::Regex::new(r"\|\s*\[\[(_[^\]|]+)\]\]").unwrap().captures_iter(&main).flatten()
+            .filter_map(|c| names.get(&format!("{}.md", c.get(1).map_or("", |m| m.as_str()))).cloned()).filter(|p| seen.insert(p.clone())).collect();
     }
+    if args.is_empty() { eprintln!("no log given: pass a path or --all"); return 2 }
+    // a path may be relative to the cwd or to the vault root, which here are the same folder
+    let paths: Vec<PathBuf> = args.iter().map(|p| std::path::absolute(p).unwrap_or_else(|_| vault.join(p))).collect();
+    let missing: Vec<String> = paths.iter().filter(|p| !p.exists()).map(|p| p.to_string_lossy().into_owned()).collect();
+    if !missing.is_empty() { eprintln!("not found: {}", missing.join(", ")); return 2 }
+    let mut changed = false;
+    for path in &paths {
+        let rel = path.strip_prefix(vault).unwrap_or(path).to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if !["<!-- ownership:auto:start -->", "<!-- ownership:auto:end -->"].iter().all(|m| text.lines().any(|l| l == *m)) {
+            println!("skip (no <!-- ownership:auto:start --> block): {rel}");
+            continue
+        }
+        match ownership(vault, path, &rel) {
+            Ok(None) => println!("unchanged: {rel}"),
+            Ok(Some(new)) => {
+                changed = true;
+                if !check { if let Err(e) = write_text(path, &new) { eprintln!("{rel}: {e}"); return 2 } }
+                println!("{}{rel}", if check { "would change: " } else { "updated: " });
+            }
+            Err(e) => { eprintln!("{e}"); return 2 }
+        }
+    }
+    (check && changed) as i32
 }
 
 fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
@@ -316,6 +360,7 @@ pub fn main(a: &[String]) {
         Some("can-push") if a.len() == 2 => println!("{}", if can_push(&vault, &a[1]) { "yes" } else { "no" }),
         Some("index") => println!("{}", if update_index(&vault) { "updated" } else { "unchanged" }),
         Some("check-author") => check_author(&vault),
+        Some("sync-ownership") => std::process::exit(sync_cli(&vault, &a[1..])),
         Some("ship") if a.iter().any(|x| x == "-m") => {
             let i = a.iter().position(|x| x == "-m").unwrap();
             let Some(msg) = a.get(i + 1) else { die("✗ -m needs a message") };
