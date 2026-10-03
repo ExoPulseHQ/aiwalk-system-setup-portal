@@ -2,6 +2,8 @@
 
 const LABEL = { 4: "Admin", 3: "Write", 2: "Write", 1: "Read", 0: "No access" };
 const teamPage = () => document.getElementById("team");
+// core is the owners' team, machine-* the machines' extras and merge-* the merge rights: not layers to tick or join
+const layerTeam = t => t.slug !== "core" && !/^(machine|merge)-/.test(t.slug);
 
 function pill(rank, title) { const p = el("span", "perm p" + rank, LABEL[rank]); p.title = title; return p; }
 
@@ -449,8 +451,7 @@ function teamsList(a, login, person) {
   const sec = el("div");
   sec.append(el("h3", null, `Teams for ${person.name}`), el("p", "sub", "Ticking a team adds them on GitHub right away."));
   const list = el("div", "list"), msg = el("p", "sub");
-  // core is the owners' team and machine-* the machines' extras (set on the Machines page): not layers to tick here
-  a.teams.filter(t => t.slug !== "core" && !t.slug.startsWith("machine-")).forEach(t => {
+  a.teams.filter(layerTeam).forEach(t => {
     const sw = switchBox(t.members.includes(login), async (on, box) => {
       box.disabled = true;
       const spin = el("span", "spinner"); box.before(spin);
@@ -793,6 +794,65 @@ async function peopleSection(org, user, teams, tree) {
   return sec;
 }
 
+// Who may merge pull requests on each code repo (the repos the machines carry). The vault plugin offers Merge at
+// maintain or admin: org owners, core, and merge-<repo>, the people an owner added here. Listing a repo's people
+// needs write there; anyone else sees only their own level.
+function prSection(org, user, machines) {
+  const sec = el("div", "section pr");
+  const head = el("header");
+  head.append(el("h2", null, "Pull request permissions"));
+  sec.append(head, el("p", "sub", "On GitHub's Free plan anyone with write can still merge on the website. Until the Team plan adds rulesets, merge rights hold by convention: a pre-push hook and this list."));
+  const list = el("div", "list");
+  sec.append(list);
+  const owner = (org.people[user] || {}).grants === null;
+  const repos = [...new Set(machines.map(m => m.repo))];
+  const name = l => (org.people[l] || {}).name || l;
+  const MINE = { 4: "You can merge", 3: "You can merge", 2: "You can open pull requests", 1: "You can read", 0: "No access" };
+  const read = () => invoke("pr_permissions", { org: org.org, repos }).then(paint, e => list.replaceChildren(el("p", "sub", `Could not read: ${e}`)));
+  const paint = rows => {
+    list.replaceChildren();
+    if (!rows.length) list.append(el("p", "sub", "None of the code repos are open to you."));
+    rows.forEach(r => {
+      list.append(item(r.repo, MINE[r.mine]));
+      if (!r.listed) return;
+      const box = el("div", "specs");
+      const line = (k, logins) => {
+        const row = el("div", "spec"), tags = el("span");
+        if (!logins.length) tags.append(el("span", "sub", "Nobody"));
+        logins.forEach(l => {
+          const extra = r.extra.includes(l);
+          tags.append(el("span", "tag" + (extra ? " extra" : ""), name(l)));
+          if (owner && extra) {
+            const rm = el("button", "small ghost", "Remove");
+            rm.onclick = () => change(r.repo, l, false, rm);
+            tags.append(rm);
+          }
+        });
+        row.append(el("span", "k", k), tags);
+        box.append(row);
+      };
+      line("Can merge", r.merge);
+      line("Can open pull requests", r.write);
+      const others = Object.keys(org.people).filter(l => !r.merge.includes(l)).sort((a, b) => name(a).localeCompare(name(b)));
+      if (owner && others.length) {
+        const pick = el("select");
+        pick.append(new Option("Let someone merge", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)));
+        pick.onchange = () => pick.value && change(r.repo, pick.value, true, pick);
+        box.append(pick);
+      }
+      list.append(box);
+    });
+  };
+  async function change(repo, login, add, ctl) {
+    try { toast(await working(ctl, add ? "Adding" : "Removing", () => invoke("merge_right", { org: org.org, repo, login, add }))); }
+    catch (e) { toast(`Could not change ${repo}: ${e}`); }
+    read();
+  }
+  list.append(el("p", "sub", "Reading who can merge"));
+  read();
+  return sec;
+}
+
 let lastTeam = null;
 async function loadTeam(viewAs) {
   const page = teamPage();
@@ -821,7 +881,8 @@ async function loadTeam(viewAs) {
     b.onclick = () => page.replaceChildren(signInView(null, "owner"));
     parts.push(item("Owner tools are locked", "Inviting people and changing access need one more approval on GitHub.", null, b));
   }
-  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams.filter(t => t.slug !== "core" && !t.slug.startsWith("machine-")), org.tree)); }
+  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree)); }
+  if (org) parts.push(prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
   const orgs = new Set(s.vaults.filter(v => v.access).map(v => v.access.org));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs, orgs)));
   page.replaceChildren(...parts);

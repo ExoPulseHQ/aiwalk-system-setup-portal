@@ -303,6 +303,20 @@ pub fn can_sign_in(m: &Machine, grants: Option<&BTreeMap<String, u8>>) -> bool {
     grants.map_or(true, |g| g.get(&m.repo).copied().unwrap_or(0) >= 2)
 }
 
+/// A REST `permissions` object ({admin, maintain, push, triage, pull}) as a rank: 4 admin, 3 maintain, 2 write, 1 read, 0 none.
+pub fn permissions_rank(p: &Value) -> u8 {
+    if p["admin"] == true { 4 } else if p["maintain"] == true { 3 } else if p["push"] == true { 2 }
+    else if p["triage"] == true || p["pull"] == true { 1 } else { 0 }
+}
+
+/// (who may merge, who may only open pull requests) from `repos/o/r/collaborators`: the vault plugin offers Merge
+/// at maintain or admin, and opening a pull request needs write.
+pub fn merge_rights(collaborators: &[Value]) -> (Vec<String>, Vec<String>) {
+    let at = |want: &dyn Fn(u8) -> bool| collaborators.iter().filter(|c| want(permissions_rank(&c["permissions"])))
+        .filter_map(|c| c["login"].as_str().map(String::from)).collect();
+    (at(&|r| r >= 3), at(&|r| r == 2))
+}
+
 /// An access request travels as an issue; the body carries what is asked for, the author is who asks.
 pub fn request_body(repo: &str, level: &str, note: &str) -> String {
     format!("repo: {repo}\nlevel: {level}\n\n{note}\n\n<!-- sent by aIwalk System Setup -->")
@@ -634,6 +648,15 @@ mod tests {
         assert_eq!(plan_access(&teams, "bob", "exo-l3", 0), AccessPlan { leave: vec!["l3".into()], ..Default::default() });
         assert_eq!(plan_access(&teams, "bob", "exo-book", 1).blocked_by, ["members"]);
         assert_eq!(plan_access(&teams, "amy", "NTKCAP", 2).direct, Some("push"));
+    }
+
+    #[test]
+    fn merge_needs_maintain_or_admin() {
+        let c: Vec<Value> = serde_json::from_str(r#"[{"login":"own","permissions":{"admin":true,"maintain":true,"push":true,"pull":true}},
+            {"login":"mai","permissions":{"admin":false,"maintain":true,"push":true,"pull":true}},
+            {"login":"wri","permissions":{"admin":false,"maintain":false,"push":true,"pull":true}},
+            {"login":"rea","permissions":{"admin":false,"maintain":false,"push":false,"triage":true,"pull":true}}]"#).unwrap();
+        assert_eq!(merge_rights(&c), (vec!["own".into(), "mai".into()], vec!["wri".into()]));
     }
 
     #[test]

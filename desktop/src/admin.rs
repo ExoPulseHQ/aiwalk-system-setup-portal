@@ -1,8 +1,9 @@
 //! Owner tools: who is in the organisation, invitations, owner role, and one person's access to one repo.
 //! GitHub refuses all of these for anyone who is not an org owner, so the app adds no check of its own.
+//! `pr_permissions` is the one read here that everyone gets.
 
 use crate::github;
-use exo_core::{org_access, org_query, plan_access};
+use exo_core::{merge_rights, org_access, org_query, permissions_rank, plan_access};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -87,4 +88,71 @@ pub fn machine_extra(org: String, host: String, login: String, add: bool) -> Res
     let path = format!("orgs/{org}/teams/machine-{host}/memberships/{login}");
     if add { github::send("PUT", &path, Some(serde_json::json!({ "role": "member" })))?; } else { github::send("DELETE", &path, None)?; }
     Ok(format!("{login} {} {host}", if add { "may now connect to" } else { "no longer has extra access to" }))
+}
+
+#[derive(Serialize)]
+pub struct PrRepo {
+    repo: String,
+    /// The viewer's own level on the repo (4 admin … 0 none).
+    mine: u8,
+    /// False when GitHub would not list the repo's people for this viewer (it needs write); then only `mine` is known.
+    listed: bool,
+    merge: Vec<String>,
+    write: Vec<String>,
+    /// Members of merge-<repo>: the people an owner gave the right here, and the only ones an owner can take it from here.
+    extra: Vec<String>,
+}
+
+/// The team whose members may merge on `repo`, mirroring machine-<host>.
+fn merge_team(repo: &str) -> String { format!("merge-{}", repo.to_lowercase()) }
+
+/// A team's slug by its name; GitHub makes the slug, so it is looked up rather than guessed.
+fn slug_of(teams: &[serde_json::Value], name: &str) -> Option<String> {
+    teams.iter().find(|t| t["name"] == name).and_then(|t| t["slug"].as_str().map(String::from))
+}
+
+/// Who may merge and who may open pull requests on each of `repos`, as GitHub reports it (owners, teams and direct
+/// grants alike). A repo that is not in `org`, or that this account cannot see, is left out.
+#[tauri::command(async)]
+pub fn pr_permissions(org: String, repos: Vec<String>) -> Vec<PrRepo> {
+    let teams = github::all(&format!("orgs/{org}/teams")).unwrap_or_default();
+    std::thread::scope(|s| {
+        let jobs: Vec<_> = repos.iter().map(|repo| { let (org, teams) = (&org, &teams); s.spawn(move || {
+            let mine = permissions_rank(&github::get(&format!("repos/{org}/{repo}")).ok()?["permissions"]);
+            let people = github::all(&format!("repos/{org}/{repo}/collaborators?affiliation=all")).ok();
+            let (merge, write) = people.as_deref().map(merge_rights).unwrap_or_default();
+            let extra = slug_of(teams, &merge_team(repo)).and_then(|t| github::all(&format!("orgs/{org}/teams/{t}/members")).ok())
+                .unwrap_or_default().iter().filter_map(|m| m["login"].as_str().map(String::from)).collect();
+            Some(PrRepo { repo: repo.clone(), mine, listed: people.is_some(), merge, write, extra })
+        })}).collect();
+        jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
+    })
+}
+
+/// Gives one person the right to merge on `repo`, or takes it back: membership of merge-<repo>, a closed team with
+/// maintain on the repo, made the first time it is needed. On GitHub's Free plan write already allows merging on the
+/// website, so this right is what the vault plugin and the team's pre-push hook go by.
+#[tauri::command(async)]
+pub fn merge_right(org: String, repo: String, login: String, add: bool) -> Result<String, String> {
+    let name = merge_team(&repo);
+    let slug = match slug_of(&github::all(&format!("orgs/{org}/teams"))?, &name) {
+        Some(s) => s,
+        None if !add => return Err(format!("Nobody was given the right to merge on {repo} here")),
+        None => {
+            let t = github::send("POST", &format!("orgs/{org}/teams"), Some(serde_json::json!({
+                "name": name, "privacy": "closed", "description": format!("May merge pull requests on {repo}") })))?;
+            let slug = t["slug"].as_str().ok_or("GitHub made the team but did not say its name")?.to_string();
+            // GitHub puts whoever makes a team in it; being an owner already lets them merge, so they leave again
+            let me = github::get("user")?["login"].as_str().unwrap_or_default().to_string();
+            if !me.eq_ignore_ascii_case(&login) { github::send("DELETE", &format!("orgs/{org}/teams/{slug}/memberships/{me}"), None)?; }
+            slug
+        }
+    };
+    let path = format!("orgs/{org}/teams/{slug}/memberships/{login}");
+    if add {
+        // asked every time, so a team left without the repo by an earlier failure is put right
+        github::send("PUT", &format!("orgs/{org}/teams/{slug}/repos/{org}/{repo}"), Some(serde_json::json!({ "permission": "maintain" })))?;
+        github::send("PUT", &path, Some(serde_json::json!({ "role": "member" })))?;
+    } else { github::send("DELETE", &path, None)?; }
+    Ok(format!("{login} {} on {repo}", if add { "can now merge" } else { "can no longer merge" }))
 }

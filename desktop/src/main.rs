@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exo_core::{
-    build_tree, machines, parse_gh_status, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
+    build_tree, machines, parse_gh_status, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, permissions_rank, repo_grants, repos_query, request_body,
     vault_repos, visible_to, Machine, Node, Person, Team, RULES_PATHS,
 };
 use serde::Serialize;
@@ -232,11 +232,7 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
 
 fn read_vault(name: &'static str, repo: &'static str, about: &'static str, user: &str) -> Vault {
     std::thread::scope(|s| {
-        let permission = s.spawn(|| {
-            let p = github::get(&format!("repos/{repo}")).map(|v| v["permissions"].clone()).unwrap_or_default();
-            if p["admin"] == true { 4 } else if p["maintain"] == true { 3 } else if p["push"] == true { 2 }
-            else if p["triage"] == true || p["pull"] == true { 1 } else { 0 }
-        });
+        let permission = s.spawn(|| permissions_rank(&github::get(&format!("repos/{repo}")).map(|v| v["permissions"].clone()).unwrap_or_default()));
         let rules = RULES_PATHS.iter().find_map(|p| raw(repo, p).ok());
         let access = rules.as_deref().and_then(vault_repos).map(|v| {
             let requests = s.spawn({ let org = v.org.clone(); move || open_requests(&org) });
@@ -396,14 +392,14 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, tools, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
-                             admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, sign_in, sign_out, switch_account,
+                             admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, tools, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
-                             admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, sign_in, sign_out, switch_account,
+                             admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
 
@@ -461,6 +457,12 @@ fn main() {
             Ok(t) => println!("token received ({} characters, starts {})", t.len(), &t[..4]),
             Err(e) => { eprintln!("{e}"); std::process::exit(1) }
         }
+        return;
+    }
+    // --pr ORG REPO...: what the Pull request permissions section shows, read only
+    if std::env::args().nth(1).as_deref() == Some("--pr") {
+        let a: Vec<String> = std::env::args().skip(2).collect();
+        println!("{}", serde_json::to_string_pretty(&admin::pr_permissions(a[0].clone(), a[1..].to_vec())).unwrap());
         return;
     }
     if std::env::args().any(|a| a == "--dump") {
