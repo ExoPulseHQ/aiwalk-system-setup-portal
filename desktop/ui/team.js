@@ -731,13 +731,12 @@ function obsidianNotice() {
   return box;
 }
 
-// gh and git come with the app (git only on Windows); what is still missing blocks sign-in, with the fix.
+// git comes with the app on Windows only; where it is missing, sign-in waits for it, with the fix.
 function missingTools(t) {
   const box = el("div", "empty");
   box.append(el("h1", null, "One more thing before signing in"),
-    el("p", "lede", "This app talks to GitHub through two small programs. This computer is missing:"));
+    el("p", "lede", "This app downloads and uploads through git. This computer is missing it:"));
   const list = el("div", "list");
-  if (!t.gh) list.append(item("GitHub CLI (gh)", "It normally comes with this app. Reinstall the app, or install gh from cli.github.com.", null));
   if (!t.git) {
     if (t.os === "macos") {
       const b = el("button", "small", "Install git");
@@ -970,7 +969,7 @@ async function loadTeam(viewAs) {
   const progress = stage("Reading your access from GitHub");
   if (first) page.replaceChildren(el("h1", null, "Team access"), progress);
   const t = await invoke("tools");
-  if (!t.gh || !t.git) return page.replaceChildren(missingTools(t));
+  if (!t.git) return page.replaceChildren(missingTools(t));
   // the team's terms come first, once per version: two quick questions to GitHub, before the long read of access
   if (!termsOk() || !termsNow) { progress.set(null, "Reading the team's terms"); termsNow = await invoke("terms_state"); }
   if (!termsOk()) return page.replaceChildren(termsView(termsNow, termsNow.org, true));

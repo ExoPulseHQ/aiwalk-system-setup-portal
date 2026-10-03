@@ -69,11 +69,15 @@ pub fn tell_gh(token: &str) {
 /// Makes this program the one git asks for a github.com password, in the user's own git config. The empty first
 /// value drops any helper set before it (gh's, the system's), as `gh auth setup-git` does.
 fn setup_git() {
-    let exe = crate::own_appimage().or_else(|| std::env::current_exe().ok()).unwrap_or_default();
-    let helper = format!("!'{}' git-credential", exe.to_string_lossy().replace('\\', "/"));
     let key = "credential.https://github.com.helper";
     let _ = crate::cmd("git").args(["config", "--global", "--replace-all", key, ""]).output();
-    let _ = crate::cmd("git").args(["config", "--global", "--add", key, &helper]).output();
+    let _ = crate::cmd("git").args(["config", "--global", "--add", key, &helper()]).output();
+}
+
+/// This program as a git credential helper, the way git config writes one.
+pub fn helper() -> String {
+    let exe = crate::own_appimage().or_else(|| std::env::current_exe().ok()).unwrap_or_default();
+    format!("!'{}' git-credential", exe.to_string_lossy().replace('\\', "/"))
 }
 
 /// `aiwalk-setup git-credential <get|store|erase>`: git's credential helper protocol. Only `get` answers.

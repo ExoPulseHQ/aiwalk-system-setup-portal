@@ -63,11 +63,11 @@ pub fn on_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join(&file)).find(|p| p.is_file()))
 }
 
-/// Puts the bundled gh, cloudflared and git (Windows: MinGit) ahead of PATH for this app and everything it starts, so a new
+/// Puts the bundled cloudflared and git (Windows: MinGit) ahead of PATH for this app and everything it starts, so a new
 /// member's computer needs neither. Bundles sit next to the binary (Linux folder, Windows), or in Contents/Resources (Mac).
 fn use_bundled_tools() {
     let roots = [here(), here().join("../Resources"), here().join("../lib/aIwalk System Setup")];
-    let dirs: Vec<PathBuf> = roots.iter().flat_map(|r| [r.join("tools/gh"), r.join("tools/git/cmd"), r.join("tools/cloudflared")])
+    let dirs: Vec<PathBuf> = roots.iter().flat_map(|r| [r.join("tools/git/cmd"), r.join("tools/cloudflared")])
         .filter(|d| d.is_dir()).collect();
     let path = std::env::var_os("PATH").unwrap_or_default();
     if let Ok(joined) = std::env::join_paths(dirs.into_iter().chain(std::env::split_paths(&path))) {
@@ -77,16 +77,15 @@ fn use_bundled_tools() {
 
 #[derive(Serialize)]
 struct Tools {
-    gh: Option<String>,
     git: Option<String>,
     os: &'static str,
 }
 
-/// Where gh and git come from on this computer; None when missing, and the page says how to get it.
+/// Where git comes from on this computer; None when missing, and the page says how to get it.
 #[tauri::command]
 fn tools() -> Tools {
     let s = |p: Option<PathBuf>| p.map(|p| p.to_string_lossy().into_owned());
-    Tools { gh: s(on_path("gh")), git: s(on_path("git")), os: std::env::consts::OS }
+    Tools { git: s(on_path("git")), os: std::env::consts::OS }
 }
 
 /// macOS: asks Apple's installer for the command line tools, which include git.
@@ -432,6 +431,11 @@ fn main() {
         Some("guard") => std::process::exit(guardcli::guard(&std::env::args().skip(2).collect::<Vec<_>>())),
         // git asks this for the github.com password (login.rs sets it as the credential helper)
         Some("git-credential") => std::process::exit(login::credential(&std::env::args().skip(2).collect::<Vec<_>>())),
+        // `github token`: the signed-in account's token on stdout, for the vault plugin (what `gh auth token` was)
+        Some("github") if std::env::args().nth(2).as_deref() == Some("token") => match login::active() {
+            Some((_, t)) => { println!("{t}"); return }
+            None => { eprintln!("not signed in to GitHub: sign in in aIwalk System Setup"); std::process::exit(1) }
+        },
         _ => {}
     }
     use_bundled_tools();
@@ -510,7 +514,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "guard": true, "hook": true, "hooks": hooks::NAMES }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "guard": true, "hook": true, "github": true, "hooks": hooks::NAMES }));
         return;
     }
     // --python: which Python 3 this computer has, as the badge reads it

@@ -1,5 +1,5 @@
 # Builds aIwalk System Setup for every desktop OS on a version tag (v0.1.0, ...) and publishes the installers as a
-# GitHub Release. Each runner first puts that OS's own gh, cloudflared (and on Windows, MinGit) into desktop/tools/,
+# GitHub Release. Each runner first puts that OS's own cloudflared (and on Windows, MinGit) into desktop/tools/,
 # checksums verified, so a new member's computer needs none of them.
 name: release
 on:
@@ -60,7 +60,7 @@ jobs:
             - macOS, Apple silicon (M1 and later): `aarch64.dmg`; Intel: `x64.dmg`
             - Linux: the `.deb` (Ubuntu, Debian) or the `.AppImage`
 
-            gh, git (Windows) and cloudflared come with the app. The app is not signed with a paid certificate yet:
+            git (Windows) and cloudflared come with the app. The app is not signed with a paid certificate yet:
             Windows SmartScreen asks once (More info, Run anyway). On macOS, open it once, then System Settings,
             Privacy & Security, Open Anyway.
           releaseDraft: false

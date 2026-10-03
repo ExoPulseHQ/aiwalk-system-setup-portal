@@ -12,11 +12,12 @@ use tauri::Emitter;
 /// What an on-demand repo (Papers) always checks out; the PDFs stay on GitHub until opened.
 const ALWAYS: [&str; 8] = ["/_manifest.json", "*.md", "*.jpg", "*.jpeg", "*.png", "*.svg", "*.enl", "*.canvas"];
 
-/// git that signs in with gh, never prompts, and reads git@github.com remotes over HTTPS (no SSH key needed to read).
+/// git that signs in through this app, never prompts, and reads git@github.com remotes over HTTPS (no SSH key needed to read).
 /// `extra` adds config, e.g. the tests' protocol.file.allow.
 fn git(dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> Command {
     let mut c = crate::cmd("git");
-    let mut cfg = vec![("credential.helper", ""), ("credential.helper", "!gh auth git-credential"),
+    let helper = crate::login::helper();
+    let mut cfg = vec![("credential.helper", ""), ("credential.helper", helper.as_str()),
                        ("url.https://github.com/.insteadOf", "git@github.com:")];
     cfg.extend_from_slice(extra);
     c.current_dir(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_CONFIG_COUNT", cfg.len().to_string());
