@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exo_core::{
-    build_tree, machines, parse_gh_status, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
+    build_tree, machines, parse_gh_status, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
     vault_repos, visible_to, Machine, Node, Person, Team, RULES_PATHS,
 };
 use serde::Serialize;
@@ -307,6 +307,49 @@ fn decline_request(org: String, number: u64) -> Result<(), String> {
          "--comment", "Declined in aIwalk System Setup."]).map(|_| ())
 }
 
+// ---------------------------------------------------------------- Terms
+// The team's terms live in exo-access-requests/TERMS.md, so owners change the words without a new release; the
+// version line at its top decides when people are asked again. Accepting opens and closes an issue there titled
+// "Terms vN accepted": its author, checked by GitHub, is who accepted, and its date is when.
+
+const TERMS: &str = "TERMS.md";
+
+/// The terms text, its version, and the newest version this account accepted (with the date). None when the
+/// organisation has no terms file, so nothing is asked.
+#[tauri::command(async)]
+fn terms_state(org: String) -> Option<serde_json::Value> {
+    let repo = format!("{org}/{REQUESTS}");
+    let text = gh(&["api", &format!("repos/{repo}/contents/{TERMS}"), "-H", "Accept: application/vnd.github.raw"]).ok()?;
+    let version = terms_version(&text)?;
+    // the author filter is GitHub's issue list, not search, so an acceptance made a moment ago is already there
+    let mine = gh(&["issue", "list", "-R", &repo, "--author", "@me", "--state", "all", "--json", "title,createdAt", "--limit", "200"]).unwrap_or_default();
+    let accepted = terms_accepted(&mine).map(|(v, date)| serde_json::json!({ "version": v, "date": date }));
+    Some(serde_json::json!({ "version": version, "text": text, "accepted": accepted }))
+}
+
+#[tauri::command(async)]
+fn terms_accept(org: String, version: u32) -> Result<(), String> {
+    let repo = format!("{org}/{REQUESTS}");
+    let url = gh(&["issue", "create", "-R", &repo, "--title", &terms_title(version),
+                   "--body", &format!("terms: {version}\n\nAccepted in aIwalk System Setup.")])?;
+    // closed at once: it is a record, not something for the owners to act on
+    let _ = gh(&["issue", "close", url.trim(), "-R", &repo]);
+    Ok(())
+}
+
+/// Owners: everyone's newest acceptance, login -> {version, date}.
+#[tauri::command(async)]
+fn terms_everyone(org: String) -> BTreeMap<String, serde_json::Value> {
+    let out = gh(&["issue", "list", "-R", &format!("{org}/{REQUESTS}"), "--state", "all", "--json", "title,createdAt,author", "--limit", "1000"]).unwrap_or_default();
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap_or_default();
+    let mut by: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    for r in rows { if let Some(l) = r["author"]["login"].as_str() { by.entry(l.to_string()).or_default().push(r.clone()) } }
+    by.into_iter().filter_map(|(login, rs)| {
+        let (v, date) = terms_accepted(&serde_json::to_string(&rs).ok()?)?;
+        Some((login, serde_json::json!({ "version": v, "date": date })))
+    }).collect()
+}
+
 pub fn open_url(url: &str) {
     #[cfg(target_os = "linux")]
     let _ = crate::cmd("xdg-open").arg(url).spawn();
@@ -343,14 +386,14 @@ fn sign_in(app: tauri::AppHandle) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
+    tauri::generate_handler![platform, tools, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, tools, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
+    tauri::generate_handler![platform, tools, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }

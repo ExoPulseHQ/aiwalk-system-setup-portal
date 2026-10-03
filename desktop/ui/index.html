@@ -205,6 +205,11 @@
   @media (prefers-reduced-motion: no-preference) { .meter > i { transition: width .35s ease-out; } }
   .banner { background: var(--peach); color: #231C33; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; }
   .empty { padding: 48px 0; max-width: 56ch; }
+  .terms { max-width: 70ch; }
+  .terms .text { max-height: 52vh; overflow-y: auto; padding: 4px 20px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  .terms .text h2 { font-size: 17px; margin: 18px 0 8px; }
+  .terms .text li { margin: 6px 0; line-height: 1.6; }
+  .terms .agree { margin-top: 16px; display: flex; gap: 12px; align-items: center; }
   .empty h2 { margin-bottom: 8px; }
 
   #toast { position: fixed; bottom: 24px; left: calc(50% + 104px); transform: translateX(-50%); background: var(--ink); color: var(--paper);
@@ -228,6 +233,7 @@
   <button data-page="android" class="linux">Android phone <span class="os">Linux</span></button>
   <button data-page="vm" class="linux">Windows VM <span class="os">Linux</span></button>
   <div class="gap"></div>
+  <button data-page="terms">Terms</button>
 </nav>
 <main>
   <div id="topline" role="progressbar" aria-label="Working"></div>
@@ -235,6 +241,7 @@
   <div class="page" id="vm" hidden></div>
   <div class="page" id="team" hidden></div>
   <div class="page" id="machines" hidden></div>
+  <div class="page" id="terms" hidden></div>
 </main>
 <div id="toast"></div>
 <dialog id="dialog"></dialog>
@@ -318,7 +325,7 @@ function switchBox(on, onchange) {
   return s;
 }
 
-const pages = { team: () => loadTeam(), machines: () => loadMachines(), android: () => refreshPhones(true), vm: () => refreshVm() };
+const pages = { team: () => loadTeam(), machines: () => loadMachines(), terms: () => loadTerms(), android: () => refreshPhones(true), vm: () => refreshVm() };
 let current;
 function go(name) {
   current = name;

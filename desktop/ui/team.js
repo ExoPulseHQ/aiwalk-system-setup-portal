@@ -783,6 +783,11 @@ async function loadTeam(viewAs) {
   const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
   const s = lastTeam = await invoke("team_access").finally(stop);
   if (!s.user) return page.replaceChildren(signInView(s.error));
+  // the team's terms come before anything else, once per version
+  const termsOrg = (s.vaults.find(v => v.access) || {}).access;
+  if (termsOrg && (termsNow = await invoke("terms_state", { org: termsOrg.org })) && !termsOk()) {
+    return page.replaceChildren(termsView(termsNow, termsOrg.org, true));
+  }
   await refreshLocal();
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
   const parts = [el("h1", null, "Team access"),
@@ -806,6 +811,10 @@ async function loadMachines() {
     page.replaceChildren(el("h1", null, "Machines"), progress);
     const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
     s = lastTeam = await invoke("team_access").finally(stop);
+  }
+  if (!termsOk()) {
+    const b = el("button", null, "Go to Team access"); b.onclick = () => go("team");
+    return page.replaceChildren(el("h1", null, "Machines"), el("p", "sub", "Read and accept the team's terms on Team access first."), b);
   }
   const head = [el("h1", null, "Machines"),
     el("p", "lede", "The lab machines, reached only through Cloudflare after you sign in with GitHub. Click a machine for its hardware and desktops.")];
@@ -896,4 +905,69 @@ function whoCanConnect(host, machines, org, user) {
   }
   paint();
   return box;
+}
+
+// ---------------------------------------------------------------- Terms
+// The team's terms (exo-access-requests/TERMS.md): asked once per version right after sign-in, readable any time
+// from Terms in the sidebar, where owners also see who accepted which version.
+let termsNow = null;   // {version, text, accepted: {version, date} | null}, or null when the team has no terms
+const termsOk = () => !termsNow || (termsNow.accepted && termsNow.accepted.version >= termsNow.version);
+
+// The terms file is plain: "# " headings, "N. " numbered items, paragraphs. Built as elements, never as HTML.
+function termsText(text) {
+  const box = el("div", "text");
+  let list = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("<!--")) { list = null; continue; }
+    if (line.startsWith("# ")) { list = null; box.append(el("h2", null, line.slice(2))); continue; }
+    const item = line.match(/^\d+\.\s+(.*)$/);
+    if (item) { if (!list) { list = el("ol"); box.append(list); } list.append(el("li", null, item[1])); continue; }
+    list = null; box.append(el("p", null, line));
+  }
+  return box;
+}
+
+function termsView(t, org, asking) {
+  const wrap = el("div", "terms");
+  wrap.append(el("h1", null, asking ? "Before you start" : "Terms"),
+    el("p", "lede", asking ? (t.accepted ? `The team's terms changed (version ${t.version}). Please read them again.` : "Please read the team's terms. You are asked once; they stay under Terms in the sidebar.")
+                           : `Version ${t.version}.` + (t.accepted ? ` You accepted version ${t.accepted.version} on ${t.accepted.date}.` : "")));
+  const text = termsText(t.text);
+  wrap.append(text);
+  if (asking) {
+    const agree = el("button", null, "I agree"), note = el("span", "sub", "Scroll to the end to agree.");
+    agree.disabled = true;
+    const atEnd = () => { if (text.scrollTop + text.clientHeight >= text.scrollHeight - 8) { agree.disabled = false; note.textContent = ""; } };
+    text.onscroll = atEnd; setTimeout(atEnd, 0);   // a short text fits without scrolling
+    agree.onclick = async () => {
+      try { await working(agree, "Recording", () => invoke("terms_accept", { org, version: t.version })); termsNow = null; loadTeam(); }
+      catch (e) { note.textContent = `Could not record it: ${e}`; }
+    };
+    const row = el("div", "agree"); row.append(agree, note); wrap.append(row);
+  }
+  return wrap;
+}
+
+async function loadTerms() {
+  const page = document.getElementById("terms");
+  const s = lastTeam, access = s && (s.vaults.find(v => v.access) || {}).access;
+  if (!access) return page.replaceChildren(el("h1", null, "Terms"), el("p", "sub", "Sign in on Team access to read the team's terms."));
+  page.replaceChildren(el("h1", null, "Terms"), stage("Reading the terms"));
+  const t = termsNow || await invoke("terms_state", { org: access.org });
+  if (!t) return page.replaceChildren(el("h1", null, "Terms"), el("p", "sub", "Your team has no terms yet."));
+  const view = termsView(t, access.org, false);
+  page.replaceChildren(view);
+  // owners see who accepted which version
+  if ((access.people[s.user] || {}).grants === null) {
+    const who = await invoke("terms_everyone", { org: access.org });
+    const sec = el("div", "section"), list = el("div", "list");
+    sec.append(el("h2", null, "Who accepted"));
+    Object.keys(access.people).sort((a, b) => access.people[a].name.localeCompare(access.people[b].name)).forEach(login => {
+      const a = who[login];
+      const tag = a ? el("span", "perm " + (a.version >= t.version ? "p4" : "pending"), `Version ${a.version}, ${a.date}`) : el("span", "perm p0", "Not yet");
+      list.append(item(access.people[login].name, `@${login}`, null, tag));
+    });
+    sec.append(list); view.append(sec);
+  }
 }
