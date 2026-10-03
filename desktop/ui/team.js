@@ -923,18 +923,40 @@ let termsNow = null;   // {version, text, accepted: {version, date} | null}, or 
 const termsOk = () => !termsNow || (termsNow.accepted && termsNow.accepted.version >= termsNow.version);
 
 // The terms file is plain: "# " headings, "N. " numbered items, paragraphs. Built as elements, never as HTML.
+// Each "# " heading starts one language's copy; one is shown at a time, picked with the switch above the text.
 function termsText(text) {
   const box = el("div", "text");
-  let list = null;
+  const parts = [];
+  let part = null, list = null;
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("<!--")) { list = null; continue; }
-    if (line.startsWith("# ")) { list = null; box.append(el("h2", null, line.slice(2))); continue; }
+    if (line.startsWith("# ") || !part) {
+      part = el("div"); parts.push(part); box.append(part); list = null;
+      if (line.startsWith("# ")) { part.append(el("h2", null, line.slice(2))); continue; }
+    }
     const item = line.match(/^\d+\.\s+(.*)$/);
-    if (item) { if (!list) { list = el("ol"); box.append(list); } list.append(el("li", null, item[1])); continue; }
-    list = null; box.append(el("p", null, line));
+    if (item) { if (!list) { list = el("ol"); part.append(list); } list.append(el("li", null, item[1])); continue; }
+    list = null; part.append(el("p", null, line));
   }
+  box.parts = parts;
   return box;
+}
+
+// The language switch: 中文 for a copy written in Chinese characters, English otherwise; this computer's language first.
+function termsSwitch(text, onChange) {
+  const zh = p => /[\u4e00-\u9fff]/.test(p.textContent.slice(0, 40));
+  const row = el("div", "lang");
+  if (text.parts.length < 2) return row;
+  const show = i => {
+    text.parts.forEach((p, k) => p.hidden = k !== i);
+    [...row.children].forEach((b, k) => b.classList.toggle("on", k === i));
+    text.scrollTop = 0; onChange();
+  };
+  text.parts.forEach((p, i) => { const b = el("button", "small ghost", zh(p) ? "中文" : "English"); b.onclick = () => show(i); row.append(b); });
+  const mine = text.parts.findIndex(p => zh(p) === navigator.language.toLowerCase().startsWith("zh"));
+  show(mine < 0 ? 0 : mine);
+  return row;
 }
 
 function termsView(t, org, asking) {
@@ -943,11 +965,12 @@ function termsView(t, org, asking) {
     el("p", "lede", asking ? (t.accepted ? `The team's terms changed (version ${t.version}). Please read them again.` : "Please read the team's terms. You are asked once; they stay under Terms in the sidebar.")
                            : `Version ${t.version}.` + (t.accepted ? ` You accepted version ${t.accepted.version} on ${t.accepted.date}.` : "")));
   const text = termsText(t.text);
-  wrap.append(text);
+  const agree = el("button", null, "I agree"), note = el("span", "sub", "Scroll to the end to agree.");
+  // reaching the end of either language's copy is enough: they say the same thing
+  const atEnd = () => { if (text.scrollTop + text.clientHeight >= text.scrollHeight - 8) { agree.disabled = false; note.textContent = ""; } };
+  wrap.append(termsSwitch(text, () => setTimeout(atEnd, 0)), text);
   if (asking) {
-    const agree = el("button", null, "I agree"), note = el("span", "sub", "Scroll to the end to agree.");
     agree.disabled = true;
-    const atEnd = () => { if (text.scrollTop + text.clientHeight >= text.scrollHeight - 8) { agree.disabled = false; note.textContent = ""; } };
     text.onscroll = atEnd; setTimeout(atEnd, 0);   // a short text fits without scrolling
     agree.onclick = async () => {
       try { await working(agree, "Recording", () => invoke("terms_accept", { org, version: t.version })); termsNow = null; loadTeam(); }
