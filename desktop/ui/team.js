@@ -30,7 +30,7 @@ function badge(s) {
     if (await ask(`Sign out ${s.user} on this computer?`, (others.length ? `${others.join(", ")} stays signed in and takes over.`
         : "git and this app stop reaching your team's repos until you sign in again.") + " Nothing on GitHub changes.",
       [["cancel", "Cancel"], ["out", "Sign out", true]]) !== "out") return;
-    try { await working(out, "Signing out", () => invoke("sign_out", { login: s.user })); toast(`Signed out ${s.user}`); } catch (e) { toast(`Could not sign out: ${e}`); }
+    try { await working(out, "Signing out", () => invoke("sign_out", { login: s.user })); termsNow = null; toast(`Signed out ${s.user}`); } catch (e) { toast(`Could not sign out: ${e}`); }
     loadTeam();
   };
   const actions = el("div", "actions");
@@ -41,7 +41,7 @@ function badge(s) {
     pick.append(new Option("Switch GitHub account", ""), ...others.map(x => new Option(x.login, x.login)));
     pick.onchange = async () => {
       pick.disabled = true;
-      try { await invoke("switch_account", { login: pick.value }); toast(`Now using ${pick.value}; step 2 signs this account in to the machines`); labSignInNext = true; }
+      try { await invoke("switch_account", { login: pick.value }); termsNow = null; toast(`Now using ${pick.value}; step 2 signs this account in to the machines`); labSignInNext = true; }
       catch (e) { toast(`Could not switch: ${e}`); }
       loadTeam();
     };
@@ -552,7 +552,7 @@ function signInView(error, adding) {
     const stopLine = await listen("gh-line", e => { if (!got) code.textContent = e.payload; });
     const ok = await working(btn, "Step 1 of 2: waiting for GitHub", () => invoke("sign_in"));
     stop(); stopLine();
-    if (ok) { labSignInNext = true; loadTeam(); } else code.textContent = "Sign-in was not finished. Try again.";
+    if (ok) { labSignInNext = true; termsNow = null; loadTeam(); } else code.textContent = "Sign-in was not finished. Try again.";
   };
   box.append(btn, code);
   if (adding) { const back = el("button", "ghost", "Cancel"); back.style.marginLeft = "8px"; back.onclick = () => loadTeam(); btn.after(back); }
@@ -790,7 +790,7 @@ async function loadTeam(viewAs) {
   const t = await invoke("tools");
   if (!t.gh || !t.git) return page.replaceChildren(missingTools(t));
   // the team's terms come first, once per version: two quick questions to GitHub, before the long read of access
-  if (!termsOk() || !termsNow) termsNow = await invoke("terms_state");
+  if (!termsOk() || !termsNow) { progress.set(null, "Reading the team's terms"); termsNow = await invoke("terms_state"); }
   if (!termsOk()) return page.replaceChildren(termsView(termsNow, termsNow.org, true));
   const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
   const s = lastTeam = await invoke("team_access").finally(stop);
