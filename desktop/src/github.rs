@@ -1,8 +1,9 @@
 //! GitHub's API, asked directly over one kept-open HTTPS client instead of starting `gh` for every question.
 //! Questions can then run side by side, and nothing here needs a program the phone does not have.
 //!
-//! The token still comes from gh (`gh auth token`) while sign-in is gh's job; that is the one place to change when
-//! the app signs in by itself.
+//! Sign-in is the app's own (GitHub's device flow, through the team's OAuth App). On a computer the token is then
+//! handed to gh, which keeps it for git, the vault's tools and this app alike; `token` is the one place to change
+//! where there is no gh.
 
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock};
@@ -17,6 +18,12 @@ fn agent() -> &'static ureq::Agent {
 }
 
 static TOKEN: Mutex<Option<String>> = Mutex::new(None);
+/// What the token may do, as GitHub reports it with every answer ("repo, read:org, user:email").
+static SCOPES: Mutex<String> = Mutex::new(String::new());
+
+pub fn scopes() -> Vec<String> {
+    SCOPES.lock().unwrap().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+}
 
 /// The signed-in account's token. Asked of gh once and kept until `forget_token`.
 fn token() -> Result<String, String> {
@@ -45,6 +52,7 @@ fn call(method: &str, path: &str, body: Option<&Value>, accept: &str) -> Result<
         .body(body.map(Value::to_string).unwrap_or_default()).map_err(|e| e.to_string())?;
     let mut resp = agent().run(req).map_err(|e| format!("GitHub did not answer: {e}"))?;
     let status = resp.status().as_u16();
+    if let Some(sc) = resp.headers().get("x-oauth-scopes").and_then(|v| v.to_str().ok()) { *SCOPES.lock().unwrap() = sc.to_string(); }
     let next = resp.headers().get("link").and_then(|l| l.to_str().ok()).and_then(next_link);
     let text = resp.body_mut().with_config().limit(64 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())?;
     if (200..300).contains(&status) { return Ok((text, next)) }
@@ -93,6 +101,51 @@ pub fn raw(repo: &str, path: &str) -> Result<String, String> {
 /// A GraphQL query; the whole answer as text ({"data": ...}), as the readers in exo-core take it.
 pub fn graphql(query: &str) -> Result<String, String> {
     Ok(call("POST", "graphql", Some(&serde_json::json!({ "query": query })), JSON)?.0)
+}
+
+// ---------------------------------------------------------------- Sign-in
+// GitHub's device flow: the app asks for a one-time code, the person enters it at github.com/login/device in any
+// browser, and the app waits for the token. No secret is involved, so the client id below is not one.
+
+/// The team's OAuth App "aIwalk System Setup", owned by ExoPulseHQ, with the device flow switched on.
+const CLIENT_ID: &str = "Ov23libbDrZ77FJNDo4L";
+/// repo: the vaults and code. read:org: teams. user:email: to tell that the machines' sign-in is the same person.
+pub const SCOPES_MEMBER: &str = "repo read:org user:email";
+/// Owners add admin:org, for invitations, roles and team membership. Asked for only when an owner unlocks the tools.
+pub const SCOPES_OWNER: &str = "repo admin:org user:email";
+
+fn oauth(url: &str, body: Value) -> Result<Value, String> {
+    let req = ureq::http::Request::builder().method("POST").uri(url)
+        .header("Accept", "application/json").header("Content-Type", "application/json").header("User-Agent", "aiwalk-system-setup")
+        .body(body.to_string()).map_err(|e| e.to_string())?;
+    let mut resp = agent().run(req).map_err(|e| format!("GitHub did not answer: {e}"))?;
+    parse(&resp.body_mut().read_to_string().map_err(|e| e.to_string())?)
+}
+
+/// Runs the device flow for `scopes`. `show(code, url)` is called once with what the person must enter and where;
+/// then this waits, up to the code's life (15 minutes), for them to approve. Ok(token).
+pub fn device_sign_in(scopes: &str, show: &dyn Fn(&str, &str)) -> Result<String, String> {
+    let d = oauth("https://github.com/login/device/code", serde_json::json!({ "client_id": CLIENT_ID, "scope": scopes }))?;
+    let (Some(device), Some(code)) = (d["device_code"].as_str(), d["user_code"].as_str()) else {
+        return Err(format!("GitHub gave no sign-in code: {}", d["error_description"].as_str().or(d["error"].as_str()).unwrap_or("no reason given")))
+    };
+    show(code, d["verification_uri"].as_str().unwrap_or("https://github.com/login/device"));
+    let mut wait = d["interval"].as_u64().unwrap_or(5);
+    let until = std::time::Instant::now() + Duration::from_secs(d["expires_in"].as_u64().unwrap_or(900));
+    while std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_secs(wait));
+        let r = oauth("https://github.com/login/oauth/access_token", serde_json::json!({
+            "client_id": CLIENT_ID, "device_code": device, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" }))?;
+        if let Some(t) = r["access_token"].as_str() { return Ok(t.to_string()) }
+        match r["error"].as_str() {
+            Some("authorization_pending") => {}
+            Some("slow_down") => wait = r["interval"].as_u64().unwrap_or(wait + 5),
+            Some("access_denied") => return Err("Sign-in was cancelled on the GitHub page".into()),
+            Some("expired_token") => break,
+            other => return Err(format!("GitHub refused the sign-in: {}", r["error_description"].as_str().or(other).unwrap_or("no reason given"))),
+        }
+    }
+    Err("The code ran out before it was approved. Try again.".into())
 }
 
 #[cfg(test)]

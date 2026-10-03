@@ -1,12 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exo_core::{
-    build_tree, device_code, machines, parse_gh_status, plain, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
+    build_tree, machines, parse_gh_status, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
     vault_repos, visible_to, Machine, Node, Person, Team, RULES_PATHS,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -200,6 +200,8 @@ struct State {
     accounts: Vec<Auth>,
     error: Option<String>,
     vaults: Vec<Vault>,
+    /// What the sign-in may do on GitHub ("repo", "read:org", "admin:org", ...); owners' tools need admin:org.
+    scopes: Vec<String>,
 }
 
 /// Reads everything Team access shows; GitHub answers slowly, so each step is announced to the page as
@@ -213,7 +215,7 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
     stage(1, 2, "Checking who is signed in");
     let me = match github::get("user") {
         Ok(v) => v,
-        Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![] },
+        Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![], scopes: vec![] },
     };
     let user = me["login"].as_str().unwrap_or_default().to_string();
     let name = me["name"].as_str().filter(|n| !n.is_empty()).map(String::from);
@@ -225,7 +227,7 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
         let vaults: Vec<_> = VAULTS.iter().map(|&(name, repo, about)| { let user = &user; s.spawn(move || read_vault(name, repo, about, user)) }).collect();
         (accounts.join().unwrap_or_default(), vaults.into_iter().filter_map(|h| h.join().ok()).collect())
     });
-    State { user: Some(user), name, accounts, error: None, vaults }
+    State { user: Some(user), name, accounts, error: None, vaults, scopes: github::scopes() }
 }
 
 fn read_vault(name: &'static str, repo: &'static str, about: &'static str, user: &str) -> Vault {
@@ -374,40 +376,21 @@ pub fn open_url(url: &str) {
     let _ = crate::cmd("cmd").args(["/c", "start", "", url]).spawn();
 }
 
-/// gh's browser sign-in: emits "gh-code" with the one-time code, true once GitHub approved.
+/// Signs in with GitHub: emits "gh-code" with the one-time code and opens the page to enter it on; true once
+/// GitHub approved. `owner` asks for the permission to manage the organisation as well.
 #[tauri::command(async)]
-fn sign_in(app: tauri::AppHandle) -> bool {
-    let Ok(mut child) = crate::cmd("gh")
-        .args(["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web", "--scopes", "user:email"])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return false };
-    // answers "Press Enter to open github.com in your browser" ahead of time
-    let _ = child.stdin.take().unwrap().write_all(b"\n");
-    // gh prints the one-time code and, without a terminal, the URL to open. Both streams are read (which one it uses
-    // is gh's business) and every line goes to the page too, so whatever gh says is seen even if the code is missed.
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    let out = child.stdout.take().unwrap();
-    let tx2 = tx.clone();
-    std::thread::spawn(move || for l in BufReader::new(out).lines().map_while(Result::ok) { let _ = tx2.send(l); });
-    let err = child.stderr.take().unwrap();
-    std::thread::spawn(move || for l in BufReader::new(err).lines().map_while(Result::ok) { let _ = tx.send(l); });
-    for line in rx {
-        let line = plain(&line);
-        if line.is_empty() { continue }
-        match device_code(&line) {
-            Some(code) => { let _ = app.emit("gh-code", code); }
-            None => { let _ = app.emit("gh-line", &line); }
-        }
-        // without a terminal gh only prints the URL, so open it ourselves
-        if line.contains("Open this URL") {
-            if let Some(url) = line.split_whitespace().find(|w| w.starts_with("https://")) { open_url(url); }
-        }
-    }
-    let ok = child.wait().is_ok_and(|s| s.success());
-    if ok {
-        github::forget_token();
-        let _ = gh(&["auth", "setup-git"]);
-    }
-    ok
+fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
+    let scopes = if owner == Some(true) { github::SCOPES_OWNER } else { github::SCOPES_MEMBER };
+    let token = match github::device_sign_in(scopes, &|code, url| { let _ = app.emit("gh-code", code); open_url(url); }) {
+        Ok(t) => t,
+        Err(e) => { let _ = app.emit("gh-line", e); return false }
+    };
+    // gh keeps the token: git, the vault's tools and this app all read the signed-in account from it
+    let (code, out) = sh_stdin("gh", &["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--with-token"], Some(&token), 60);
+    if code != 0 { let _ = app.emit("gh-line", format!("Signed in, but gh would not keep the sign-in: {}", out.lines().last().unwrap_or(""))); return false }
+    github::forget_token();
+    let _ = gh(&["auth", "setup-git"]);
+    true
 }
 
 #[cfg(target_os = "linux")]
@@ -469,6 +452,15 @@ fn main() {
         let a: Vec<String> = std::env::args().skip(i + 1).collect();
         let body = a.get(2).map(|b| serde_json::from_str(b).expect("the body must be JSON"));
         match github::send(&a[0], &a[1], body) { Ok(v) => println!("{v}"), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }
+        return;
+    }
+    // --sign-in [owner]: the device flow in the terminal; prints who the token belongs to and what it may do, keeps nothing
+    if let Some(i) = std::env::args().position(|a| a == "--sign-in") {
+        let scopes = if std::env::args().nth(i + 1).as_deref() == Some("owner") { github::SCOPES_OWNER } else { github::SCOPES_MEMBER };
+        match github::device_sign_in(scopes, &|code, url| println!("Enter {code} at {url}")) {
+            Ok(t) => println!("token received ({} characters, starts {})", t.len(), &t[..4]),
+            Err(e) => { eprintln!("{e}"); std::process::exit(1) }
+        }
         return;
     }
     if std::env::args().any(|a| a == "--dump") {

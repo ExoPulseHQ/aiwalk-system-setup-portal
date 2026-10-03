@@ -48,7 +48,7 @@ function badge(s) {
     actions.append(pick);
   }
   const add = el("button", "ghost small", "Add a GitHub account");
-  add.onclick = () => teamPage().replaceChildren(signInView(null, true));
+  add.onclick = () => teamPage().replaceChildren(signInView(null, "add"));
   actions.append(add, out);
   who.append(actions);
   b.append(el("div", "band"), el("div", "face", initials(name)), who);
@@ -530,32 +530,34 @@ function vaultSection(v, user, viewAs, orgs) {
   return sec;
 }
 
-function signInView(error, adding) {
+// mode: undefined for the first sign-in, "add" for another account, "owner" to add the permission owners' tools need
+function signInView(error, mode) {
   const box = el("div", "empty");
-  box.append(el("h1", null, adding ? "Add another GitHub account" : "Sign in with GitHub"),
-    el("p", "lede", adding ? "The page that opens approves whichever account your browser is signed in to. Sign in to the other account there first, or use a private window. The new account becomes the active one; switch back from the badge."
-                           : "Your team access follows your GitHub account. Signing in has two steps in the browser: GitHub for the repos, then the same account for the machines. The app keeps no token of its own."));
-  const code = el("p", "sub"), btn = el("button", null, "Sign in with GitHub");
+  const TEXT = {
+    add: ["Add another GitHub account", "The page that opens approves whichever account your browser is signed in to. Sign in to the other account there first, or use a private window. The new account becomes the active one; switch back from the badge."],
+    owner: ["Unlock the owner tools", "Inviting people, changing roles and moving people between teams need GitHub's permission to manage the organisation. Approve it once with your owner account; members never need it."],
+  }[mode] || ["Sign in with GitHub", "Your team access follows your GitHub account. Signing in has two steps in the browser: GitHub for the repos, then the same account for the machines."];
+  box.append(el("h1", null, TEXT[0]), el("p", "lede", TEXT[1]));
+  const code = el("p", "sub"), btn = el("button", null, mode === "owner" ? "Approve on GitHub" : "Sign in with GitHub");
   btn.onclick = async () => {
     code.textContent = "";
-    let got = false;
     const stop = await listen("gh-code", e => {
-      got = true;
-      // shown and copyable: gh copies it too, but a button does not depend on that having worked
       const copy = el("button", "small ghost", "Copy");
       copy.style.marginLeft = "8px";
       copy.onclick = () => navigator.clipboard.writeText(e.payload).then(() => toast(`Copied ${e.payload}`), () => toast(e.payload));
-      code.replaceChildren("Enter this code on the GitHub page that just opened, then approve. It is already copied, so pasting works: ",
-        el("strong", "cmd", e.payload), copy);
+      const hint = el("span");
+      code.replaceChildren("Enter this code on the GitHub page that just opened, then approve: ", el("strong", "cmd", e.payload), copy, hint);
+      // copied for the person when the system allows it without a click
+      navigator.clipboard.writeText(e.payload).then(() => hint.textContent = " It is already copied, so pasting works.", () => {});
     });
-    // until the code is found, whatever gh says is shown as it is
-    const stopLine = await listen("gh-line", e => { if (!got) code.textContent = e.payload; });
-    const ok = await working(btn, "Step 1 of 2: waiting for GitHub", () => invoke("sign_in"));
+    let why = "";
+    const stopLine = await listen("gh-line", e => { why = e.payload; });
+    const ok = await working(btn, mode === "owner" ? "Waiting for GitHub" : "Step 1 of 2: waiting for GitHub", () => invoke("sign_in", { owner: mode === "owner" }));
     stop(); stopLine();
-    if (ok) { labSignInNext = true; termsNow = null; loadTeam(); } else code.textContent = "Sign-in was not finished. Try again.";
+    if (ok) { labSignInNext = mode !== "owner"; termsNow = null; loadTeam(); } else code.textContent = why || "Sign-in was not finished. Try again.";
   };
   box.append(btn, code);
-  if (adding) { const back = el("button", "ghost", "Cancel"); back.style.marginLeft = "8px"; back.onclick = () => loadTeam(); btn.after(back); }
+  if (mode) { const back = el("button", "ghost", "Cancel"); back.style.marginLeft = "8px"; back.onclick = () => loadTeam(); btn.after(back); }
   if (error && !/not logged|auth login/i.test(error)) box.append(el("p", "sub", error));
   return box;
 }
@@ -802,6 +804,12 @@ async function loadTeam(viewAs) {
                           : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
     badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
+  // an owner signed in without the permission to manage the organisation: the tools below would be refused
+  if (owner && org && !(s.scopes || []).includes("admin:org")) {
+    const b = el("button", "small", "Unlock");
+    b.onclick = () => page.replaceChildren(signInView(null, "owner"));
+    parts.push(item("Owner tools are locked", "Inviting people and changing access need one more approval on GitHub.", null, b));
+  }
   if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams.filter(t => t.slug !== "core" && !t.slug.startsWith("machine-")), org.tree)); }
   const orgs = new Set(s.vaults.filter(v => v.access).map(v => v.access.org));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs, orgs)));
