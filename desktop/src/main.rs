@@ -421,10 +421,12 @@ fn main() {
     }
     // Cloudflare Access done by the app itself (access.rs). `--ssh-proxy <host>` is ssh's ProxyCommand; `--ssh-cert
     // <host>` and `--access-get <url>` are for checking by hand. Errors go to stderr, where ssh shows them.
-    if let Some(flag @ ("--ssh-proxy" | "--ssh-cert" | "--access-get")) = std::env::args().nth(1).as_deref() {
+    // `--access-login <host> [--no-browser]` tries the in-app browser sign-in; the app itself still signs in with cloudflared.
+    if let Some(flag @ ("--ssh-proxy" | "--ssh-cert" | "--access-get" | "--access-login")) = std::env::args().nth(1).as_deref() {
         let Some(arg) = std::env::args().nth(2) else { eprintln!("{flag} needs a host or URL"); std::process::exit(2) };
         let done = match flag {
             "--ssh-proxy" => access::ssh_proxy(&arg),
+            "--access-login" => access::login(&arg, std::env::args().nth(3).as_deref() != Some("--no-browser")).map(|_| println!("signed in")),
             "--ssh-cert" => access::ssh_cert(&arg).map(|(k, c)| println!("key {}\ncertificate {}", k.display(), c.display())),
             _ => access::get(&arg).map(|body| println!("{body}")),
         };

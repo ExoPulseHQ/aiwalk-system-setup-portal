@@ -249,6 +249,87 @@ pub fn get(url: &str) -> Result<String, String> {
     }
 }
 
+// ---------------------------------------------------------------- e. sign-in (dev flag only; the app signs in with cloudflared)
+// cloudflared's transfer flow: the browser signs in at the machine's /cdn-cgi/access/cli page, which hands both
+// tokens to Cloudflare's transfer service sealed (NaCl box) to a key made for this sign-in; the app long-polls the
+// service with that public key and opens the box. The key is made fresh every time and never stored: its public half
+// is the only thing that names the waiting tokens. The org-token exchange cloudflared tries first is not done here.
+
+const TRANSFER: &str = "https://login.cloudflareaccess.org/transfer/";
+
+/// Go's url.QueryEscape, so the address is byte for byte what cloudflared builds.
+fn esc(s: &str) -> String {
+    s.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        b' ' => "+".into(),
+        _ => format!("%{b:02X}"),
+    }).collect()
+}
+/// url.Values.Encode: the pairs come in sorted by key, as Go sorts them.
+fn form(pairs: &[(&str, &str)]) -> String { pairs.iter().map(|(k, v)| format!("{}={}", esc(k), esc(v))).collect::<Vec<_>>().join("&") }
+
+/// cloudflared's buildRequestURL for a command-line sign-in to https://<host> (host only, no auto-close).
+fn login_url(host: &str, aud: &str, key: &str) -> String {
+    let back = format!("https://{host}?{}", form(&[("aud", aud), ("token", key)]));
+    format!("https://{host}/cdn-cgi/access/cli?{}",
+        form(&[("aud", aud), ("edge_token_transfer", "true"), ("redirect_url", &back), ("send_org_token", "true"), ("token", key)]))
+}
+
+/// Long-polls the transfer service until the sealed tokens arrive or `until` passes. Ok((body, sender's public key)).
+/// Anything below 500 means "not yet"; the pause keeps a service that answers at once from being hammered.
+fn wait_for_transfer(key: &str, until: std::time::Instant, tick: &dyn Fn()) -> Result<(String, String), String> {
+    while std::time::Instant::now() < until {
+        let mut resp = agent().get(format!("{TRANSFER}{key}")).header("User-Agent", "aiwalk-system-setup")
+            .config().timeout_global(Some(Duration::from_secs(65))).build().call().map_err(|e| format!("Cloudflare did not answer: {e}"))?;
+        match resp.status().as_u16() {
+            200 => {
+                let sender = resp.headers().get("service-public-key").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+                return Ok((resp.body_mut().read_to_string().map_err(|e| e.to_string())?, sender));
+            }
+            s if s >= 500 => return Err(format!("Cloudflare's sign-in service failed (HTTP {s})")),
+            _ => { tick(); std::thread::sleep(Duration::from_secs(2)) }
+        }
+    }
+    Err("The sign-in was not finished in time".into())
+}
+
+/// Opens what the transfer service sent: base64 of a 24-byte nonce then a box sealed by `sender` to `mine`.
+fn open_transfer(body: &str, sender: &str, mine: &crypto_box::SecretKey) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    use crypto_box::aead::{generic_array::GenericArray, Aead};
+    let bad = || "Cloudflare's sign-in answer is not readable".to_string();
+    let data = base64::engine::general_purpose::STANDARD.decode(body.trim()).map_err(|_| bad())?;
+    let their: [u8; 32] = base64::engine::general_purpose::URL_SAFE.decode(sender.trim()).ok().and_then(|k| k.try_into().ok()).ok_or_else(bad)?;
+    if data.len() < 24 { return Err(bad()) }
+    crypto_box::SalsaBox::new(&crypto_box::PublicKey::from(their), mine)
+        .decrypt(GenericArray::from_slice(&data[..24]), &data[24..]).map_err(|_| "Cloudflare's sign-in answer did not open with this sign-in's key".into())
+}
+
+/// `--access-login <host>`: the browser sign-in, writing the tokens where cloudflared keeps them. `browser` false
+/// only prints the address. Waits up to 5 minutes.
+pub fn login(host: &str, browser: bool) -> Result<(), String> {
+    let host = team_host(host)?;
+    let app = app_info(&host)?;
+    let mut seed = [0u8; 32];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut seed).map_err(|_| "no randomness on this computer")?;
+    let mine = crypto_box::SecretKey::from(seed);
+    let key = { use base64::Engine; base64::engine::general_purpose::URL_SAFE.encode(mine.public_key().as_bytes()) };
+    let url = login_url(&host, &app.aud, &key);
+    eprintln!("Sign in at:\n\n{url}\n");
+    if browser { crate::open_url(&url) }
+    let (body, sender) = wait_for_transfer(&key, std::time::Instant::now() + Duration::from_secs(300), &|| eprint!("."))?;
+    let got: Value = serde_json::from_slice(&open_transfer(&body, &sender, &mine)?).map_err(|_| "Cloudflare's sign-in answer is not readable")?;
+    let app_token = got["app_token"].as_str().unwrap_or_default().trim();
+    usable(app_token, &app.aud, &host, now())?;
+    let d = dir();
+    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    write_private(&d.join(token_file(&app)), app_token.as_bytes())?;
+    if let Some(org) = got["org_token"].as_str().map(str::trim).filter(|t| claims(t).is_some()) {
+        write_private(&d.join(format!("{TEAM}-org-token")), org.as_bytes())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +352,38 @@ mod tests {
             assert!(verified(&forged).is_err());
         }
         assert!(verified("only.two").is_err());
+    }
+
+    #[test]
+    fn the_sign_in_address_is_cloudflareds() {
+        // what Go's buildRequestURL gives for https://ssh-tiger.aiwalkcorp.com with aud "ab" and key "k-_=": keys sorted,
+        // the return address itself escaped inside redirect_url
+        assert_eq!(login_url("ssh-tiger.aiwalkcorp.com", "ab", "k-_="),
+            "https://ssh-tiger.aiwalkcorp.com/cdn-cgi/access/cli?aud=ab&edge_token_transfer=true\
+             &redirect_url=https%3A%2F%2Fssh-tiger.aiwalkcorp.com%3Faud%3Dab%26token%3Dk-_%253D&send_org_token=true&token=k-_%3D");
+        assert_eq!(esc("a b~"), "a+b~");
+    }
+
+    #[test]
+    fn the_transfer_opens_only_with_this_sign_ins_key() {
+        use base64::Engine;
+        use crypto_box::aead::{generic_array::GenericArray, Aead};
+        let (mine, service, other) = (crypto_box::SecretKey::from([1u8; 32]), crypto_box::SecretKey::from([2u8; 32]), crypto_box::SecretKey::from([3u8; 32]));
+        let nonce = [7u8; 24];
+        let sealed = crypto_box::SalsaBox::new(&mine.public_key(), &service).encrypt(GenericArray::from_slice(&nonce), &b"{\"app_token\":\"t\"}"[..]).unwrap();
+        let body = base64::engine::general_purpose::STANDARD.encode([&nonce[..], &sealed].concat());
+        let sender = base64::engine::general_purpose::URL_SAFE.encode(service.public_key().as_bytes());
+        assert_eq!(open_transfer(&body, &sender, &mine).unwrap(), b"{\"app_token\":\"t\"}");
+        assert!(open_transfer(&body, &sender, &other).is_err());
+        assert!(open_transfer("AAAA", &sender, &mine).is_err());
+        assert!(open_transfer(&body, "short", &mine).is_err());
+    }
+
+    #[test]
+    fn waiting_for_the_sign_in_ends_at_its_deadline() {
+        let t = std::time::Instant::now();
+        assert_eq!(wait_for_transfer("k", t, &|| {}).unwrap_err(), "The sign-in was not finished in time");
+        assert!(t.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
