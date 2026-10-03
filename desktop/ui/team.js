@@ -758,8 +758,12 @@ function missingTools(t) {
 async function peopleSection(org, user, teams, tree) {
   const sec = el("div", "section");
   const head = el("header");
-  head.append(el("h2", null, "People"), el("span", "grow"));
-  sec.append(head, el("p", "sub", `Everyone in ${org} on GitHub. Owners can open every repo and change everyone's access.`));
+  // inviting is an occasional act: its form stays folded away until this button opens it, right under the heading
+  const inviteBtn = el("button", "small", "Invite someone");
+  inviteBtn.setAttribute("aria-expanded", "false");
+  head.append(el("h2", null, "People"), el("span", "grow"), inviteBtn);
+  const lede = el("p", "sub", `Everyone in ${org} on GitHub. Owners can open every repo and change everyone's access.`);
+  sec.append(head, lede);
   let p;
   try { p = await invoke("org_people", { org }); } catch (e) { sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
   internsNow = p.interns || [];
@@ -820,7 +824,6 @@ async function peopleSection(org, user, teams, tree) {
 
   // invite: a GitHub username, a role, and the layers they start in; everyone also gets the shared team
   const form = el("div", "invite");
-  form.append(el("h3", null, "Invite someone"));
   const who = el("input", "who"); who.placeholder = "Their GitHub username"; who.autocomplete = "off"; who.spellcheck = false;
   form.append(who);
 
@@ -880,7 +883,23 @@ async function peopleSection(org, user, teams, tree) {
     const picked = role === "owner" ? [] : [...chosenTeams, ...(shared ? [shared.slug] : [])];
     await act(() => invoke("invite", { org, login: who.value, owner: role === "owner", teams: picked }), null, send, "Inviting")();
   };
-  sec.append(form, msg);
+  // the drawer: closed it takes no room and no focus; open it grows out under the heading and the name field is ready
+  const drawer = el("div", "drawer"), inner = el("div", "drawer-in");
+  inner.append(form);
+  inner.inert = true;
+  drawer.append(inner);
+  const setOpen = open => {
+    drawer.classList.toggle("open", open);
+    inner.inert = !open;
+    inviteBtn.setAttribute("aria-expanded", String(open));
+    inviteBtn.textContent = open ? "Close" : "Invite someone";
+    inviteBtn.classList.toggle("ghost", open);
+    if (open) who.focus();
+  };
+  inviteBtn.onclick = () => setOpen(!drawer.classList.contains("open"));
+  form.addEventListener("keydown", e => { if (e.key === "Escape") { setOpen(false); inviteBtn.focus(); } });
+  lede.after(drawer);
+  sec.append(msg);
   return sec;
 }
 

@@ -143,8 +143,15 @@
   .perm.edit { cursor: pointer; }
   .perm.edit:hover { outline: 2px solid var(--purple); outline-offset: 2px; }
   /* invite: one column, a field per line; layers as tiles to tap */
-  .invite { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
-  .invite h3 { margin: 16px 0 0; }
+  /* a panel that grows out of its section when asked for: no room and no focus while closed (0fr to 1fr is the one
+     way CSS animates to a content's own height) */
+  .drawer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .24s cubic-bezier(.2, .7, .2, 1); }
+  .drawer.open { grid-template-rows: 1fr; }
+  .drawer-in { overflow: hidden; min-height: 0; }
+  .drawer.open .drawer-in { overflow: visible; transition: overflow 0s .24s; }
+  @media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
+  .invite { display: flex; flex-direction: column; gap: 14px; margin: 4px 0 20px; padding: 18px 20px 16px; border-radius: 12px;
+            background: var(--surface); border: 1px solid var(--line); border-top: 2px solid var(--purple); }
   .invite .who { font-size: 16px; padding: 10px 12px; border-radius: 10px; }
   .invite .field { display: grid; grid-template-columns: 88px 1fr; gap: 12px; align-items: center; }
   .invite .field.top { align-items: start; }
