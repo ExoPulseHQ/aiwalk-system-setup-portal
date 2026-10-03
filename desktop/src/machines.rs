@@ -266,14 +266,13 @@ for i in $(seq 40); do [ -n "$(listener)" ] && break; sleep 0.25; done
 /// so a running exo never reads half a file and ~/bin/exo, a symlink to ~/.local/bin/exo, keeps working. No sudo.
 #[tauri::command(async)]
 pub fn update_host_tools(tunnel: String, user: String) -> Result<String, String> {
-    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
     let mut script = String::from("set -eu\nmkdir -p ~/.local/bin && cd ~/.local/bin\n");
     for (name, text) in HOST_TOOLS {
         script += &format!("cat > {name}.new <<'{END}'\n{text}{}{END}\nchmod 755 {name}.new && mv -f {name}.new {name}\n",
                            if text.ends_with('\n') { "" } else { "\n" });
     }
     script += RESTART;
-    let via = through(&cf, &tunnel);
+    let via = through(cloudflared().as_deref(), &tunnel).ok_or("cloudflared is missing; reinstall the app")?;
     let target = format!("{user}@{tunnel}");
     let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
     args.extend(via.iter().map(String::as_str));
