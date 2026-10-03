@@ -967,7 +967,7 @@ async function loadMachines() {
 // sign-ins. Pasted once and kept in the system keyring; it is never shown again and never written to a file.
 function cloudflareSection() {
   const sec = el("div", "section"), body = el("div", "list");
-  sec.append(el("h2", null, "Cloudflare"), el("p", "sub", "For owners. The machines sit behind Cloudflare; with an API token this app can manage them for you."), body);
+  sec.append(el("h2", null, "Cloudflare"), el("p", "sub", "For owners. The machines sit behind the team's Cloudflare account, the one that owns aiwalkcorp.com (not your personal one). With an API token made in that account, this app adds machines and ends a removed person's sign-in. Only the owner who does those things needs one."), body);
   const paint = async () => {
     const st = await invoke("cf_state");
     if (st.connected) {
@@ -982,7 +982,12 @@ function cloudflareSection() {
       try { toast(await working(go, "Checking", () => invoke("cf_connect", { token: input.value }))); paint(); }
       catch (e) { msg.textContent = `Cloudflare did not take it: ${e}`; }
     };
-    body.replaceChildren(item("Not connected", "Create a token in the Cloudflare dashboard (My Profile, API Tokens) and paste it here. It goes to this computer's keyring only.", null, input, go), msg);
+    // what the token must be allowed to do, so nobody has to guess in Cloudflare's long list
+    const needs = el("details", "sub"), list = el("ul");
+    ["Account: Cloudflare Tunnel, Edit", "Account: Access: Apps and Policies, Edit", "Account: Access: Organizations, Identity Providers, and Groups, Edit",
+     "Account: Access: SSH Auditing, Edit", "Account: Access: Audit Logs, Read", "Zone aiwalkcorp.com: DNS, Edit"].forEach(t => list.append(el("li", null, t)));
+    needs.append(el("summary", null, "What the token needs"), list);
+    body.replaceChildren(item("Not connected", "Sign in to Cloudflare as the team's account, create a custom token (Manage Account, API Tokens) and paste it here. It goes to this computer's keyring only.", null, input, go), needs, msg);
   };
   paint();
   return sec;
