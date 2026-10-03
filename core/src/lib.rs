@@ -457,6 +457,29 @@ pub fn terms_version(text: &str) -> Option<u32> {
     text.lines().take(5).find_map(|l| l.trim().strip_prefix("<!-- terms version:")?.trim().strip_suffix("-->")?.trim().parse().ok())
 }
 
+/// The VERSION line near the top of a host tool in hosts/ (`VERSION = "1"` in Python, `VERSION=1` in bash), read the
+/// same way exo-status.py reads the installed copies, so the app and the machines compare like with like.
+pub fn host_tool_version(text: &str) -> Option<u32> {
+    text.lines().find_map(|l| {
+        let (_, v) = l.split_once('=').filter(|(k, _)| k.trim() == "VERSION")?;
+        v.split('#').next()?.trim().trim_matches(['"', '\'']).parse().ok()
+    })
+}
+
+/// One line for a machine's row: "Host tools: current", or which installed tools are older, newer or missing, from
+/// `found` (exo-status.py's "tools": name -> version or null; absent on a status page from before versions) and the
+/// versions this app ships.
+pub fn host_tools_line(found: &Value, shipped: &[(&str, u32)]) -> String {
+    if found.is_null() { return "Host tools: older than this app (the status page does not report versions yet)".into() }
+    let off: Vec<String> = shipped.iter().filter_map(|&(name, want)| match found[name].as_u64() {
+        None => Some(format!("{name} missing")),
+        Some(v) if v < want as u64 => Some(format!("{name} older")),
+        Some(v) if v > want as u64 => Some(format!("{name} newer than this app")),
+        _ => None,
+    }).collect();
+    if off.is_empty() { "Host tools: current".into() } else { format!("Host tools: {}", off.join(", ")) }
+}
+
 /// The title of the issue that records one person accepting a version; its author is who accepted.
 pub fn terms_title(version: u32) -> String { format!("Terms v{version} accepted") }
 
@@ -517,6 +540,19 @@ mod tests {
         assert_eq!(got, [Intern { login: "amy".into(), repos: vec![
             InternRepo { repo: "exo-book".into(), level: "write".into(), invite: None },
             InternRepo { repo: "exo-papers".into(), level: "read".into(), invite: Some(7) }] }]);
+    }
+
+    #[test]
+    fn host_tool_versions() {
+        assert_eq!(host_tool_version("#!/bin/bash\nset -e\nVERSION=3   # raise by hand\n"), Some(3));
+        assert_eq!(host_tool_version("x = 1\nVERSION = \"12\"\n"), Some(12));
+        assert_eq!(host_tool_version("#!/usr/bin/env python3\nprint(1)\n"), None);
+        let shipped = [("exo-status.py", 2), ("exo", 1), ("exo-desktop", 1)];
+        let f = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        assert_eq!(host_tools_line(&f(r#"{"exo-status.py":2,"exo":1,"exo-desktop":1}"#), &shipped), "Host tools: current");
+        assert_eq!(host_tools_line(&f(r#"{"exo-status.py":1,"exo":null,"exo-desktop":2}"#), &shipped),
+                   "Host tools: exo-status.py older, exo missing, exo-desktop newer than this app");
+        assert!(host_tools_line(&Value::Null, &shipped).contains("older"));
     }
 
     #[test]

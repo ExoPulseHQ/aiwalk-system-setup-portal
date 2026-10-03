@@ -20,6 +20,7 @@ import argparse, json, os, re, socket, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+VERSION = "1"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 FETCH_TIMEOUT = 15   # seconds per repo; a slow GitHub must not hold the page
 
 

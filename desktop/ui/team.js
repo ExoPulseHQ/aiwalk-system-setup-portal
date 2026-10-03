@@ -337,6 +337,7 @@ function machinesSection(machines, org, user) {
         ["Disk", `${gb(s.disk_free_gb)} free of ${gb(s.disk_gb)}`], ["System", `${s.os}, up ${Math.round(s.uptime_h / 24)} days, ${s.users} signed in`]];
       specs[host].replaceChildren(...d.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
       if (s.disk_free_gb != null && s.disk_free_gb < 20) specs[host].append(el("p", "warn", `Disk almost full: ${gb(s.disk_free_gb)} left.`));
+      if (s.host_tools) specs[host].append(hostTools(byHost[host], s.host_tools));
       if ((s.desktops || []).length) specs[host].append(desktopList(byHost[host], s.desktops, open));
       // a cluster reached through this machine (rooster through horse) comes in the same answer
       if (s.cluster) hosts.filter(x => x.via === host).forEach(x => clusterView(x.host, s.cluster));
@@ -344,6 +345,25 @@ function machinesSection(machines, org, user) {
     // a check that finished before these numbers arrived may still be asking for a sign-in
     if (lastState && [...live].some(h => lastState[h] !== "up")) { live.forEach(h => lastState[h] = "up"); showHelp(lastState); }
   };
+  // Whether the machine runs the exo, exo-status.py and exo-desktop this app carries; owners can copy them over.
+  const owner = org && (org.people[user] || {}).grants === null;
+  function hostTools(m, line) {
+    const r = el("div", "row"), msg = el("span", "sub");
+    r.append(el("span", null, line));
+    if (owner) {
+      const b = el("button", "small ghost", "Update host tools");
+      b.onclick = async e => {
+        e.stopPropagation(); msg.textContent = "";
+        const account = m.account || "ntk";
+        if (await ask(`Update host tools on ${m.host}?`, `The app copies exo, exo-status.py and exo-desktop into ~/.local/bin of ${account} and restarts the status page. Desktops and running work are left alone.`,
+          [["cancel", "Cancel"], ["ok", "Update host tools", true]]) !== "ok") return;
+        try { toast(await working(b, "Updating", () => invoke("update_host_tools", { tunnel: m.tunnel, user: account }))); status(); }
+        catch (err) { msg.textContent = err; }
+      };
+      r.append(b, msg);
+    }
+    return r;
+  }
   // A SLURM cluster: totals as meters, then each node and the queues. The reading is at most a minute old.
   function clusterView(host, c) {
     const sum = k => c.nodes.reduce((a, n) => a + (n[k] || 0), 0);

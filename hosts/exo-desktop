@@ -9,6 +9,7 @@
 #   exo-desktop start [N]     start display N, or the lowest free one; prints it
 #   exo-desktop stop N        stop display N
 set -euo pipefail
+VERSION=1   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 MAX=8   # ponytail: fixed cap per machine, so desktops cannot eat a training run's memory; per-machine setting if needed
 
 # "vncserver -list" prints a table; newer TigerVNC writes the display as "1", older as ":1"

@@ -14,6 +14,7 @@ for 5 seconds, so a page polling every 15 seconds costs a few /proc reads and on
 import json, os, shutil, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+VERSION = "1"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 PORT = 9101
 CACHE_SECONDS = 5
 CLUSTER = None          # ssh alias of a cluster this machine reaches, from --cluster
@@ -83,6 +84,23 @@ def static():
             "mem_gb": round(meminfo(read("/proc/meminfo")).get("MemTotal", 0) / 1048576, 1)}
 
 
+def version_of(text):
+    """The VERSION line near the top of a host tool (`VERSION = "1"` in Python, `VERSION=1` in bash) as a number;
+    0 for a tool from before versions. Read from the file, never by running it."""
+    for line in text.splitlines():
+        k, eq, v = line.partition("=")
+        if eq and k.strip() == "VERSION":
+            v = v.split("#")[0].strip().strip("\"'")
+            return int(v) if v.isdigit() else 0
+    return 0
+
+
+def tools(bindir=os.path.expanduser("~/.local/bin")):
+    """{name: version} of the host tools installed in ~/.local/bin; None for one that is missing."""
+    return {n: version_of(read(os.path.join(bindir, n))) if os.path.isfile(os.path.join(bindir, n)) else None
+            for n in ("exo-status.py", "exo", "exo-desktop")}
+
+
 _last = {"t": 0.0, "answer": None, "cpu": None}
 _lock = threading.Lock()
 
@@ -146,7 +164,7 @@ def answer():
                "disk_gb": round(disk.total / 1e9), "disk_free_gb": round(disk.free / 1e9),
                "uptime_h": round(float(read("/proc/uptime").split()[0] or 0) / 3600, 1),
                "users": len(set(users[::5])) if users else 0,
-               "desktops": desktops(ps), "cluster": cluster()}
+               "desktops": desktops(ps), "cluster": cluster(), "tools": tools()}
         _last.update(t=now, answer=ans, cpu=(busy, total))
         return ans
 
@@ -177,7 +195,16 @@ def selftest():
                       '{"last_update":1,"pending_by_partition":{"defq":2},"pending_job":7,"running_by_partition":{"defq":12},"running_job":27}\n')
     assert c["running"] == 27 and c["pending"] == 7 and c["nodes"][0] == {"name": "DGX-CN01", "cpu_used": 96, "cpu_total": 224,
         "gpu_used": 8, "gpu_total": 8, "state": "ALLOCATED", "reason": ""}, c
-    a = answer(); assert {"cpu", "threads", "mem_gb", "cpu_pct", "gpus", "disk_free_gb"} <= set(a) and 0 <= a["cpu_pct"] <= 100
+    assert version_of('#!/bin/bash\nVERSION=3   # raise by hand\n') == 3 and version_of('x = 1\nVERSION = "12"\n') == 12
+    assert version_of("#!/usr/bin/env python3\nprint(1)\n") == 0
+    import tempfile
+    with tempfile.TemporaryDirectory() as t:
+        open(os.path.join(t, "exo"), "w").write('VERSION = "2"\n')
+        open(os.path.join(t, "exo-desktop"), "w").write("#!/bin/bash\n")
+        assert tools(t) == {"exo-status.py": None, "exo": 2, "exo-desktop": 0}, tools(t)
+    here = os.path.dirname(os.path.abspath(__file__))
+    assert tools(here)["exo-status.py"] == int(VERSION), "this file's own VERSION line parses"
+    a = answer(); assert "tools" in a and {"cpu", "threads", "mem_gb", "cpu_pct", "gpus", "disk_free_gb"} <= set(a) and 0 <= a["cpu_pct"] <= 100
     assert answer() is a, "answers are reused within the cache window"
     print("exo-status: all checks passed")
 

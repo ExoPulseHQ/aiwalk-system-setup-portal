@@ -61,7 +61,9 @@ pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_
             // without a sign-in cloudflared would open a browser; the page asks for the sign-in instead
             if sh(&cf, &["access", "token", &format!("-app={url}")], 10).0 != 0 { return None }
             let (code, out) = sh(&cf, &["access", "curl", &url, "-s", "--max-time", "15"], 20);
-            (code == 0).then(|| serde_json::from_str::<serde_json::Value>(&out).ok()).flatten().map(|v| (host, v))
+            let mut v = serde_json::from_str::<serde_json::Value>(&out).ok().filter(|v| code == 0 && v.is_object())?;
+            v["host_tools"] = exo_core::host_tools_line(&v["tools"], &shipped()).into();   // the one line the opened row shows
+            Some((host, v))
         })
     }).collect();
     jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
@@ -217,6 +219,56 @@ pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Res
     } else { Err(if last.is_empty() { "The machine did not answer".into() } else { last }) }
 }
 
+// ---------------------------------------------------------------- host tools
+// exo, exo-status.py and exo-desktop live in the login account's ~/.local/bin on each machine. The app carries the
+// copies from hosts/ it was built with, so the Machines page can tell a machine still running an older one.
+
+const HOST_TOOLS: [(&str, &str); 3] = [("exo-status.py", include_str!("../../hosts/exo-status.py")),
+    ("exo", include_str!("../../hosts/exo")), ("exo-desktop", include_str!("../../hosts/exo-desktop"))];
+const END: &str = "EXO_HOST_TOOL_END";   // heredoc delimiter; a test checks no tool contains it
+
+fn shipped() -> Vec<(&'static str, u32)> { HOST_TOOLS.iter().map(|&(n, t)| (n, exo_core::host_tool_version(t).unwrap_or(0))).collect() }
+
+/// Restarts the status page with the command the account's crontab runs at boot (else the one running now), after
+/// stopping the process that listens on 9101, found by that listener's pid. Never `pkill -f exo-status`: the pattern
+/// would also match this ssh session's own command line on some machines and end it.
+const RESTART: &str = r#"
+listener() { ss -ltnpH | grep '127.0.0.1:9101 ' || true; }
+pid=$(listener | grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2)
+if [ -z "$pid" ] && [ -n "$(listener)" ]; then echo "Port 9101 belongs to another account; the status page was not restarted" >&2; exit 1; fi
+run=$(crontab -l 2>/dev/null | sed -n 's/^@reboot[[:space:]]*\(.*exo-status\.py.*\)$/\1/p' | head -n1)
+if [ -z "$run" ] && [ -n "$pid" ]; then run=$(ps -o args= -p "$pid"); fi
+if [ -z "$run" ]; then run="/usr/bin/python3 $HOME/.local/bin/exo-status.py"; fi
+if [ -n "$pid" ]; then kill "$pid"; for i in $(seq 40); do [ -z "$(listener)" ] && break; sleep 0.25; done; fi
+setsid nohup sh -c "$run" </dev/null >/dev/null 2>&1 &
+for i in $(seq 40); do [ -n "$(listener)" ] && break; sleep 0.25; done
+[ -n "$(listener)" ] || { echo "The status page did not start again: $run" >&2; exit 1; }
+"#;
+
+/// Copies the host tools this app carries to `user`'s ~/.local/bin on the machine over SSH through Cloudflare, then
+/// restarts the status page so it reports the new versions. Each file is written beside the old one and moved over it,
+/// so a running exo never reads half a file and ~/bin/exo, a symlink to ~/.local/bin/exo, keeps working. No sudo.
+#[tauri::command(async)]
+pub fn update_host_tools(tunnel: String, user: String) -> Result<String, String> {
+    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
+    let mut script = String::from("set -eu\nmkdir -p ~/.local/bin && cd ~/.local/bin\n");
+    for (name, text) in HOST_TOOLS {
+        script += &format!("cat > {name}.new <<'{END}'\n{text}{}{END}\nchmod 755 {name}.new && mv -f {name}.new {name}\n",
+                           if text.ends_with('\n') { "" } else { "\n" });
+    }
+    script += RESTART;
+    let via = through(&cf, &tunnel);
+    let target = format!("{user}@{tunnel}");
+    let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
+    args.extend(via.iter().map(String::as_str));
+    args.extend([target.as_str(), "bash -s"]);
+    let (code, out) = crate::sh_stdin("ssh", &args, Some(&script), 90);
+    let last = out.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or_default().to_string();
+    if code == 0 { Ok("Host tools updated and the status page restarted".into()) } else if last.contains("Permission denied") {
+        Err(format!("{user} on this machine did not accept this computer's key"))
+    } else { Err(if last.is_empty() { "The machine did not answer".into() } else { last }) }
+}
+
 /// Forgets this computer's Cloudflare Access sign-in for the team (every lab hostname and the team session), and
 /// closes desktop forwards. Called when the GitHub account changes, so the next connection signs in as the new one
 /// instead of riding the old person's sign-in for up to a day. Other Cloudflare files are left alone.
@@ -283,6 +335,12 @@ mod tests {
         for f in ours { assert!(!dir.join(f).exists(), "{f} should be gone") }
         for f in keep { assert!(dir.join(f).exists(), "{f} should stay") }
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn shipped_host_tools_have_versions_and_survive_the_heredoc() {
+        for (name, v) in super::shipped() { assert!(v > 0, "{name} has no VERSION line") }
+        for (name, text) in super::HOST_TOOLS { assert!(!text.lines().any(|l| l == super::END), "{name} contains the heredoc delimiter") }
     }
 
     #[test]
