@@ -3,7 +3,7 @@
 //! `pr_permissions` is the one read here that everyone gets.
 
 use crate::github;
-use exo_core::{merge_rights, org_access, org_query, permissions_rank, plan_access};
+use exo_core::{interns, merge_rights, org_access, org_query, permissions_rank, plan_access, Intern};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -13,11 +13,16 @@ pub struct Member { login: String, name: String, owner: bool }
 pub struct Invite { id: u64, login: String, owner: bool, created: String }
 
 #[derive(Serialize)]
-pub struct People { members: Vec<Member>, invites: Vec<Invite> }
+pub struct People { members: Vec<Member>, invites: Vec<Invite>, interns: Vec<Intern> }
+
+/// What an intern gets on invitation, all read: the app's repo (to download it), the requests repo (to read the
+/// terms, record acceptance and ask for more), the shared notes and the papers. Owners raise single repos later.
+const INTERN_REPOS: [&str; 4] = ["aiwalk-system-setup-portal", crate::REQUESTS, "exo-book", "exo-papers"];
 
 #[tauri::command(async)]
 pub fn org_people(org: String) -> Result<People, String> {
     let a = org_access(&github::graphql(&org_query(&org))?);
+    let interns = org_interns(&org, &a.people.keys().cloned().collect())?;
     let members = a.people.into_iter().map(|(login, p)| Member { name: p.name, owner: p.grants.is_none(), login }).collect();
     let invites = github::all(&format!("orgs/{org}/invitations"))?.iter().map(|i| Invite {
         id: i["id"].as_u64().unwrap_or(0),
@@ -25,7 +30,21 @@ pub fn org_people(org: String) -> Result<People, String> {
         owner: i["role"] == "admin",
         created: i["created_at"].as_str().unwrap_or("").chars().take(10).collect(),
     }).collect();
-    Ok(People { members, invites })
+    Ok(People { members, invites, interns })
+}
+
+/// Interns are not in the organisation, so only their repos know them: the org's outside collaborators, and every
+/// repo's outside collaborators and pending invitations, asked side by side.
+fn org_interns(org: &str, members: &std::collections::BTreeSet<String>) -> Result<Vec<Intern>, String> {
+    let outside = github::all(&format!("orgs/{org}/outside_collaborators"))?;
+    let repos: Vec<String> = github::all(&format!("orgs/{org}/repos"))?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+    let ask = |what: &str| std::thread::scope(|s| {
+        let jobs: Vec<_> = repos.iter().map(|r| s.spawn(move || github::all(&format!("repos/{org}/{r}/{what}")).map(|v| (r.clone(), v)))).collect();
+        jobs.into_iter().map(|j| j.join().unwrap()).collect::<Result<Vec<_>, String>>()
+    });
+    // with no outside collaborators there are no accepted repos to look for
+    let collaborators = if outside.is_empty() { vec![] } else { ask("collaborators?affiliation=outside")? };
+    Ok(interns(&outside, &collaborators, &ask("invitations")?, members))
 }
 
 /// Invites a GitHub account, as member or owner, already placed in `teams`.
@@ -38,6 +57,24 @@ pub fn invite(org: String, login: String, owner: bool, teams: Vec<String>) -> Re
     github::send("POST", &format!("orgs/{org}/invitations"), Some(serde_json::json!({
         "invitee_id": id, "role": if owner { "admin" } else { "direct_member" }, "team_ids": team_ids })))?;
     Ok(format!("Invited {login}. GitHub emails them; they join once they accept."))
+}
+
+/// Invites someone as an intern: repo invitations to `INTERN_REPOS`, no organisation invitation.
+#[tauri::command(async)]
+pub fn invite_intern(org: String, login: String) -> Result<String, String> {
+    let login = login.trim().trim_start_matches('@');
+    github::get(&format!("users/{login}")).map_err(|_| format!("There is no GitHub account called {login}"))?;
+    for r in INTERN_REPOS { github::send("PUT", &format!("repos/{org}/{r}/collaborators/{login}"), Some(serde_json::json!({ "permission": "pull" })))?; }
+    Ok(format!("Invited {login} as an intern, read on {}. GitHub emails one invitation per repo. You can then raise single repos for them in the access tree.", INTERN_REPOS.join(", ")))
+}
+
+/// Takes an intern off every repo of the organisation and cancels the repo invitations (repo, id) they have not accepted.
+#[tauri::command(async)]
+pub fn remove_intern(org: String, login: String, invites: Vec<(String, u64)>) -> Result<String, String> {
+    for (repo, id) in &invites { github::send("DELETE", &format!("repos/{org}/{repo}/invitations/{id}"), None)?; }
+    // someone who accepted nothing yet is no outside collaborator, and GitHub answers 404
+    if let Err(e) = github::send("DELETE", &format!("orgs/{org}/outside_collaborators/{login}"), None) { if !e.ends_with("(HTTP 404)") { return Err(e) } }
+    Ok(format!("{login} no longer has any repo of {org}"))
 }
 
 #[tauri::command(async)]

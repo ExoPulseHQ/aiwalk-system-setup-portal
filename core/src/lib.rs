@@ -458,6 +458,29 @@ pub fn terms_accepted(issues_json: &str) -> Option<(u32, String)> {
     }).max()
 }
 
+/// One repo an intern has, or is invited to: `invite` is the pending invitation's id, None once accepted.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct InternRepo { pub repo: String, pub level: String, pub invite: Option<u64> }
+
+/// Someone outside the organisation with grants on single repos (an intern), accepted or still invited.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Intern { pub login: String, pub repos: Vec<InternRepo> }
+
+/// One row per intern from GitHub's lists: `outside` the org's outside collaborators, `collaborators` and
+/// `invitations` per repo (a repo's outside collaborators and its pending invitations). Org `members` are left out:
+/// a member can also hold a repo invitation, and members are managed as members.
+pub fn interns(outside: &[Value], collaborators: &[(String, Vec<Value>)], invitations: &[(String, Vec<Value>)], members: &BTreeSet<String>) -> Vec<Intern> {
+    let mut by: BTreeMap<String, Vec<InternRepo>> = BTreeMap::new();
+    for o in outside { if let Some(l) = o["login"].as_str() { by.entry(l.into()).or_default(); } }
+    for (repo, rows) in collaborators { for c in rows { if let Some(l) = c["login"].as_str() {
+        by.entry(l.into()).or_default().push(InternRepo { repo: repo.clone(), level: c["role_name"].as_str().unwrap_or("read").into(), invite: None });
+    } } }
+    for (repo, rows) in invitations { for i in rows { if let Some(l) = i["invitee"]["login"].as_str() {
+        by.entry(l.into()).or_default().push(InternRepo { repo: repo.clone(), level: i["permissions"].as_str().unwrap_or("read").into(), invite: i["id"].as_u64() });
+    } } }
+    by.into_iter().filter(|(l, _)| !members.contains(l)).map(|(login, repos)| Intern { login, repos }).collect()
+}
+
 /// Whether release tag `tag` ("v0.3.0") is a later version than this app's `current` ("0.2.0"). Numbers compare as
 /// numbers, so 0.10.0 is later than 0.9.0; a tag that is not a version is never later.
 pub fn newer(tag: &str, current: &str) -> bool {
@@ -473,6 +496,17 @@ mod tests {
         assert!(!newer("v0.2.0", "0.2.0") && !newer("v0.1.0", "0.2.0") && !newer("nightly", "0.2.0") && !newer("", "0.2.0"));
     }
 
+
+    #[test]
+    fn interns_one_row_per_person() {
+        let j = |s: &str| serde_json::from_str::<Vec<Value>>(s).unwrap();
+        let collab = [("exo-book".to_string(), j(r#"[{"login":"amy","role_name":"write"}]"#))];
+        let inv = [("exo-papers".to_string(), j(r#"[{"id":7,"permissions":"read","invitee":{"login":"amy"}},{"id":8,"permissions":"write","invitee":{"login":"bob"}}]"#))];
+        let got = interns(&j(r#"[{"login":"amy"}]"#), &collab, &inv, &BTreeSet::from(["bob".to_string()]));
+        assert_eq!(got, [Intern { login: "amy".into(), repos: vec![
+            InternRepo { repo: "exo-book".into(), level: "write".into(), invite: None },
+            InternRepo { repo: "exo-papers".into(), level: "read".into(), invite: Some(7) }] }]);
+    }
 
     #[test]
     fn terms_versions_and_acceptances() {

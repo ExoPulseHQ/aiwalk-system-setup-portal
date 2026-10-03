@@ -731,21 +731,39 @@ async function peopleSection(org, user, teams, tree) {
   });
   sec.append(list);
 
+  // interns: outside the organisation, on single repos; one row per person, accepted and pending repos apart
+  if (p.interns.length) {
+    const ilist = el("div", "list");
+    const levels = rs => rs.map(r => `${r.level} on ${r.repo}`).join(", ");
+    p.interns.forEach(n => {
+      const has = n.repos.filter(r => r.invite == null), invited = n.repos.filter(r => r.invite != null);
+      const sub = [has.length && `Has ${levels(has)}`, invited.length && `Invited, not accepted yet: ${levels(invited)}`].filter(Boolean).join(". ");
+      const rm = el("button", "small ghost", "Remove");
+      rm.onclick = async () => {
+        if (await ask(`Remove ${n.login} from every repo of ${org}?`, "This removes them from every repo of the organisation and cancels their pending repo invitations. Copies already on their computer stay there.",
+            [["cancel", "Cancel"], ["rm", "Remove", true]]) === "rm")
+          act(() => invoke("remove_intern", { org, login: n.login, invites: invited.map(r => [r.repo, r.invite]) }), null, rm, "Removing")();
+      };
+      ilist.append(item(n.login, sub || "No repos", null, el("span", "tag", "Intern"), rm));
+    });
+    sec.append(el("h3", null, "Interns"), el("p", "sub", `Not in ${org}; they have single repos only.`), ilist);
+  }
+
   // invite: a GitHub username, a role, and the layers they start in; everyone also gets the shared team
   const form = el("div", "invite");
   form.append(el("h3", null, "Invite someone"));
   const who = el("input", "who"); who.placeholder = "Their GitHub username"; who.autocomplete = "off"; who.spellcheck = false;
   form.append(who);
 
-  let asOwner = false;
+  let role = "member";
   const seg = el("div", "segmented"); seg.setAttribute("role", "radiogroup"); seg.setAttribute("aria-label", "Role");
-  const roleBtn = (label, owner) => {
+  const roleBtn = (label, r) => {
     const b = el("button", null, label); b.type = "button"; b.setAttribute("role", "radio");
-    b.onclick = () => { asOwner = owner; paint(); };
+    b.onclick = () => { role = r; paint(); };
     return b;
   };
-  const memberBtn = roleBtn("Member", false), ownerBtn = roleBtn("Owner", true);
-  seg.append(memberBtn, ownerBtn);
+  const memberBtn = roleBtn("Member", "member"), ownerBtn = roleBtn("Owner", "owner"), internBtn = roleBtn("Intern (not in the organisation)", "intern");
+  seg.append(memberBtn, ownerBtn, internBtn);
   const roleRow = el("div", "field");
   roleRow.append(el("span", "label", "Role"), seg);
   form.append(roleRow);
@@ -775,20 +793,23 @@ async function peopleSection(org, user, teams, tree) {
   form.append(foot);
 
   function paint() {
-    memberBtn.setAttribute("aria-checked", String(!asOwner)); ownerBtn.setAttribute("aria-checked", String(asOwner));
+    [[memberBtn, "member"], [ownerBtn, "owner"], [internBtn, "intern"]].forEach(([b, r]) => b.setAttribute("aria-checked", String(role === r)));
+    const noTeams = role !== "member";
     tiles.querySelectorAll(".tile").forEach(tile => {
-      tile.disabled = asOwner;
-      tile.setAttribute("aria-pressed", String(!asOwner && chosenTeams.has(tile.dataset.slug)));
+      tile.disabled = noTeams;
+      tile.setAttribute("aria-pressed", String(!noTeams && chosenTeams.has(tile.dataset.slug)));
     });
-    ownerNote.textContent = asOwner ? "Owners open every repo, so they need no layers."
+    ownerNote.textContent = role === "owner" ? "Owners open every repo, so they need no layers."
+      : role === "intern" ? "Interns get read access to the app, the access requests, the shared notes and the papers, as repo invitations. Raise single repos for them in the access tree afterwards."
       : shared ? "Everyone also gets the shared notes and papers, and can ask the owners for more." : "";
   }
   paint();
 
   send.onclick = async () => {
     if (!who.value.trim()) return who.focus();
-    const picked = asOwner ? [] : [...chosenTeams, ...(shared ? [shared.slug] : [])];
-    await act(() => invoke("invite", { org, login: who.value, owner: asOwner, teams: picked }), null, send, "Inviting")();
+    if (role === "intern") return act(() => invoke("invite_intern", { org, login: who.value }), null, send, "Inviting")();
+    const picked = role === "owner" ? [] : [...chosenTeams, ...(shared ? [shared.slug] : [])];
+    await act(() => invoke("invite", { org, login: who.value, owner: role === "owner", teams: picked }), null, send, "Inviting")();
   };
   sec.append(form, msg);
   return sec;
@@ -1077,10 +1098,14 @@ async function loadTerms() {
     const who = await invoke("terms_everyone", { org: access.org });
     const sec = el("div", "section"), list = el("div", "list");
     sec.append(el("h2", null, "Who accepted"));
+    const accepted = a => a ? el("span", "perm " + (a.version >= t.version ? "p4" : "pending"), `Version ${a.version}, ${a.date}`) : el("span", "perm p0", "Not yet");
     Object.keys(access.people).sort((a, b) => access.people[a].name.localeCompare(access.people[b].name)).forEach(login => {
-      const a = who[login];
-      const tag = a ? el("span", "perm " + (a.version >= t.version ? "p4" : "pending"), `Version ${a.version}, ${a.date}`) : el("span", "perm p0", "Not yet");
-      list.append(item(access.people[login].name, `@${login}`, null, tag));
+      list.append(item(access.people[login].name, `@${login}`, null, accepted(who[login])));
+    });
+    // interns after the members; they record acceptance in the same requests repo
+    const interns = await invoke("org_people", { org: access.org }).then(p => p.interns, () => []);
+    interns.forEach(n => {
+      list.append(item(n.login, `@${n.login}, intern${n.repos.every(r => r.invite != null) ? ", invitation not accepted yet" : ""}`, null, accepted(who[n.login])));
     });
     sec.append(list); view.append(sec);
   }
