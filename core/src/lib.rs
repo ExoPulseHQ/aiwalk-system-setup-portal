@@ -196,6 +196,9 @@ pub struct Machine {
     pub personal: bool,
     /// The machine's Cloudflare Tunnel hostname, once its tunnel exists; members connect only through it.
     pub tunnel: Option<String>,
+    /// The machine's sshd accepts the short-lived certificates its Cloudflare Access application signs (hosts/ssh-cert.sh
+    /// ran there), so people sign in as themselves instead of with a key anyone on this computer could use.
+    pub cert: bool,
     /// GitHub teams whose members may connect because of this repo (`machines.teams`); core and the machine's own
     /// `machine-<host>` team come on top. The machine's Cloudflare Access policy lists the same teams.
     pub teams: Vec<String>,
@@ -214,9 +217,10 @@ pub fn machines(rules_json: &str) -> Vec<Machine> {
         let via = h["via"].as_str().map(String::from);
         let personal = h["personal"].as_bool().unwrap_or(false);
         let tunnel = h["tunnel"].as_str().filter(|t| !t.is_empty()).map(String::from);
+        let cert = h["cert"].as_bool().unwrap_or(false);
         h["repos"].as_object().into_iter().flatten().map(move |(repo, acct)| Machine {
             host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), ready,
-            note: note.clone(), sometimes, via: via.clone(), personal, tunnel: tunnel.clone(),
+            note: note.clone(), sometimes, via: via.clone(), personal, tunnel: tunnel.clone(), cert,
             teams: by_repo[repo].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect(),
         })
     }).collect()
@@ -282,7 +286,14 @@ pub fn ssh_block(machines: &[Machine], cloudflared: &str) -> String {
     for m in machines {
         let Some(t) = &m.tunnel else { continue };
         if !seen.insert(m.host.clone()) { continue }
-        out += &format!("Host {}\n  HostName {t}\n  ProxyCommand \"{cloudflared}\" access ssh --hostname %h\n", m.host);
+        if m.cert {
+            // the certificate lasts minutes, so ssh asks cloudflared for a fresh one before every connection (Match exec);
+            // the person's own keys are still tried after it, for as long as the machine keeps them
+            out += &format!("Match originalhost {} exec \"'{cloudflared}' access ssh-gen --hostname {t}\"\n  HostName {t}\n  ProxyCommand \"{cloudflared}\" access ssh --hostname %h\n  \
+                             IdentityFile ~/.cloudflared/{t}-cf_key\n  CertificateFile ~/.cloudflared/{t}-cf_key-cert.pub\n", m.host);
+        } else {
+            out += &format!("Host {}\n  HostName {t}\n  ProxyCommand \"{cloudflared}\" access ssh --hostname %h\n", m.host);
+        }
     }
     out + "# <<< aIwalk System Setup\n"
 }
@@ -599,6 +610,9 @@ mod tests {
     fn ssh_block_replaces_only_its_own_lines() {
         let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "tunnel": "ssh-host-20.example.com"},
             {"host": "kd240", "repos": {"firmware_layer": "firmware"}}]}}"#;
+        let signed = ssh_block(&machines(&rules.replace(r#""tunnel": "ssh-host-20"#, r#""cert": true, "tunnel": "ssh-host-20"#)), "/opt/cloud flared");
+        assert!(signed.contains(r#"Match originalhost host-20 exec "'/opt/cloud flared' access ssh-gen --hostname ssh-host-20.example.com""#)
+            && signed.contains("CertificateFile ~/.cloudflared/ssh-host-20.example.com-cf_key-cert.pub") && !signed.contains("Host host-20"), "{signed}");
         let block = ssh_block(&machines(rules), "/opt/cloudflared");
         assert_eq!(block.matches("Host ").count(), 1, "one alias per tunnelled machine: {block}");
         assert!(block.contains("HostName ssh-host-20.example.com") && block.contains("\"/opt/cloudflared\" access ssh --hostname %h"));

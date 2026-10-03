@@ -12,6 +12,20 @@ use std::time::{Duration, Instant};
 
 fn cloudflared() -> Option<String> { on_path("cloudflared").map(|p| p.to_string_lossy().into_owned()) }
 
+/// ssh options that reach `tunnel` through Cloudflare. Where the machine's Access application signs SSH certificates,
+/// a fresh one is fetched (they last minutes) and offered first, so the machine's log names the person; where it
+/// does not, or the machine does not trust them yet, ssh goes on to the person's own keys.
+fn through(cf: &str, tunnel: &str) -> Vec<String> {
+    let mut o = vec!["-o".to_string(), format!("ProxyCommand=\"{cf}\" access ssh --hostname %h")];
+    let key = home().join(".cloudflared").join(format!("{tunnel}-cf_key"));
+    let cert = std::path::PathBuf::from(format!("{}-cert.pub", key.display()));
+    let fresh = std::fs::metadata(&cert).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e < Duration::from_secs(120)));
+    if fresh || (sh(cf, &["access", "ssh-gen", "--hostname", tunnel], 20).0 == 0 && cert.exists()) {
+        o.extend(["-o".into(), format!("IdentityFile={}", key.display()), "-o".into(), format!("CertificateFile={}", cert.display())]);
+    }
+    o
+}
+
 /// "no-tunnel" (none set up yet), "no-cloudflared", "sign-in" (no Cloudflare sign-in on this computer yet),
 /// "up" (the machine's SSH answered through the tunnel), "down" (it did not).
 fn state(tunnel: Option<&str>) -> &'static str {
@@ -138,8 +152,8 @@ pub fn open_forward(host: String, tunnel: String, user: String, display: u8, soc
     let local = free_port(15900 + display as u16);
     let mut child = crate::cmd("ssh")
         .args(["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
-               "-o", "StrictHostKeyChecking=accept-new", "-o", &format!("ProxyCommand=\"{cf}\" access ssh --hostname %h"),
-               "-L", &format!("127.0.0.1:{local}:{target}"), &format!("{user}@{tunnel}")])
+               "-o", "StrictHostKeyChecking=accept-new"]).args(through(&cf, &tunnel))
+        .args(["-L", &format!("127.0.0.1:{local}:{target}"), &format!("{user}@{tunnel}")])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     let addr: SocketAddr = ([127, 0, 0, 1], local).into();
     let start = Instant::now();
@@ -191,9 +205,12 @@ pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Res
     if action != "start" && action != "stop" { return Err(format!("unknown action {action}")) }
     let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
     let arg = if display == 0 { String::new() } else { display.to_string() };
-    let (code, out) = sh("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new",
-        "-o", &format!("ProxyCommand=\"{cf}\" access ssh --hostname %h"), &format!("{user}@{tunnel}"),
-        &format!("~/.local/bin/exo-desktop {action} {arg}")], 60);
+    let via = through(&cf, &tunnel);
+    let (target, run) = (format!("{user}@{tunnel}"), format!("~/.local/bin/exo-desktop {action} {arg}"));
+    let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
+    args.extend(via.iter().map(String::as_str));
+    args.extend([target.as_str(), run.as_str()]);
+    let (code, out) = sh("ssh", &args, 60);
     let last = out.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or_default().to_string();
     if code == 0 { Ok(last) } else if last.contains("Permission denied") {
         Err(format!("{user} on this machine did not accept this computer's key"))
