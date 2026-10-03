@@ -101,3 +101,31 @@ pub fn cf_connect(token: String) -> Result<String, String> {
 
 #[tauri::command(async)]
 pub fn cf_forget() { store::forget() }
+
+/// Ends every Cloudflare Access session of the person whose GitHub account has the number `github_id`: they are
+/// signed out of the machines at once instead of when their sign-in runs out (up to 24 hours). Access keeps the
+/// GitHub account number with each identity, so the person is found by it, not by guessing an email.
+/// Ok(true) when sessions were ended, Ok(false) when this person never signed in to the machines.
+pub fn end_sessions(github_id: u64) -> Result<bool, String> {
+    let users = api("GET", "access/users?per_page=100", None)?;
+    for u in users.as_array().into_iter().flatten() {
+        let Some(id) = u["id"].as_str() else { continue };
+        let Ok(seen) = api("GET", &format!("access/users/{id}/last_seen_identity"), None) else { continue };
+        if seen["id"].as_u64() != Some(github_id) { continue }
+        let email = seen["email"].as_str().or(u["email"].as_str()).ok_or("Cloudflare has no email for this person")?;
+        api("POST", "access/organizations/revoke_user", Some(serde_json::json!({ "email": email })))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// What removing someone says about their machine sign-in, for the owner who removed them. Never fails the removal.
+pub fn after_removal(github_id: Option<u64>) -> &'static str {
+    let Some(id) = github_id else { return "" };
+    if store::load().is_none() { return " Their sign-in to the machines runs out by itself within 24 hours; connect Cloudflare on the Machines page to end it at once next time." }
+    match end_sessions(id) {
+        Ok(true) => " Their sign-in to the machines is ended.",
+        Ok(false) => " They had never signed in to the machines.",
+        Err(_) => " Their sign-in to the machines could not be ended (Cloudflare refused); it runs out by itself within 24 hours.",
+    }
+}

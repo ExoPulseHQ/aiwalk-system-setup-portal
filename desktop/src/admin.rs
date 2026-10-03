@@ -74,7 +74,8 @@ pub fn remove_intern(org: String, login: String, invites: Vec<(String, u64)>) ->
     for (repo, id) in &invites { github::send("DELETE", &format!("repos/{org}/{repo}/invitations/{id}"), None)?; }
     // someone who accepted nothing yet is no outside collaborator, and GitHub answers 404
     if let Err(e) = github::send("DELETE", &format!("orgs/{org}/outside_collaborators/{login}"), None) { if !e.ends_with("(HTTP 404)") { return Err(e) } }
-    Ok(format!("{login} no longer has any repo of {org}"))
+    let id = github::get(&format!("users/{login}")).ok().and_then(|u| u["id"].as_u64());
+    Ok(format!("{login} no longer has any repo of {org}.{}", crate::cloudflare::after_removal(id)))
 }
 
 #[tauri::command(async)]
@@ -89,10 +90,14 @@ pub fn set_role(org: String, login: String, owner: bool) -> Result<String, Strin
     Ok(format!("{login} is now {}", if owner { "an owner" } else { "a member" }))
 }
 
-/// Takes `login` out of the organisation: every team and repo grant goes with it. Their copies stay where they are.
+/// Takes `login` out of the organisation: every team and repo grant goes with it, and their sign-in to the machines
+/// is ended when Cloudflare is connected. Their copies stay where they are.
 #[tauri::command(async)]
 pub fn remove_member(org: String, login: String) -> Result<String, String> {
-    github::send("DELETE", &format!("orgs/{org}/memberships/{login}"), None).map(|_| format!("{login} left the organisation"))
+    // their GitHub number, read before they are gone: Cloudflare knows people by it
+    let id = github::get(&format!("users/{login}")).ok().and_then(|u| u["id"].as_u64());
+    github::send("DELETE", &format!("orgs/{org}/memberships/{login}"), None)?;
+    Ok(format!("{login} left the organisation.{}", crate::cloudflare::after_removal(id)))
 }
 
 /// Gives `login` exactly `level` (0 none, 1 read, 2 write) on `repo`, through the repo's own team where it has one.
