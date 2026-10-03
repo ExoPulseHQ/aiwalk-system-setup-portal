@@ -23,8 +23,9 @@ fn kind() -> &'static str {
 fn pattern() -> Option<&'static str> {
     Some(match (kind(), std::env::consts::ARCH) {
         ("windows", _) => "*_x64-setup.exe",
-        ("mac", "aarch64") => "*_aarch64.dmg",
-        ("mac", _) => "*_x64.dmg",
+        // the app bundle itself, packed: it replaces the installed one in place, no disk image to drag from
+        ("mac", "aarch64") => "*_aarch64.app.tar.gz",
+        ("mac", _) => "*_x64.app.tar.gz",
         ("appimage", _) => "*_amd64.AppImage",
         ("deb", _) => "*_amd64.deb",
         _ => return None,
@@ -54,9 +55,33 @@ pub fn update_install(app: tauri::AppHandle, tag: String) -> Result<String, Stri
     match kind() {
         // Tauri's NSIS installer: /P shows progress only, /R starts the app again when done
         "windows" => { cmd(&file).args(["/P", "/R"]).spawn().map_err(|e| e.to_string())?; app.exit(0); Ok("Installing".into()) }
-        // ponytail: the disk image opens and the person drags the app over the old one; swap the .app in place
-        // (from the .app.tar.gz asset) when that one manual step is worth removing
-        "mac" => { crate::open_url(&f); Ok(format!("{tag} is open: drag the app onto Applications, then start it again")) }
+        "mac" => {
+            // .../aIwalk System Setup.app/Contents/MacOS/aiwalk-setup: the bundle is two folders above the program's folder
+            let bundle = crate::here().ancestors().nth(2).map(std::path::PathBuf::from).filter(|p| p.extension().is_some_and(|e| e == "app"))
+                .ok_or("This copy is not inside an .app, so it cannot replace itself; install the new one from the Releases page")?;
+            let parent = bundle.parent().ok_or("The app has no folder around it")?;
+            // unpacked next to the installed app, so swapping is a rename on one disk; the old one goes last
+            let stage = parent.join(format!(".aiwalk-update-{tag}"));
+            let _ = std::fs::remove_dir_all(&stage);
+            std::fs::create_dir_all(&stage).map_err(|e| format!("Could not write to {}: {e}. Move the app to a folder you own, or install from the Releases page.", parent.display()))?;
+            let (code, out) = sh("tar", &["-xzf", &f, "-C", &stage.to_string_lossy()], 300);
+            let fresh = std::fs::read_dir(&stage).ok().and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "app")));
+            let Some(fresh) = fresh.filter(|_| code == 0) else {
+                let _ = std::fs::remove_dir_all(&stage);
+                return Err(format!("The download could not be unpacked: {}", out.lines().last().unwrap_or("no app inside")))
+            };
+            let old = stage.join("old.app");
+            std::fs::rename(&bundle, &old).map_err(|e| format!("Could not move the installed app aside: {e}"))?;
+            if let Err(e) = std::fs::rename(&fresh, &bundle) {
+                let _ = std::fs::rename(&old, &bundle);   // put the working one back
+                let _ = std::fs::remove_dir_all(&stage);
+                return Err(format!("Could not put the new app in place: {e}"))
+            }
+            let _ = std::fs::remove_dir_all(&stage);
+            cmd("open").arg("-n").arg(&bundle).spawn().map_err(|e| e.to_string())?;
+            app.exit(0);
+            Ok("Restarting".into())
+        }
         "appimage" => {
             let target = std::path::PathBuf::from(std::env::var_os("APPIMAGE").unwrap_or_default());
             let fresh = target.with_extension("new");
