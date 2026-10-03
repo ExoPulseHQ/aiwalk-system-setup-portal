@@ -538,11 +538,20 @@ function signInView(error, adding) {
   const code = el("p", "sub"), btn = el("button", null, "Sign in with GitHub");
   btn.onclick = async () => {
     code.textContent = "";
+    let got = false;
     const stop = await listen("gh-code", e => {
-      code.replaceChildren("Enter this code on the GitHub page that just opened, then approve: ", el("strong", "cmd", e.payload));
+      got = true;
+      // shown and copyable: gh copies it too, but a button does not depend on that having worked
+      const copy = el("button", "small ghost", "Copy");
+      copy.style.marginLeft = "8px";
+      copy.onclick = () => navigator.clipboard.writeText(e.payload).then(() => toast(`Copied ${e.payload}`), () => toast(e.payload));
+      code.replaceChildren("Enter this code on the GitHub page that just opened, then approve. It is already copied, so pasting works: ",
+        el("strong", "cmd", e.payload), copy);
     });
+    // until the code is found, whatever gh says is shown as it is
+    const stopLine = await listen("gh-line", e => { if (!got) code.textContent = e.payload; });
     const ok = await working(btn, "Step 1 of 2: waiting for GitHub", () => invoke("sign_in"));
-    stop();
+    stop(); stopLine();
     if (ok) { labSignInNext = true; loadTeam(); } else code.textContent = "Sign-in was not finished. Try again.";
   };
   box.append(btn, code);

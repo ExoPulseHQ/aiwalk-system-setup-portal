@@ -444,8 +444,40 @@ pub fn terms_accepted(issues_json: &str) -> Option<(u32, String)> {
     }).max()
 }
 
+/// A line of gh's output without terminal colour codes.
+pub fn plain(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' { for d in chars.by_ref() { if d.is_ascii_alphabetic() { break } } } else { out.push(c) }
+    }
+    out.trim().to_string()
+}
+
+/// GitHub's one-time device code (XXXX-XXXX) wherever it sits in a line of gh's output: found by its shape, so
+/// neither gh's wording nor colour codes around it matter.
+pub fn device_code(line: &str) -> Option<String> {
+    let line = plain(line);
+    let ok = |s: &str| s.len() == 4 && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')).find_map(|w| {
+        let (a, b) = w.split_once('-')?;
+        (ok(a) && ok(b)).then(|| w.to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn device_codes_are_found_by_shape() {
+        assert_eq!(device_code("! First copy your one-time code: 1A2B-C3D4"), Some("1A2B-C3D4".into()));
+        // gh 2.102 copies the code itself and words it this way; the old "code: " match missed it
+        assert_eq!(device_code("! One-time code (9F3K-22QT) copied to clipboard"), Some("9F3K-22QT".into()));
+        assert_eq!(device_code("\u{1b}[0;33m!\u{1b}[0m First copy your one-time code: \u{1b}[0;1;39mWXYZ-0987\u{1b}[0m\r"), Some("WXYZ-0987".into()));
+        assert_eq!(device_code("Open this URL to continue in your web browser: https://github.com/login/device"), None);
+        assert_eq!(device_code("non-interactive sign-in, git-protocol https"), None);
+        assert_eq!(plain("\u{1b}[1mPress Enter\u{1b}[0m to open  "), "Press Enter to open");
+    }
+
     #[test]
     fn terms_versions_and_acceptances() {
         assert_eq!(terms_version("<!-- terms version: 3 -->\n# Terms"), Some(3));

@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exo_core::{
-    build_tree, machines, parse_gh_status, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
+    build_tree, device_code, machines, parse_gh_status, plain, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, repo_grants, repos_query, request_body,
     vault_repos, visible_to, Machine, Node, Person, Team, RULES_PATHS,
 };
 use serde::Serialize;
@@ -367,14 +367,24 @@ fn sign_in(app: tauri::AppHandle) -> bool {
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return false };
     // answers "Press Enter to open github.com in your browser" ahead of time
     let _ = child.stdin.take().unwrap().write_all(b"\n");
-    // gh writes the code to stderr
-    for line in BufReader::new(child.stderr.take().unwrap()).lines().map_while(Result::ok) {
-        if let Some(code) = line.split("code: ").nth(1) {
-            let _ = app.emit("gh-code", code.trim());
+    // gh prints the one-time code and, without a terminal, the URL to open. Both streams are read (which one it uses
+    // is gh's business) and every line goes to the page too, so whatever gh says is seen even if the code is missed.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let out = child.stdout.take().unwrap();
+    let tx2 = tx.clone();
+    std::thread::spawn(move || for l in BufReader::new(out).lines().map_while(Result::ok) { let _ = tx2.send(l); });
+    let err = child.stderr.take().unwrap();
+    std::thread::spawn(move || for l in BufReader::new(err).lines().map_while(Result::ok) { let _ = tx.send(l); });
+    for line in rx {
+        let line = plain(&line);
+        if line.is_empty() { continue }
+        match device_code(&line) {
+            Some(code) => { let _ = app.emit("gh-code", code); }
+            None => { let _ = app.emit("gh-line", &line); }
         }
         // without a terminal gh only prints the URL, so open it ourselves
-        if let Some(url) = line.split("browser: ").nth(1) {
-            open_url(url.trim());
+        if line.contains("Open this URL") {
+            if let Some(url) = line.split_whitespace().find(|w| w.starts_with("https://")) { open_url(url); }
         }
     }
     let ok = child.wait().is_ok_and(|s| s.success());
