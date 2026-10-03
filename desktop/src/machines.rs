@@ -55,18 +55,24 @@ pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_
 
 /// Signs this computer in to Cloudflare Access for `tunnel`: a browser opens for the GitHub sign-in.
 #[tauri::command(async)]
-pub fn access_login(tunnels: Vec<String>) -> Result<String, String> {
+pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>) -> Result<String, String> {
+    use tauri::Emitter;
+    let name = |t: &str| t.split('.').next().unwrap_or(t).trim_start_matches("ssh-").to_string();
+    // "lab-progress": (machines done, machines in all, the one being signed in to now)
+    let tell = |done: usize, now: &str| { let _ = app.emit("lab-progress", (done, tunnels.len(), now)); };
     let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
     // each machine is its own Access app with its own token. The first sign-in may open the browser; after it,
     // cloudflared trades the team sign-in for the others' tokens without one. Only machines the person may reach
     // are passed in: for any other, cloudflared would open the browser on a refusal and wait.
     let mut failed = vec![];
     for (i, tunnel) in tunnels.iter().enumerate() {
+        tell(i, &name(tunnel));
         if has_token(&cf, tunnel) && has_token(&cf, &tunnel.replacen("ssh-", "status-", 1)) { continue }
         let (code, _) = sh(&cf, &["access", "login", &format!("https://{tunnel}")], if i == 0 { 300 } else { 60 });
-        if code != 0 { failed.push(tunnel.split('.').next().unwrap_or(tunnel).trim_start_matches("ssh-").to_string()); continue }
+        if code != 0 { failed.push(name(tunnel)); continue }
         let _ = sh(&cf, &["access", "login", &format!("https://{}", tunnel.replacen("ssh-", "status-", 1))], 60);
     }
+    tell(tunnels.len(), "");
     if failed.is_empty() { Ok("Signed in: the machines know you are on the team".into()) }
     else { Err(format!("Sign-in was not finished for {}", failed.join(", "))) }
 }

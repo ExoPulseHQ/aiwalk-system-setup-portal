@@ -67,8 +67,19 @@ function labLine(s) {
   line.append(el("span", "label", "Machines"), state, msg);
   const step2 = async b => {
     msg.textContent = "";
+    // the machines are signed in to one after another: a ring fills as each one is done
+    const ring = el("span", "ring"), count = el("span");
+    const show = (done, total, now) => {
+      ring.style.setProperty("--p", total ? 100 * done / total : 0);
+      ring.title = `${done} of ${total} machines signed in`;
+      count.textContent = now ? ` ${done} of ${total}, now ${now}` : ` ${done} of ${total}`;
+    };
+    show(0, tunnels.length, "");
+    state.className = "method m-off"; state.replaceChildren(ring, count);
+    const stop = await listen("lab-progress", e => show(...e.payload));
     try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels })); }
     catch (e) { msg.textContent = e; }
+    stop();
     window.dispatchEvent(new Event("lab-signed-in"));
     paint();
   };

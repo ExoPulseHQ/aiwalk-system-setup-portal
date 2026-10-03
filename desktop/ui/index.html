@@ -194,6 +194,10 @@
   @media (prefers-reduced-motion: reduce) { #topline.on::before { width: 100%; animation: breathe 2s ease-in-out infinite; } }
   @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
   @keyframes breathe { 50% { opacity: .35; } }
+  /* how many of the machines are signed in: a ring that fills clockwise, --p in percent */
+  .ring { --p: 0; width: 14px; height: 14px; border-radius: 50%; display: inline-block; vertical-align: -2px; flex: none;
+          background: conic-gradient(var(--purple) calc(var(--p) * 1%), var(--line) 0);
+          -webkit-mask: radial-gradient(farthest-side, transparent 52%, #000 54%); mask: radial-gradient(farthest-side, transparent 52%, #000 54%); }
   .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; vertical-align: -2px; flex: none; }
   @media (prefers-reduced-motion: no-preference) { .spinner { animation: turn .8s linear infinite; } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation: breathe 1.6s ease-in-out infinite; } }
