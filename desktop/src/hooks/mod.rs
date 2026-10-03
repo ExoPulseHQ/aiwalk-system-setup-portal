@@ -12,6 +12,8 @@
 
 #![allow(dead_code)]   // the helpers below are for the hooks, which land one file at a time
 
+mod writing_style_reminder;
+
 use serde_json::Value;
 use std::io::Read;
 use std::path::PathBuf;
@@ -62,6 +64,7 @@ pub fn main(args: &[String]) -> i32 {
         "skills_registry_reminder" => skills_registry_reminder::run(&stdin),
         "slide_layout_reminder" => slide_layout_reminder::run(&stdin),
         "training_run_reminder" => training_run_reminder::run(&stdin),
+        "writing_style_reminder" => writing_style_reminder::run(&stdin),
         _ => { eprintln!("aiwalk-setup hook: no hook called {name}"); return 2 }
     };
     #[allow(unreachable_code)]
@@ -69,4 +72,4 @@ pub fn main(args: &[String]) -> i32 {
 }
 
 /// The hooks this build runs, for `--can` and for whoever writes the vault's settings.json.
-pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder"];
+pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder", "writing_style_reminder"];
