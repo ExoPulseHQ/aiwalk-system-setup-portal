@@ -1,7 +1,7 @@
 //! Machines through Cloudflare: members never reach a machine's address directly
 //! (Machine_Login_Identity_Summary §二). Access lets in members of the GitHub org; the tunnel carries SSH.
 
-use crate::{home, on_path, sh};
+use crate::{home, sh};
 use exo_core::{ssh_block, with_ssh_block, Machine};
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -10,46 +10,33 @@ use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-fn cloudflared() -> Option<String> { on_path("cloudflared").map(|p| p.to_string_lossy().into_owned()) }
-
-/// The ProxyCommand option that carries ssh to `tunnel`: this app itself (`--ssh-proxy`, access.rs) when this
-/// computer holds a usable Access token for it, else cloudflared; None with neither. ssh's own config keeps cloudflared.
-fn proxy(cf: Option<&str>, tunnel: &str) -> Option<String> {
-    let own = crate::access::token(tunnel).ok().and(std::env::current_exe().ok())
-        .map(|e| e.to_string_lossy().replace('%', "%%")).filter(|e| !e.contains('"'));   // % is ssh's token marker
-    match (own, cf) {
-        (Some(exe), _) => Some(format!("ProxyCommand=\"{exe}\" --ssh-proxy %h")),
-        (None, Some(cf)) => Some(format!("ProxyCommand=\"{cf}\" access ssh --hostname %h")),
-        (None, None) => None,
-    }
+/// This program as ssh sees it in a ProxyCommand. None when its path cannot be written there.
+fn app() -> Option<String> {
+    crate::own_appimage().or_else(|| std::env::current_exe().ok()).map(|e| e.to_string_lossy().into_owned()).filter(|e| !e.contains('"'))
 }
 
-/// ssh options that reach `tunnel` through Cloudflare; None when neither this app nor cloudflared can. Where the
-/// machine's Access application signs SSH certificates, a fresh one is fetched (they last minutes; the app's own
-/// request first, cloudflared's ssh-gen if that fails) and offered first, so the machine's log names the person;
-/// where it does not, or the machine does not trust them yet, ssh goes on to the person's own keys.
-fn through(cf: Option<&str>, tunnel: &str) -> Option<Vec<String>> {
-    let mut o = vec!["-o".to_string(), proxy(cf, tunnel)?];
+/// ssh options that reach `tunnel` through Cloudflare, carried by this app itself (`--ssh-proxy`, access.rs).
+/// Where the machine's Access application signs SSH certificates, a fresh one is fetched (they last minutes) and
+/// offered first, so the machine's log names the person; where it does not, or the machine does not trust them yet,
+/// ssh goes on to the person's own keys.
+fn through(tunnel: &str) -> Option<Vec<String>> {
+    let mut o = vec!["-o".to_string(), format!("ProxyCommand=\"{}\" --ssh-proxy %h", app()?.replace('%', "%%"))];   // % is ssh's token marker
     let key = home().join(".cloudflared").join(format!("{tunnel}-cf_key"));
     let cert = std::path::PathBuf::from(format!("{}-cert.pub", key.display()));
-    let fresh = std::fs::metadata(&cert).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e < Duration::from_secs(120)));
-    if fresh || crate::access::ssh_cert(tunnel).is_ok()
-        || (cf.is_some_and(|cf| sh(cf, &["access", "ssh-gen", "--hostname", tunnel], 20).0 == 0) && cert.exists()) {
+    if crate::access::ssh_cert_if_stale(tunnel).is_ok() {
         o.extend(["-o".into(), format!("IdentityFile={}", key.display()), "-o".into(), format!("CertificateFile={}", cert.display())]);
     }
     Some(o)
 }
 
-/// "no-tunnel" (none set up yet), "no-cloudflared", "sign-in" (no Cloudflare sign-in on this computer yet),
+/// "no-tunnel" (none set up yet), "sign-in" (no Cloudflare sign-in on this computer yet),
 /// "up" (the machine's SSH answered through the tunnel), "down" (it did not).
 fn state(tunnel: Option<&str>) -> &'static str {
     let Some(t) = tunnel else { return "no-tunnel" };
-    let cf = cloudflared();
-    let Some(proxy) = proxy(cf.as_deref(), t) else { return "no-cloudflared" };
-    // only probe with a sign-in already here: otherwise cloudflared would open a browser on its own
-    if !proxy.contains("--ssh-proxy") && cf.is_some_and(|cf| sh(&cf, &["access", "token", &format!("-app=https://{t}")], 10).0 != 0) { return "sign-in" }
+    if crate::access::token(t).is_err() { return "sign-in" }
+    let Some(app) = app() else { return "down" };
     let (_, out) = sh("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", &proxy, &format!("probe@{t}"), "true"], 30);
+        "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", &format!("ProxyCommand=\"{}\" --ssh-proxy %h", app.replace('%', "%%")), &format!("probe@{t}"), "true"], 30);
     // sshd asking who we are means the whole path works; it refuses "probe", which is fine
     if out.contains("Permission denied") || out.contains("Too many authentication failures") { "up" } else { "down" }
 }
@@ -67,18 +54,10 @@ pub fn reachable(machines: Vec<(String, Option<String>)>) -> BTreeMap<String, &'
 /// Cloudflare can take several seconds, so each gets 15.
 #[tauri::command(async)]
 pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_json::Value> {
-    let cf = cloudflared();
     let jobs: Vec<_> = tunnels.into_iter().map(|(host, tunnel)| {
-        let cf = cf.clone();
         std::thread::spawn(move || {
             let url = format!("https://{}/", tunnel.replacen("ssh-", "status-", 1));
-            // the app's own request first (access.rs); cloudflared when that fails
-            if let Some(v) = crate::access::get(&url).ok().and_then(|b| serde_json::from_str(&b).ok()) { return Some((host, v)) }
-            let cf = cf?;
-            // without a sign-in cloudflared would open a browser; the page asks for the sign-in instead
-            if sh(&cf, &["access", "token", &format!("-app={url}")], 10).0 != 0 { return None }
-            let (code, out) = sh(&cf, &["access", "curl", &url, "-s", "--max-time", "15"], 20);
-            let mut v = serde_json::from_str::<serde_json::Value>(&out).ok().filter(|v| code == 0 && v.is_object())?;
+            let mut v = crate::access::get(&url).ok().and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok()).filter(|v| v.is_object())?;
             v["host_tools"] = exo_core::host_tools_line(&v["tools"], &shipped()).into();   // the one line the opened row shows
             Some((host, v))
         })
@@ -93,32 +72,28 @@ pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>) -> Result<Strin
     let name = |t: &str| t.split('.').next().unwrap_or(t).trim_start_matches("ssh-").to_string();
     // "lab-progress": (machines done, machines in all, the one being signed in to now)
     let tell = |done: usize, now: &str| { let _ = app.emit("lab-progress", (done, tunnels.len(), now)); };
-    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
-    // each machine is its own Access app with its own token. The first sign-in may open the browser; after it,
-    // cloudflared trades the team sign-in for the others' tokens without one. Only machines the person may reach
-    // are passed in: for any other, cloudflared would open the browser on a refusal and wait.
+    // each machine is its own Access app with its own token. The first sign-in may open the browser; after it the
+    // team sign-in it leaves here is traded for the others' tokens without one. Only machines the person may reach
+    // are passed in: for any other, the browser would open on a refusal and this would wait.
     let mut failed = vec![];
     for (i, tunnel) in tunnels.iter().enumerate() {
         tell(i, &name(tunnel));
-        if has_token(&cf, tunnel) && has_token(&cf, &tunnel.replacen("ssh-", "status-", 1)) { continue }
-        let (code, _) = sh(&cf, &["access", "login", &format!("https://{tunnel}")], if i == 0 { 300 } else { 60 });
-        if code != 0 { failed.push(name(tunnel)); continue }
-        let _ = sh(&cf, &["access", "login", &format!("https://{}", tunnel.replacen("ssh-", "status-", 1))], 60);
+        if crate::access::sign_in(tunnel).is_err() { failed.push(name(tunnel)); continue }
+        // the status page is usually the same application; where it is its own, it gets its token too
+        let _ = crate::access::sign_in(&tunnel.replacen("ssh-", "status-", 1));
     }
     tell(tunnels.len(), "");
     if failed.is_empty() { Ok("Signed in: the machines know you are on the team".into()) }
     else { Err(format!("Sign-in was not finished for {}", failed.join(", "))) }
 }
 
-fn has_token(cf: &str, host: &str) -> bool { sh(cf, &["access", "token", &format!("-app=https://{host}")], 10).0 == 0 }
-
 fn ssh_config() -> PathBuf { home().join(".ssh/config") }
 
 /// Whether ~/.ssh/config already holds exactly the aliases the app would write.
 #[tauri::command(async)]
 pub fn ssh_status(machines: Vec<Machine>) -> &'static str {
-    let Some(cf) = cloudflared() else { return "no-cloudflared" };
-    let block = ssh_block(&machines, &cf);
+    let Some(app) = app() else { return "nothing" };
+    let block = ssh_block(&machines, &app);
     if !block.contains("Host ") { return "nothing" }   // no tunnel exists yet
     if std::fs::read_to_string(ssh_config()).unwrap_or_default().contains(&block) { "current" } else { "missing" }
 }
@@ -126,12 +101,12 @@ pub fn ssh_status(machines: Vec<Machine>) -> &'static str {
 /// Writes (or refreshes) the app's block in ~/.ssh/config, keeping everything else; the old file is kept as config.bak.
 #[tauri::command(async)]
 pub fn ssh_setup(machines: Vec<Machine>) -> Result<String, String> {
-    let cf = cloudflared().ok_or("cloudflared is missing; reinstall the app")?;
+    let app = app().ok_or("This app's own path cannot be written into an ssh config")?;
     let file = ssh_config();
     let old = std::fs::read_to_string(&file).unwrap_or_default();
     std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
     if !old.is_empty() { std::fs::write(file.with_extension("bak"), &old).map_err(|e| e.to_string())?; }
-    std::fs::write(&file, with_ssh_block(&old, &ssh_block(&machines, &cf))).map_err(|e| e.to_string())?;
+    std::fs::write(&file, with_ssh_block(&old, &ssh_block(&machines, &app))).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)); }
     Ok("Connections set up: ssh <account>@<machine> now goes through Cloudflare".into())
@@ -167,7 +142,7 @@ pub fn open_forward(host: String, tunnel: String, user: String, display: u8, soc
             f.remove(&key);
         }
     }
-    let via = through(cloudflared().as_deref(), &tunnel).ok_or("cloudflared is missing; reinstall the app")?;
+    let via = through(&tunnel).ok_or("This app's own path cannot be used by ssh")?;
     let local = free_port(15900 + display as u16);
     let mut child = crate::cmd("ssh")
         .args(["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
@@ -222,7 +197,7 @@ pub fn open_viewer(port: u16) { crate::open_url(&format!("vnc://127.0.0.1:{port}
 #[tauri::command(async)]
 pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Result<String, String> {
     if action != "start" && action != "stop" { return Err(format!("unknown action {action}")) }
-    let via = through(cloudflared().as_deref(), &tunnel).ok_or("cloudflared is missing; reinstall the app")?;
+    let via = through(&tunnel).ok_or("This app's own path cannot be used by ssh")?;
     let arg = if display == 0 { String::new() } else { display.to_string() };
     let (target, run) = (format!("{user}@{tunnel}"), format!("~/.local/bin/exo-desktop {action} {arg}"));
     let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
@@ -272,7 +247,7 @@ pub fn update_host_tools(tunnel: String, user: String) -> Result<String, String>
                            if text.ends_with('\n') { "" } else { "\n" });
     }
     script += RESTART;
-    let via = through(cloudflared().as_deref(), &tunnel).ok_or("cloudflared is missing; reinstall the app")?;
+    let via = through(&tunnel).ok_or("This app's own path cannot be used by ssh")?;
     let target = format!("{user}@{tunnel}");
     let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
     args.extend(via.iter().map(String::as_str));
@@ -303,9 +278,9 @@ pub fn forget_access() {
 /// GitHub account so the two can be seen to match.
 #[tauri::command(async)]
 pub fn lab_identity(tunnels: Vec<String>) -> Option<serde_json::Value> {
-    let cf = cloudflared()?;
-    let missing = tunnels.iter().filter(|t| !has_token(&cf, t)).count();
-    let jwt = tunnels.iter().find_map(|t| { let (c, out) = sh(&cf, &["access", "token", &format!("-app=https://{t}")], 10); (c == 0).then_some(out) })?;
+    let tokens: Vec<Option<String>> = tunnels.iter().map(|t| crate::access::token(t).ok()).collect();
+    let missing = tokens.iter().filter(|t| t.is_none()).count();
+    let jwt = tokens.into_iter().flatten().next()?;
     let payload = jwt.trim().split('.').nth(1)?;
     let claims: serde_json::Value = serde_json::from_slice(&base64url(payload)?).ok()?;
     let email = claims["email"].as_str().unwrap_or_default().to_lowercase();

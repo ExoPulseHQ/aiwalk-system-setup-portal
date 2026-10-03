@@ -281,27 +281,27 @@ pub fn edit_machines(text: &str, edit: &dyn Fn(&Value, &str) -> Option<Option<St
     Ok(out)
 }
 
-/// The block the app keeps in ~/.ssh/config: one alias per tunnelled machine, reached through cloudflared.
-/// `cloudflared` is the program's path. Machines without a tunnel are left out.
-pub fn ssh_block(machines: &[Machine], cloudflared: &str) -> String {
+/// The block the app keeps in ~/.ssh/config: one alias per tunnelled machine, reached through the app itself
+/// (`app` is its program's path, used as ssh's ProxyCommand). Machines without a tunnel are left out.
+pub fn ssh_block(machines: &[Machine], app: &str) -> String {
     let mut seen = BTreeSet::new();
     let mut out = String::from("# >>> aIwalk System Setup: machines through Cloudflare (this block is rewritten by the app)\n");
+    let app = app.replace('%', "%%");   // % is ssh's token marker
     for m in machines {
         let Some(t) = &m.tunnel else { continue };
         if !seen.insert(m.host.clone()) { continue }
         if m.cert {
-            // the certificate lasts minutes, so ssh asks cloudflared for a fresh one before every connection (Match exec);
+            // the certificate lasts minutes, so ssh asks the app for a fresh one before every connection (Match exec);
             // the person's own keys are still tried after it, for as long as the machine keeps them
-            out += &format!("Match originalhost {} exec \"'{cloudflared}' access ssh-gen --hostname {t}\"\n  HostName {t}\n  ProxyCommand \"{cloudflared}\" access ssh --hostname %h\n  \
+            out += &format!("Match originalhost {} exec \"'{app}' --ssh-cert {t} --quiet\"\n  HostName {t}\n  ProxyCommand \"{app}\" --ssh-proxy %h\n  \
                              IdentityFile ~/.cloudflared/{t}-cf_key\n  CertificateFile ~/.cloudflared/{t}-cf_key-cert.pub\n", m.host);
         } else {
-            out += &format!("Host {}\n  HostName {t}\n  ProxyCommand \"{cloudflared}\" access ssh --hostname %h\n", m.host);
+            out += &format!("Host {}\n  HostName {t}\n  ProxyCommand \"{app}\" --ssh-proxy %h\n", m.host);
         }
     }
     out + "# <<< aIwalk System Setup\n"
 }
 
-/// `config` with the app's block replaced by `block` (or added at the end); everything else kept as it was.
 pub fn with_ssh_block(config: &str, block: &str) -> String {
     let start = config.find("# >>> aIwalk System Setup");
     let end = config.find("# <<< aIwalk System Setup").and_then(|i| config[i..].find('\n').map(|n| i + n + 1));
@@ -771,12 +771,12 @@ mod tests {
     fn ssh_block_replaces_only_its_own_lines() {
         let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "tunnel": "ssh-host-20.example.com"},
             {"host": "kd240", "repos": {"firmware_layer": "firmware"}}]}}"#;
-        let signed = ssh_block(&machines(&rules.replace(r#""tunnel": "ssh-host-20"#, r#""cert": true, "tunnel": "ssh-host-20"#)), "/opt/cloud flared");
-        assert!(signed.contains(r#"Match originalhost host-20 exec "'/opt/cloud flared' access ssh-gen --hostname ssh-host-20.example.com""#)
+        let signed = ssh_block(&machines(&rules.replace(r#""tunnel": "ssh-host-20"#, r#""cert": true, "tunnel": "ssh-host-20"#)), "/opt/a app/aiwalk-setup");
+        assert!(signed.contains(r#"Match originalhost host-20 exec "'/opt/a app/aiwalk-setup' --ssh-cert ssh-host-20.example.com --quiet""#)
             && signed.contains("CertificateFile ~/.cloudflared/ssh-host-20.example.com-cf_key-cert.pub") && !signed.contains("Host host-20"), "{signed}");
-        let block = ssh_block(&machines(rules), "/opt/cloudflared");
+        let block = ssh_block(&machines(rules), "/opt/aiwalk-setup");
         assert_eq!(block.matches("Host ").count(), 1, "one alias per tunnelled machine: {block}");
-        assert!(block.contains("HostName ssh-host-20.example.com") && block.contains("\"/opt/cloudflared\" access ssh --hostname %h"));
+        assert!(block.contains("HostName ssh-host-20.example.com") && block.contains("\"/opt/aiwalk-setup\" --ssh-proxy %h"));
         let mine = "Host nuctz-70\n    HostName 10.0.0.70\n";
         let once = with_ssh_block(mine, &block);
         assert!(once.starts_with(mine) && once.ends_with(&block));

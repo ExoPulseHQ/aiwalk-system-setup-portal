@@ -1,7 +1,7 @@
 # aIwalk System Setup
 
 The app every team member installs first: sign in with GitHub, see what you can open, download the team's documents,
-and reach the lab machines through Cloudflare. gh, cloudflared (and on Windows, git) come with it.
+and reach the lab machines through Cloudflare. It needs no gh and no cloudflared: it signs in, keeps the sign-in and carries SSH itself. On Windows git comes with it.
 
 ## Install
 
@@ -32,8 +32,8 @@ one, check who changed it last: `git log -p hosts/`.
 
 ## Layout
 
-- `desktop/`: the Tauri app (Rust in `src/`, the page in `ui/`); `fetch-tools.sh` puts each OS's gh, cloudflared and
-  MinGit into `desktop/tools/` before bundling, checksums verified.
+- `desktop/`: the Tauri app (Rust in `src/`, the page in `ui/`); `fetch-tools.sh` puts MinGit into `desktop/tools/` for Windows
+  before bundling, checksum verified.
 - `core/`: logic with tests, no UI (`cargo test -p exo-core`).
 - `hosts/`: what runs on the lab machines: status page, VNC desktops, first setup, lockdown.
 - `aiwalk-setup`, `android/`, `windows/`, `lib/`: the earlier Python app and its phone and VM parts.

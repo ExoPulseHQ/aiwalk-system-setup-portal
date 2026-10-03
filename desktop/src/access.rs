@@ -249,11 +249,12 @@ pub fn get(url: &str) -> Result<String, String> {
     }
 }
 
-// ---------------------------------------------------------------- e. sign-in (dev flag only; the app signs in with cloudflared)
+// ---------------------------------------------------------------- e. sign-in
 // cloudflared's transfer flow: the browser signs in at the machine's /cdn-cgi/access/cli page, which hands both
 // tokens to Cloudflare's transfer service sealed (NaCl box) to a key made for this sign-in; the app long-polls the
 // service with that public key and opens the box. The key is made fresh every time and never stored: its public half
-// is the only thing that names the waiting tokens. The org-token exchange cloudflared tries first is not done here.
+// is the only thing that names the waiting tokens. Before any browser, `exchange` tries the team sign-in kept from
+// an earlier one, so several machines cost one browser visit.
 
 const TRANSFER: &str = "https://login.cloudflareaccess.org/transfer/";
 
@@ -303,6 +304,56 @@ fn open_transfer(body: &str, sender: &str, mine: &crypto_box::SecretKey) -> Resu
     if data.len() < 24 { return Err(bad()) }
     crypto_box::SalsaBox::new(&crypto_box::PublicKey::from(their), mine)
         .decrypt(GenericArray::from_slice(&data[..24]), &data[24..]).map_err(|_| "Cloudflare's sign-in answer did not open with this sign-in's key".into())
+}
+
+/// (host, path and query) of an https:// address.
+fn split_url(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("https://")?;
+    Some(rest.split_at(rest.find('/').unwrap_or(rest.len())))
+}
+
+/// Trades the team sign-in a browser sign-in left here (the org token) for `host`'s own token, with no browser, as
+/// cloudflared's exchangeOrgToken does: ask for the page, follow Access's redirects by hand, show the org token to
+/// the team's login page only, and take the application token from the cookie the `authorized` step sets.
+fn exchange(host: &str, app: &App) -> Result<(), String> {
+    let d = dir();
+    let org = std::fs::read_to_string(d.join(format!("{TEAM}-org-token"))).map_err(|_| "no team sign-in kept here")?;
+    let mut url = format!("https://{host}/");
+    for _ in 0..8 {
+        let (at, path) = split_url(&url).ok_or("Access sent the sign-in somewhere odd")?;
+        if at != TEAM { team_host(at)?; }
+        let mut req = ureq::http::Request::builder().method("HEAD").uri(&url).header("User-Agent", "aiwalk-system-setup");
+        if at == TEAM && path.contains("/cdn-cgi/access/login") { req = req.header("Cookie", format!("CF_Authorization={}", org.trim())) }
+        let resp = agent().run(req.body(()).map_err(|e| e.to_string())?).map_err(|e| format!("{at} did not answer: {e}"))?;
+        if path.contains("/cdn-cgi/access/authorized") {
+            let token = resp.headers().get_all("set-cookie").iter().filter_map(|v| v.to_str().ok())
+                .find_map(|c| c.strip_prefix("CF_Authorization=").map(|v| v.split(';').next().unwrap_or_default().to_string()))
+                .ok_or("Access gave no token for the team sign-in")?;
+            usable(&token, &app.aud, host, now())?;
+            return write_private(&d.join(token_file(app)), token.as_bytes());
+        }
+        if !resp.status().is_redirection() { return Err(format!("the team sign-in was not taken (HTTP {})", resp.status().as_u16())) }
+        let to = resp.headers().get("location").and_then(|v| v.to_str().ok()).ok_or("Access redirected nowhere")?;
+        url = if to.starts_with('/') { format!("https://{at}{to}") } else { to.to_string() };
+    }
+    Err("Access kept redirecting".into())
+}
+
+/// Makes sure this computer holds a token for `host`: the one kept, else the team sign-in traded for one, else the
+/// browser. Ok(true) when a browser was needed.
+pub fn sign_in(host: &str) -> Result<bool, String> {
+    let host = team_host(host)?;
+    if token(&host).is_ok() { return Ok(false) }
+    if exchange(&host, &app_info(&host)?).is_ok() { return Ok(false) }
+    login(&host, true).map(|_| true)
+}
+
+/// The certificate for `host` when the one kept is older than two minutes (they last a few): what ssh runs before
+/// every connection, so it must be quick and quiet.
+pub fn ssh_cert_if_stale(host: &str) -> Result<(), String> {
+    let cert = dir().join(format!("{}-cf_key-cert.pub", team_host(host)?));
+    let fresh = std::fs::metadata(&cert).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|e| e < Duration::from_secs(120)));
+    if fresh { Ok(()) } else { ssh_cert(host).map(|_| ()) }
 }
 
 /// `--access-login <host>`: the browser sign-in, writing the tokens where cloudflared keeps them. `browser` false

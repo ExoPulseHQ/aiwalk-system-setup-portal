@@ -321,7 +321,7 @@ function machinesSection(machines, org, user) {
   sec.append(help, list);
 
   const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], "no-tunnel": ["p0", "Tunnel not set up"],
-                 "sign-in": ["pending", "Finish sign-in on Team access"], "no-cloudflared": ["p0", "cloudflared missing"] };
+                 "sign-in": ["pending", "Finish sign-in on Team access"] };
   // a machine reached through another one shares that one's way in
   const way = m => byHost[m.via] || m;
   const check = async () => {

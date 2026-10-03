@@ -63,11 +63,11 @@ pub fn on_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join(&file)).find(|p| p.is_file()))
 }
 
-/// Puts the bundled cloudflared and git (Windows: MinGit) ahead of PATH for this app and everything it starts, so a new
+/// Puts the bundled git (Windows: MinGit) ahead of PATH for this app and everything it starts, so a new
 /// member's computer needs neither. Bundles sit next to the binary (Linux folder, Windows), or in Contents/Resources (Mac).
 fn use_bundled_tools() {
     let roots = [here(), here().join("../Resources"), here().join("../lib/aIwalk System Setup")];
-    let dirs: Vec<PathBuf> = roots.iter().flat_map(|r| [r.join("tools/git/cmd"), r.join("tools/cloudflared")])
+    let dirs: Vec<PathBuf> = roots.iter().map(|r| r.join("tools/git/cmd"))
         .filter(|d| d.is_dir()).collect();
     let path = std::env::var_os("PATH").unwrap_or_default();
     if let Ok(joined) = std::env::join_paths(dirs.into_iter().chain(std::env::split_paths(&path))) {
@@ -461,12 +461,15 @@ fn main() {
     }
     // Cloudflare Access done by the app itself (access.rs). `--ssh-proxy <host>` is ssh's ProxyCommand; `--ssh-cert
     // <host>` and `--access-get <url>` are for checking by hand. Errors go to stderr, where ssh shows them.
-    // `--access-login <host> [--no-browser]` tries the in-app browser sign-in; the app itself still signs in with cloudflared.
+    // `--access-login <host> [--no-browser]` is the sign-in on its own. `--ssh-cert <host> --quiet` is what ssh runs
+    // before a connection (~/.ssh/config, Match exec): silent, and quick when the certificate kept is still fresh.
     if let Some(flag @ ("--ssh-proxy" | "--ssh-cert" | "--access-get" | "--access-login")) = std::env::args().nth(1).as_deref() {
         let Some(arg) = std::env::args().nth(2) else { eprintln!("{flag} needs a host or URL"); std::process::exit(2) };
         let done = match flag {
             "--ssh-proxy" => access::ssh_proxy(&arg),
+            "--access-login" if std::env::args().nth(3).is_none() => access::sign_in(&arg).map(|b| println!("signed in{}", if b { " (browser)" } else { "" })),
             "--access-login" => access::login(&arg, std::env::args().nth(3).as_deref() != Some("--no-browser")).map(|_| println!("signed in")),
+            "--ssh-cert" if std::env::args().nth(3).as_deref() == Some("--quiet") => access::ssh_cert_if_stale(&arg),
             "--ssh-cert" => access::ssh_cert(&arg).map(|(k, c)| println!("key {}\ncertificate {}", k.display(), c.display())),
             _ => access::get(&arg).map(|body| println!("{body}")),
         };
