@@ -968,15 +968,68 @@ async function loadMachines() {
 function cloudflareSection() {
   const sec = el("div", "section"), body = el("div", "list");
   sec.append(el("h2", null, "Cloudflare"), el("p", "sub", "For owners. The machines sit behind the team's Cloudflare account, the one that owns aiwalkcorp.com (not your personal one). With an API token made in that account, this app adds machines and ends a removed person's sign-in. Only the owner who does those things needs one."), body);
+  // the team key, shown to be told to another owner in person
+  const showKey = key => ask("The team key", "Tell this key to the other owners in person or by a channel you trust. With it their app opens the team's token; without the owners' repo it opens nothing.",
+    [["done", "Done", true]], (() => {
+      const box = el("div"), k = el("strong", "cmd", key), copy = el("button", "small ghost", "Copy");
+      copy.style.marginLeft = "8px";
+      copy.onclick = () => navigator.clipboard.writeText(key).then(() => toast("Copied the team key"), () => {});
+      box.append(k, copy); return box;
+    })());
   const paint = async () => {
     const st = await invoke("cf_state");
     if (st.connected) {
       const forget = el("button", "small ghost", "Disconnect");
       forget.onclick = async () => { await invoke("cf_forget"); paint(); };
-      return body.replaceChildren(item("Connected", st.expires ? `The token runs until ${st.expires}.` : "The token does not expire.", null, forget));
+      const renew = el("button", "small ghost", "Renew");
+      renew.title = "Cloudflare gives the token a new value; the old one stops working at once";
+      renew.onclick = async () => {
+        if (await ask("Renew the token?", "The token gets a new value and the old one stops working at once, on every computer. Owners who joined with the team key get the new one by themselves.",
+          [["cancel", "Cancel"], ["ok", "Renew", true]]) !== "ok") return;
+        try { toast(await working(renew, "Renewing", () => invoke("cf_renew"))); } catch (e) { toast(e); }
+        paint();
+      };
+      const rows = [item("Connected", st.expires ? `The token runs until ${st.expires}.` : "The token does not expire.", null, renew, forget)];
+      // sharing: one token for all owners, kept locked in the owners' repo
+      const share = el("button", "small", st.shared ? "Share again" : "Share with the other owners");
+      share.onclick = async () => {
+        try { showKey(await working(share, "Sharing", () => invoke("cf_share", { fresh: false }))); } catch (e) { toast(e); }
+        paint();
+      };
+      const extra = [share];
+      if (st.has_key) {
+        const see = el("button", "small ghost", "Show the team key");
+        see.onclick = async () => { const k = await invoke("cf_key"); if (k) showKey(k); };
+        const change = el("button", "small ghost", "New key");
+        change.title = "After an owner left: a new key, and renew the token as well";
+        change.onclick = async () => {
+          if (await ask("Make a new team key?", "The other owners must enter the new key before their app gets the token again. Do this after an owner left, and renew the token as well.",
+            [["cancel", "Cancel"], ["ok", "New key", true]]) !== "ok") return;
+          try { showKey(await working(change, "Sharing", () => invoke("cf_share", { fresh: true }))); } catch (e) { toast(e); }
+          paint();
+        };
+        extra.unshift(see, change);
+      }
+      rows.push(item(st.shared ? "Shared with the other owners" : "Only on this computer",
+        st.shared ? "The token is in the owners' repo, locked with the team key. The other owners enter that key once."
+                  : "Share it and the other owners connect with one key instead of making tokens of their own.", null, ...extra));
+      return body.replaceChildren(...rows);
+    }
+    const msg = el("p", "sub", st.problem ? `The kept token no longer works: ${st.problem}` : "");
+    const rows = [];
+    if (st.shared) {
+      // another owner already shared the team's token: the key is all this computer needs
+      const key = el("input"); key.placeholder = "XXXX-XXXX-XXXX-XXXX-XXXX"; key.autocomplete = "off";
+      const join = el("button", "small", "Connect");
+      join.onclick = async () => {
+        if (!key.value.trim()) return;
+        try { toast(await working(join, "Opening", () => invoke("cf_join", { key: key.value }))); paint(); }
+        catch (e) { msg.textContent = String(e); }
+      };
+      rows.push(item("Connect with the team key", "Another owner shared the team's token. Enter the key they told you.", null, key, join));
     }
     const input = el("input"); input.type = "password"; input.placeholder = "Paste the API token"; input.autocomplete = "off";
-    const go = el("button", "small", "Connect"), msg = el("p", "sub", st.problem ? `The kept token no longer works: ${st.problem}` : "");
+    const go = el("button", st.shared ? "small ghost" : "small", "Connect");
     go.onclick = async () => {
       if (!input.value.trim()) return;
       try { toast(await working(go, "Checking", () => invoke("cf_connect", { token: input.value }))); paint(); }
@@ -985,9 +1038,11 @@ function cloudflareSection() {
     // what the token must be allowed to do, so nobody has to guess in Cloudflare's long list
     const needs = el("details", "sub"), list = el("ul");
     ["Account: Cloudflare Tunnel, Edit", "Account: Access: Apps and Policies, Edit", "Account: Access: Organizations, Identity Providers, and Groups, Edit",
-     "Account: Access: SSH Auditing, Edit", "Account: Access: Audit Logs, Read", "Zone aiwalkcorp.com: DNS, Edit"].forEach(t => list.append(el("li", null, t)));
+     "Account: Access: SSH Auditing, Edit", "Account: Access: Audit Logs, Read", "Zone aiwalkcorp.com: DNS, Edit",
+     "Optional, for the Renew button: API Tokens, Edit. It lets the token make tokens with any of the account's rights, so grant it only if you want one-click renewal."].forEach(t => list.append(el("li", null, t)));
     needs.append(el("summary", null, "What the token needs"), list);
-    body.replaceChildren(item("Not connected", "Sign in to Cloudflare as the team's account, create a custom token (Manage Account, API Tokens) and paste it here. It goes to this computer's keyring only.", null, input, go), needs, msg);
+    rows.push(item(st.shared ? "Or paste a token of your own" : "Not connected", "Sign in to Cloudflare as the team's account, create a custom token (Manage Account, API Tokens) and paste it here. It goes to this computer's keyring only.", null, input, go));
+    body.replaceChildren(...rows, needs, msg);
   };
   paint();
   return sec;
