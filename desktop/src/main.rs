@@ -18,6 +18,7 @@ mod admin;
 mod claude;
 mod cloudflare;
 mod github;
+mod guardcli;
 mod machines;
 mod ptycli;
 mod python;
@@ -409,6 +410,13 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 }
 
 fn main() {
+    // `hook root-only-guard`, `guard --status|--install|--uninstall`: .claude/hooks/root_only_guard.py without Python.
+    // First, before anything else: the hook runs on every tool call of every Claude session.
+    match std::env::args().nth(1).as_deref() {
+        Some("hook") => std::process::exit(guardcli::hook(&std::env::args().skip(2).collect::<Vec<_>>())),
+        Some("guard") => std::process::exit(guardcli::guard(&std::env::args().skip(2).collect::<Vec<_>>())),
+        _ => {}
+    }
     use_bundled_tools();
     // `vault <cmd>`: scripts/vault_ship.py for computers without Python, run in the vault's folder
     if std::env::args().nth(1).as_deref() == Some("pty") {
@@ -485,7 +493,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "guard": false, "hook": false }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "guard": true, "hook": false }));
         return;
     }
     // --python: which Python 3 this computer has, as the badge reads it
