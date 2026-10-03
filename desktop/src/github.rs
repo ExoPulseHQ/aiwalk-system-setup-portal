@@ -1,9 +1,8 @@
 //! GitHub's API, asked directly over one kept-open HTTPS client instead of starting `gh` for every question.
 //! Questions can then run side by side, and nothing here needs a program the phone does not have.
 //!
-//! Sign-in is the app's own (GitHub's device flow, through the team's OAuth App). On a computer the token is then
-//! handed to gh, which keeps it for git, the vault's tools and this app alike; `token` is the one place to change
-//! where there is no gh.
+//! Sign-in is the app's own (GitHub's device flow, through the team's OAuth App) and the app keeps the token itself
+//! (login.rs). A computer that signed in before that still has it in gh only, so gh is asked when the app has none.
 
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock};
@@ -25,19 +24,49 @@ pub fn scopes() -> Vec<String> {
     SCOPES.lock().unwrap().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
-/// The signed-in account's token. Asked of gh once and kept until `forget_token`.
+/// The signed-in account's token. Read once and kept until `forget_token`.
 fn token() -> Result<String, String> {
     let mut kept = TOKEN.lock().unwrap();
     if let Some(t) = kept.as_ref() { return Ok(t.clone()) }
-    let t = crate::gh(&["auth", "token", "--hostname", "github.com"]).map_err(|e| format!("not logged in to GitHub: {e}"))?;
-    let t = t.trim().to_string();
-    if t.is_empty() { return Err("not logged in to GitHub".into()) }
+    let t = match crate::login::active() {
+        Some((_, t)) => t,
+        None => crate::gh(&["auth", "token", "--hostname", "github.com"]).map(|t| t.trim().to_string()).unwrap_or_default(),
+    };
+    if t.is_empty() { return Err("not signed in to GitHub: sign in in aIwalk System Setup".into()) }
     *kept = Some(t.clone());
     Ok(t)
 }
 
-/// After a sign-in, sign-out or account switch: the next question asks gh for the token again.
+/// After a sign-in, sign-out or account switch: the next question reads the token again.
 pub fn forget_token() { *TOKEN.lock().unwrap() = None; }
+
+/// The token in use right now, if one was read.
+pub fn current_token() -> Option<String> { TOKEN.lock().unwrap().clone() }
+
+/// Uses `token` from here on: a sign-in asks GitHub whose it is before anything keeps it.
+pub fn use_token(token: &str) { *TOKEN.lock().unwrap() = Some(token.to_string()); }
+
+/// Downloads the file of release `tag` whose name ends as `pattern` does ("*_amd64.deb") into `dir`. Ok(its path).
+pub fn download_asset(repo: &str, tag: &str, pattern: &str, dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let release = get(&format!("repos/{repo}/releases/tags/{tag}"))?;
+    let asset = release["assets"].as_array().and_then(|a| a.iter().find(|a| a["name"].as_str().is_some_and(|n| n.ends_with(pattern.trim_start_matches('*')))))
+        .ok_or("The release has no file for this computer")?;
+    let (Some(name), Some(url)) = (asset["name"].as_str(), asset["url"].as_str()) else { return Err("The release's file has no address".into()) };
+    let req = ureq::http::Request::builder().method("GET").uri(url)
+        .header("Authorization", format!("Bearer {}", token()?))
+        .header("Accept", "application/octet-stream")
+        .header("User-Agent", "aiwalk-system-setup")
+        .body(()).map_err(|e| e.to_string())?;
+    // tens of megabytes: a slow network gets an hour, not the 40 seconds a question gets
+    let slow: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(3600))).build().into();
+    let mut resp = slow.run(req).map_err(|e| format!("GitHub did not answer: {e}"))?;
+    if !resp.status().is_success() { return Err(format!("GitHub refused the download (HTTP {})", resp.status().as_u16())) }
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let path = dir.join(name);
+    let mut file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    std::io::copy(&mut resp.body_mut().as_reader(), &mut file).map_err(|e| format!("The download stopped: {e}"))?;
+    Ok(path)
+}
 
 /// One request. `path` is "user", "repos/o/r/issues?state=open" or a full URL (a next page).
 /// Ok((body text, next page's URL)); Err("what GitHub said (HTTP 404)") for anything that is not a success.

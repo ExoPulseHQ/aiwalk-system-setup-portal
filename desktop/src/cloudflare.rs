@@ -13,8 +13,7 @@ const ACCOUNT: &str = "dfa11c7873c45c21495bad024de07619";
 const API: &str = "https://api.cloudflare.com/client/v4";
 
 // ---------------------------------------------------------------- the token, in the keyring
-// ponytail: Linux's Secret Service only, as the Windows VM password; add the keyring crate when an owner on
-// Windows or macOS needs these tools
+// Linux keeps the items it first made (their attributes predate secrets.rs); the other systems go through secrets.rs
 
 #[cfg(target_os = "linux")]
 mod store {
@@ -54,9 +53,9 @@ mod store {
 }
 #[cfg(not(target_os = "linux"))]
 mod store {
-    pub fn load(_: &'static str) -> Option<String> { None }
-    pub fn save(_: &'static str, _: &str) -> Result<(), String> { Err("Cloudflare is connected from a Linux computer for now".into()) }
-    pub fn forget(_: &'static str) {}
+    pub fn load(what: &'static str) -> Option<String> { crate::secrets::load(&format!("cloudflare:{what}")) }
+    pub fn save(what: &'static str, secret: &str) -> Result<(), String> { crate::secrets::save(&format!("cloudflare:{what}"), secret) }
+    pub fn forget(what: &'static str) { crate::secrets::forget(&format!("cloudflare:{what}")) }
 }
 
 // ---------------------------------------------------------------- the API

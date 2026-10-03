@@ -73,18 +73,13 @@ fn write_text(path: &Path, s: &str) -> std::io::Result<()> {
 fn native(p: &str) -> String { if cfg!(windows) { p.replace('/', "\\") } else { p.to_string() } }
 
 fn identity() -> (String, String) {
-    // where the Python looks for gh besides PATH (Obsidian started from the macOS Dock has no Homebrew on PATH)
-    let places = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", r"C:\Program Files\GitHub CLI\gh.exe"];
-    if crate::on_path("gh").is_none() && !places.iter().any(|p| Path::new(p).exists()) {
-        die("✗ gh is not installed (GitHub CLI); install it, then run `gh auth login`")
-    }
     match crate::github::get("user") {
         Ok(u) if u["login"].is_string() && u["id"].is_number() => {
             let login = u["login"].as_str().unwrap().to_string();
             let email = format!("{}+{login}@users.noreply.github.com", u["id"]);
             (login, email)
         }
-        _ => die("✗ gh is not logged in (run `gh auth login`); refusing to commit under a local git identity"),
+        _ => die("✗ not signed in to GitHub (sign in in aIwalk System Setup); refusing to commit under a local git identity"),
     }
 }
 

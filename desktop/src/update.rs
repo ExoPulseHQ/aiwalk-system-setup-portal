@@ -46,11 +46,7 @@ pub fn update_install(app: tauri::AppHandle, tag: String) -> Result<String, Stri
     let pattern = pattern().ok_or("This copy was not installed from a release; install the new one from the Releases page")?;
     let dir = std::env::temp_dir().join(format!("aiwalk-setup-{tag}"));
     let _ = std::fs::remove_dir_all(&dir);
-    let d = dir.to_string_lossy().into_owned();
-    // tens of megabytes; slow networks get an hour
-    let (code, out) = sh("gh", &["release", "download", &tag, "-R", REPO, "-p", pattern, "-D", &d, "--clobber"], 3600);
-    if code != 0 { return Err(format!("Could not download {tag}: {}", out.lines().last().unwrap_or("no answer from GitHub"))) }
-    let file = std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten().next().ok_or("The release has no file for this computer")?.path();
+    let file = crate::github::download_asset(REPO, &tag, pattern, &dir).map_err(|e| format!("Could not download {tag}: {e}"))?;
     let f = file.to_string_lossy().into_owned();
     match kind() {
         // Tauri's NSIS installer: /P shows progress only, /R starts the app again when done

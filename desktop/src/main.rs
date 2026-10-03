@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use exo_core::{
-    build_tree, machines, parse_gh_status, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, permissions_rank, repo_grants, repos_query, request_body,
+    build_tree, machines, terms_accepted, terms_title, terms_version, Auth, org_access, org_query, parse_request, permissions_rank, repo_grants, repos_query, request_body,
     vault_repos, visible_to, Machine, Node, Person, Team, RULES_PATHS,
 };
 use serde::Serialize;
@@ -20,9 +20,11 @@ mod cloudflare;
 mod github;
 mod guardcli;
 mod hooks;
+mod login;
 mod machines;
 mod ptycli;
 mod python;
+mod secrets;
 mod update;
 mod vault;
 mod vaultcli;
@@ -235,14 +237,14 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
     let user = me["login"].as_str().unwrap_or_default().to_string();
     let name = me["name"].as_str().filter(|n| !n.is_empty()).map(String::from);
     stage(2, 2, "Reading your access from GitHub");
-    // the vaults are read side by side, next to gh's own account list; each vault asks its questions side by side too
-    let (accounts, vaults) = std::thread::scope(|s| {
-        // gh auth status writes to stderr; sh merges both
-        let accounts = s.spawn(|| parse_gh_status(&sh("gh", &["auth", "status", "--hostname", "github.com"], 15).1));
+    // a sign-in made before the app kept its own is taken over from gh here, once
+    if let Some(t) = github::current_token() { login::adopt(&user, &t) }
+    // the vaults are read side by side; each vault asks its questions side by side too
+    let vaults = std::thread::scope(|s| {
         let vaults: Vec<_> = VAULTS.iter().map(|&(name, repo, about)| { let user = &user; s.spawn(move || read_vault(name, repo, about, user)) }).collect();
-        (accounts.join().unwrap_or_default(), vaults.into_iter().filter_map(|h| h.join().ok()).collect())
+        vaults.into_iter().filter_map(|h| h.join().ok()).collect()
     });
-    State { user: Some(user), name, accounts, error: None, vaults, scopes: github::scopes() }
+    State { user: Some(user), name, accounts: login::accounts(), error: None, vaults, scopes: github::scopes() }
 }
 
 fn read_vault(name: &'static str, repo: &'static str, about: &'static str, user: &str) -> Vault {
@@ -271,10 +273,10 @@ fn read_vault(name: &'static str, repo: &'static str, about: &'static str, user:
     })
 }
 
-/// Signs `login` out of gh on this computer; any other account stays signed in and gh makes one of them active.
+/// Signs `login` out on this computer; any other account stays signed in and one of them becomes active.
 #[tauri::command(async)]
 fn sign_out(login: String) -> Result<(), String> {
-    gh(&["auth", "logout", "--hostname", "github.com", "--user", &login])?;
+    login::remove(&login)?;
     github::forget_token();
     machines::forget_access();   // the machines must not keep letting the signed-out person in
     Ok(())
@@ -283,7 +285,7 @@ fn sign_out(login: String) -> Result<(), String> {
 /// Makes another signed-in account the one git and this app use.
 #[tauri::command(async)]
 fn switch_account(login: String) -> Result<(), String> {
-    gh(&["auth", "switch", "--hostname", "github.com", "--user", &login])?;
+    login::switch(&login)?;
     github::forget_token();
     machines::forget_access();   // the next lab connection signs in as this account, not the previous one
     Ok(())
@@ -396,11 +398,13 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
         Ok(t) => t,
         Err(e) => { let _ = app.emit("gh-line", e); return false }
     };
-    // gh keeps the token: git, the vault's tools and this app all read the signed-in account from it
-    let (code, out) = sh_stdin("gh", &["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--with-token"], Some(&token), 60);
-    if code != 0 { let _ = app.emit("gh-line", format!("Signed in, but gh would not keep the sign-in: {}", out.lines().last().unwrap_or(""))); return false }
+    // whose token it is, then the app keeps it: git, the vault's tools and this app all read the account from there
+    github::use_token(&token);
+    let kept = github::get("user").and_then(|u| u["login"].as_str().map(String::from).ok_or("GitHub did not say who signed in".into()))
+        .and_then(|user| login::add(&user, &token));
     github::forget_token();
-    let _ = gh(&["auth", "setup-git"]);
+    if let Err(e) = kept { let _ = app.emit("gh-line", format!("Signed in, but this computer would not keep the sign-in: {e}")); return false }
+    login::tell_gh(&token);
     true
 }
 
@@ -426,6 +430,8 @@ fn main() {
         Some("hook") if std::env::args().nth(2).as_deref() == Some("root-only-guard") => std::process::exit(guardcli::hook(&std::env::args().skip(2).collect::<Vec<_>>())),
         Some("hook") => std::process::exit(hooks::main(&std::env::args().skip(2).collect::<Vec<_>>())),
         Some("guard") => std::process::exit(guardcli::guard(&std::env::args().skip(2).collect::<Vec<_>>())),
+        // git asks this for the github.com password (login.rs sets it as the credential helper)
+        Some("git-credential") => std::process::exit(login::credential(&std::env::args().skip(2).collect::<Vec<_>>())),
         _ => {}
     }
     use_bundled_tools();
@@ -536,6 +542,15 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("--pr") {
         let a: Vec<String> = std::env::args().skip(2).collect();
         println!("{}", serde_json::to_string_pretty(&admin::pr_permissions(a[0].clone(), a[1..].to_vec())).unwrap());
+        return;
+    }
+    // --download TAG PATTERN DIR: the updater's download on its own ("*_amd64.deb")
+    if let Some(i) = std::env::args().position(|a| a == "--download") {
+        let a: Vec<String> = std::env::args().skip(i + 1).collect();
+        match github::download_asset("ExoPulseHQ/aiwalk-system-setup-portal", &a[0], &a[1], std::path::Path::new(&a[2])) {
+            Ok(p) => println!("{}", p.display()),
+            Err(e) => { eprintln!("{e}"); std::process::exit(1) }
+        }
         return;
     }
     if std::env::args().any(|a| a == "--dump") {

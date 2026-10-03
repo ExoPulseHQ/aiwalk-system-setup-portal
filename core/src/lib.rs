@@ -583,8 +583,25 @@ pub fn own_appimage(appimage: Option<&str>, appdir: Option<&str>, exe: &str) -> 
     exe.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/')).then(|| image.to_string())
 }
 
+/// What a git credential helper answers to `get`: the account for https://github.com, nothing for anywhere else.
+/// `input` is git's request, `key=value` lines.
+pub fn credential_reply(input: &str, login: &str, token: &str) -> Option<String> {
+    let field = |k: &str| input.lines().find_map(|l| l.trim_end().strip_prefix(k)?.strip_prefix('='));
+    (field("protocol") == Some("https") && field("host") == Some("github.com")).then(|| format!("username={login}\npassword={token}\n"))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn git_is_given_the_password_for_github_only() {
+        let ask = |host: &str, proto: &str| format!("protocol={proto}\nhost={host}\r\npath=o/r.git\n\n");
+        assert_eq!(credential_reply(&ask("github.com", "https"), "amy", "gho_x").as_deref(), Some("username=amy\npassword=gho_x\n"));
+        assert_eq!(credential_reply(&ask("gitlab.com", "https"), "amy", "gho_x"), None);
+        assert_eq!(credential_reply(&ask("github.com.evil.io", "https"), "amy", "gho_x"), None);
+        assert_eq!(credential_reply(&ask("github.com", "http"), "amy", "gho_x"), None);
+        assert_eq!(credential_reply("", "amy", "gho_x"), None);
+    }
+
     #[test]
     fn another_programs_appimage_is_not_ours() {
         let ours = Some("/home/a/aIwalk.AppImage");
