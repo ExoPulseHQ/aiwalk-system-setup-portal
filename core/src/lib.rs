@@ -465,8 +465,21 @@ pub fn device_code(line: &str) -> Option<String> {
     })
 }
 
+/// Whether release tag `tag` ("v0.3.0") is a later version than this app's `current` ("0.2.0"). Numbers compare as
+/// numbers, so 0.10.0 is later than 0.9.0; a tag that is not a version is never later.
+pub fn newer(tag: &str, current: &str) -> bool {
+    let nums = |v: &str| v.trim().trim_start_matches('v').split('.').map(|n| n.parse::<u32>().ok()).collect::<Option<Vec<_>>>();
+    matches!((nums(tag), nums(current)), (Some(t), Some(c)) if t > c)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn later_versions() {
+        assert!(newer("v0.3.0", "0.2.0") && newer("v0.10.0", "0.9.0") && newer("1.0.0", "0.9.9"));
+        assert!(!newer("v0.2.0", "0.2.0") && !newer("v0.1.0", "0.2.0") && !newer("nightly", "0.2.0") && !newer("", "0.2.0"));
+    }
+
     #[test]
     fn device_codes_are_found_by_shape() {
         assert_eq!(device_code("! First copy your one-time code: 1A2B-C3D4"), Some("1A2B-C3D4".into()));

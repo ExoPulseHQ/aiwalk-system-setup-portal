@@ -23,6 +23,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: The tag is the app's version
+        shell: bash
+        # the app compares its own version with the newest tag to offer an update, so the two must agree
+        run: test "v$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)" = "$GITHUB_REF_NAME"
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |

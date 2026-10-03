@@ -30,6 +30,9 @@
   nav button.on { background: var(--purple); color: #fff; font-weight: 700; }
   nav .os { font-size: 11px; opacity: .55; }
   nav .gap { flex: 1; }
+  nav #ver { padding: 10px 12px 0; font-size: 12.5px; opacity: .6; }
+  nav button.update { background: var(--purple); color: #fff; font-weight: 700; justify-content: center; margin-top: 6px; }
+  nav button.update:hover { background: var(--purple); filter: brightness(1.1); }
   .who-connect { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line, rgba(127,127,127,.2)); }
   .who-connect .tag { margin-left: 6px; }
   .who-connect .tag.extra { background: var(--purple); color: #fff; }
@@ -211,8 +214,16 @@
   .terms .text { font-family: "Times New Roman", "Liberation Serif", Times, "DFKai-SB", "標楷體", "BiauKaiTC", "BiauKai", "Kaiti TC", serif; font-size: 17px; }
   .terms .text h2 { font-size: 19px; margin: 18px 0 8px; }
   .terms .text li { margin: 6px 0; line-height: 1.6; }
-  .terms .lang { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 8px; }
-  .terms .lang button.on { background: var(--purple); color: #fff; border-color: var(--purple); }
+  /* language switch: one track, the chosen copy's segment raised; each label set in the face its copy is read in */
+  .terms .lang { display: flex; width: max-content; margin: 0 0 12px auto; padding: 3px; border-radius: 999px; background: var(--line); }
+  .terms .lang:empty { display: none; }
+  .terms .lang button { all: unset; cursor: pointer; padding: 4px 18px 5px; border-radius: 999px; font-size: 16px; line-height: 1.4; color: var(--muted); transition: background .15s, color .15s; }
+  .terms .lang button.zh { font-family: "DFKai-SB", "標楷體", "BiauKaiTC", "BiauKai", "Kaiti TC", serif; }
+  .terms .lang button.en { font-family: "Times New Roman", "Liberation Serif", Times, serif; }
+  .terms .lang button:hover { color: var(--ink); }
+  .terms .lang button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(20, 12, 36, .28); }
+  .terms .lang button:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { .terms .lang button { transition: none; } }
   .terms .agree { margin-top: 16px; display: flex; gap: 12px; align-items: center; }
   .empty h2 { margin-bottom: 8px; }
 
@@ -238,6 +249,7 @@
   <button data-page="vm" class="linux">Windows VM <span class="os">Linux</span></button>
   <div class="gap"></div>
   <button data-page="terms">Terms</button>
+  <div id="ver"></div>
 </nav>
 <main>
   <div id="topline" role="progressbar" aria-label="Working"></div>
@@ -338,6 +350,21 @@ function go(name) {
   pages[name]();
 }
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => go(b.dataset.page));
+
+// This version, and one button to the newest release when there is one (the bundled gh downloads it).
+async function showVersion() {
+  const ver = document.getElementById("ver");
+  const u = await invoke("update_state");
+  ver.textContent = `Version ${u.current}`;
+  if (!u.newer) return;
+  if (!u.can) { ver.textContent += `. ${u.latest} is out: install it from the Releases page.`; return; }
+  const b = el("button", "update", `Update to ${u.latest}`);
+  b.onclick = async () => {
+    try { toast(await working(b, `Downloading ${u.latest}`, () => invoke("update_install", { tag: u.latest }))); }
+    catch (e) { toast(e); }
+  };
+  ver.before(b);
+}
 </script>
 <script src="team.js"></script>
 <script src="android.js"></script>
@@ -347,6 +374,7 @@ invoke("platform").then(os => {
   // the phone and VM modules need a Linux computer
   if (os !== "linux") document.querySelectorAll("nav .linux").forEach(b => b.remove());
   go("team");
+  showVersion();
 });
 </script>
 </body>

@@ -950,10 +950,10 @@ function termsSwitch(text, onChange) {
   if (text.parts.length < 2) return row;
   const show = i => {
     text.parts.forEach((p, k) => p.hidden = k !== i);
-    [...row.children].forEach((b, k) => b.classList.toggle("on", k === i));
+    [...row.children].forEach((b, k) => { b.classList.toggle("on", k === i); b.setAttribute("aria-pressed", k === i); });
     text.scrollTop = 0; onChange();
   };
-  text.parts.forEach((p, i) => { const b = el("button", "small ghost", zh(p) ? "中文" : "English"); b.onclick = () => show(i); row.append(b); });
+  text.parts.forEach((p, i) => { const b = el("button", zh(p) ? "zh" : "en", zh(p) ? "中文" : "English"); b.onclick = () => show(i); row.append(b); });
   const mine = text.parts.findIndex(p => zh(p) === navigator.language.toLowerCase().startsWith("zh"));
   show(mine < 0 ? 0 : mine);
   return row;
