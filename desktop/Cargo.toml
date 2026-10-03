@@ -21,6 +21,7 @@ base64 = "0.22"
 portable-pty = "0.9"
 age = { version = "0.11", features = ["armor"] }
 crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20"] }
+fancy-regex = "0.19.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }

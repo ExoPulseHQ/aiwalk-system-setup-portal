@@ -52,7 +52,8 @@ jobs:
           tauriScript: tauri
           args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
-          releaseName: aIwalk System Setup ${{ github.ref_name }}
+          # the version first: the Releases page cuts long names short in its list
+          releaseName: ${{ github.ref_name }} aIwalk System Setup
           releaseBody: |
             Install the file for your computer:
             - Windows: the `.msi` or `-setup.exe`

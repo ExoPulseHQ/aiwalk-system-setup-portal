@@ -574,8 +574,31 @@ impl ResizeScanner {
     }
 }
 
+/// The AppImage this program was started from, when it really is one. APPIMAGE and APPDIR are inherited by every
+/// child of ANY AppImage (Obsidian is one, so the vault plugin's spawns carry Obsidian's), so they count only when
+/// this program's own file lies under APPDIR, the folder the AppImage is mounted at while it runs.
+pub fn own_appimage(appimage: Option<&str>, appdir: Option<&str>, exe: &str) -> Option<String> {
+    let (image, dir) = (appimage.filter(|s| !s.is_empty())?, appdir.filter(|s| !s.is_empty())?);
+    let dir = dir.trim_end_matches('/');
+    exe.strip_prefix(dir).is_some_and(|rest| rest.starts_with('/')).then(|| image.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn another_programs_appimage_is_not_ours() {
+        let ours = Some("/home/a/aIwalk.AppImage");
+        assert_eq!(own_appimage(ours, Some("/tmp/.mount_aIwalkX"), "/tmp/.mount_aIwalkX/usr/bin/aiwalk-setup").as_deref(), ours);
+        assert_eq!(own_appimage(ours, Some("/tmp/.mount_aIwalkX/"), "/tmp/.mount_aIwalkX/usr/bin/aiwalk-setup").as_deref(), ours);
+        // started from Obsidian's AppImage: its variables are in the environment, this program is elsewhere
+        let obsidian = (Some("/home/a/Obsidian-1.6.7.AppImage"), Some("/tmp/.mount_ObsidiY"));
+        assert_eq!(own_appimage(obsidian.0, obsidian.1, "/home/a/.local/share/aiwalk-setup/aiwalk-setup"), None);
+        assert_eq!(own_appimage(obsidian.0, obsidian.1, "/tmp/.mount_ObsidiY2/usr/bin/aiwalk-setup"), None);
+        assert_eq!(own_appimage(obsidian.0, None, "/usr/bin/aiwalk-setup"), None);
+        assert_eq!(own_appimage(None, Some("/tmp/x"), "/tmp/x/aiwalk-setup"), None);
+        assert_eq!(own_appimage(Some(""), Some(""), "/aiwalk-setup"), None);
+    }
+
     #[test]
     fn resize_requests_leave_the_stream_and_nothing_else_does() {
         let mut sc = ResizeScanner::default();

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 /// The command settings.json gets: the AppImage itself when run from one (its mount point vanishes on exit).
 fn own() -> String {
-    let exe = std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok()).unwrap_or_default();
+    let exe = crate::own_appimage().or_else(|| std::env::current_exe().ok()).unwrap_or_default();
     rg::hook_command(&exe.to_string_lossy())
 }
 

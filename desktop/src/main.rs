@@ -19,6 +19,7 @@ mod claude;
 mod cloudflare;
 mod github;
 mod guardcli;
+mod hooks;
 mod machines;
 mod ptycli;
 mod python;
@@ -37,6 +38,14 @@ pub fn home() -> PathBuf { std::env::home_dir().unwrap_or_default() }
 /// The app's folder: bundled tools (tools/), phone apps (apk/) and icon.png sit next to the binary.
 pub fn here() -> PathBuf {
     std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(PathBuf::from)).unwrap_or_default()
+}
+
+/// The AppImage this program runs from, None when it is not one. See exo_core::own_appimage: the environment alone
+/// cannot be trusted, since children of another AppImage (Obsidian) inherit its APPIMAGE.
+pub fn own_appimage() -> Option<PathBuf> {
+    let var = |k: &str| std::env::var(k).ok();
+    let exe = std::env::current_exe().ok()?;
+    exo_core::own_appimage(var("APPIMAGE").as_deref(), var("APPDIR").as_deref(), &exe.to_string_lossy()).map(PathBuf::from)
 }
 
 /// A bundled tool next to the app, else the one on PATH.
@@ -413,7 +422,9 @@ fn main() {
     // `hook root-only-guard`, `guard --status|--install|--uninstall`: .claude/hooks/root_only_guard.py without Python.
     // First, before anything else: the hook runs on every tool call of every Claude session.
     match std::env::args().nth(1).as_deref() {
-        Some("hook") => std::process::exit(guardcli::hook(&std::env::args().skip(2).collect::<Vec<_>>())),
+        // the root-only guard is installed per user and has its own file; every other hook is the vault's own
+        Some("hook") if std::env::args().nth(2).as_deref() == Some("root-only-guard") => std::process::exit(guardcli::hook(&std::env::args().skip(2).collect::<Vec<_>>())),
+        Some("hook") => std::process::exit(hooks::main(&std::env::args().skip(2).collect::<Vec<_>>())),
         Some("guard") => std::process::exit(guardcli::guard(&std::env::args().skip(2).collect::<Vec<_>>())),
         _ => {}
     }
@@ -493,7 +504,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "guard": true, "hook": false }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "guard": true, "hook": false, "hooks": hooks::NAMES }));
         return;
     }
     // --python: which Python 3 this computer has, as the badge reads it

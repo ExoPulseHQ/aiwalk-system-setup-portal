@@ -15,7 +15,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn kind() -> &'static str {
     if cfg!(windows) { return "windows" }
     if cfg!(target_os = "macos") { return "mac" }
-    if std::env::var_os("APPIMAGE").is_some() { return "appimage" }
+    if crate::own_appimage().is_some() { return "appimage" }
     if crate::here().starts_with("/usr") { "deb" } else { "manual" }
 }
 
@@ -83,7 +83,7 @@ pub fn update_install(app: tauri::AppHandle, tag: String) -> Result<String, Stri
             Ok("Restarting".into())
         }
         "appimage" => {
-            let target = std::path::PathBuf::from(std::env::var_os("APPIMAGE").unwrap_or_default());
+            let target = crate::own_appimage().ok_or("This copy is not running from an AppImage")?;
             let fresh = target.with_extension("new");
             std::fs::copy(&file, &fresh).map_err(|e| format!("Could not write next to {}: {e}", target.display()))?;
             #[cfg(unix)]
