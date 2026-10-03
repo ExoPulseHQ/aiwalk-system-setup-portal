@@ -1,0 +1,30 @@
+# Copies a release's installers to ExoPulseHQ/aiwalk-setup-download, which every team member can read; this
+# repository (the source) stays core only. Runs after the release workflow, or by hand for a tag already released.
+# DOWNLOAD_TOKEN: a fine-grained token with Contents read and write on aiwalk-setup-download only.
+name: publish-download
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag: { description: "Release tag to copy, e.g. v0.1.0", required: true }
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      TO: ExoPulseHQ/aiwalk-setup-download
+    steps:
+      - name: Installers of this release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist && ls -l dist
+      - name: Publish them for the team
+        env: { GH_TOKEN: "${{ secrets.DOWNLOAD_TOKEN }}" }
+        run: |
+          notes="Download the file for your computer; the README says which one and how to open it the first time."
+          if gh release view "$TAG" -R "$TO" >/dev/null 2>&1; then gh release upload "$TAG" dist/* -R "$TO" --clobber
+          else gh release create "$TAG" dist/* -R "$TO" --title "aIwalk System Setup $TAG" --notes "$notes" --latest; fi
