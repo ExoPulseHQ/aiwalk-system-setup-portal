@@ -472,6 +472,12 @@ fn main() {
         match admin::org_people(std::env::args().nth(i + 1).expect("--people ORG")) { Ok(p) => println!("{}", serde_json::to_string_pretty(&p).unwrap()), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }
         return;
     }
+    // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
+    // Python otherwise. A subcommand turns true here in the release it first works in.
+    if std::env::args().any(|a| a == "--can") {
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": false, "pty": false, "guard": false, "hook": false }));
+        return;
+    }
     // --python: which Python 3 this computer has, as the badge reads it
     if std::env::args().any(|a| a == "--python") { println!("{}", python::python_state()); return; }
     // --cf-selfcheck: token on stdin; see cloudflare::selfcheck
