@@ -191,29 +191,51 @@ function node(title, where, rank, repo, extra, group) {
   return n;
 }
 
+// The interns the People list last read (outside collaborators and people invited to single repos), so the
+// who-can-open dialog can show them without asking GitHub again.
+let internsNow = [];
+
 // Owners: everyone's level on one repo, changed in place.
 async function accessDialog(a, repo) {
   const box = el("div", "access-list");
   const msg = el("p", "sub");
-  Object.entries(a.people).sort(([, x], [, y]) => x.name.localeCompare(y.name)).forEach(([login, p]) => {
-    const row = el("div", "item");
-    const text = el("div", "text");
-    text.append(el("div", "title", p.name === login ? login : p.name), el("div", "sub", login));
-    row.append(text);
-    if (p.grants === null) { row.append(pill(4, "Owners can open every repo")); box.append(row); return; }
-    const now = Math.min(p.grants[repo] || 0, 2);
+  // one row with a level to pick; `after(level)` keeps the caller's own record in step
+  const row = (title, sub, tag, now, login, after) => {
+    const r = el("div", "item"), text = el("div", "text");
+    text.append(el("div", "title", title), el("div", "sub", sub));
+    r.append(text);
+    if (tag) r.append(el("span", "tag", tag));
     const pick = el("select");
     [["0", "No access"], ["1", "Read"], ["2", "Write"]].forEach(([v, l]) => pick.append(new Option(l, v)));
     pick.value = String(now);
     pick.onchange = async () => {
       pick.disabled = true; msg.textContent = "";
       const spin = el("span", "spinner"); pick.before(spin);
-      try { toast(await invoke("set_access", { org: a.org, repo, login, level: +pick.value })); p.grants[repo] = +pick.value; }
+      try { toast(await invoke("set_access", { org: a.org, repo, login, level: +pick.value })); now = +pick.value; after(now); }
       catch (e) { msg.textContent = e; pick.value = String(now); }
       spin.remove(); pick.disabled = false;
     };
-    row.append(pick);
-    box.append(row);
+    r.append(pick);
+    return r;
+  };
+  Object.entries(a.people).sort(([, x], [, y]) => x.name.localeCompare(y.name)).forEach(([login, p]) => {
+    if (p.grants === null) {
+      const r = el("div", "item"), text = el("div", "text");
+      text.append(el("div", "title", p.name === login ? login : p.name), el("div", "sub", login));
+      r.append(text, pill(4, "Owners can open every repo"));
+      return box.append(r);
+    }
+    box.append(row(p.name === login ? login : p.name, login, null, Math.min(p.grants[repo] || 0, 2), login, level => { p.grants[repo] = level; }));
+  });
+  // interns are outside the organisation: their access is per repo, given here like anyone's
+  const RANK = { admin: 2, maintain: 2, write: 2, triage: 1, read: 1 };
+  internsNow.forEach(i => {
+    const has = i.repos.find(r => r.repo === repo);
+    const now = has ? (RANK[has.level] ?? 1) : 0;
+    box.append(row(i.login, has && has.invite ? `${i.login}, invited, not accepted yet` : i.login, "Intern", now, i.login, level => {
+      i.repos = i.repos.filter(r => r.repo !== repo);
+      if (level) i.repos.push({ repo, level: level === 2 ? "write" : "read", invite: null });
+    }));
   });
   box.append(msg);
   await ask(`Who can open ${repo}`, "Changes apply on GitHub as soon as you pick them.", [["done", "Done", true]], box);
@@ -714,6 +736,7 @@ async function peopleSection(org, user, teams, tree) {
   sec.append(head, el("p", "sub", `Everyone in ${org} on GitHub. Owners can open every repo and change everyone's access.`));
   let p;
   try { p = await invoke("org_people", { org }); } catch (e) { sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
+  internsNow = p.interns || [];
   const msg = el("p", "sub");
   const act = (fn, done, button, label) => async () => {
     msg.textContent = "";
