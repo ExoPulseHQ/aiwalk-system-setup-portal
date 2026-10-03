@@ -11,7 +11,7 @@ use std::time::Duration;
 
 const API: &str = "https://api.github.com";
 
-fn agent() -> &'static ureq::Agent {
+pub(crate) fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| ureq::Agent::config_builder().http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(40))).build().into())

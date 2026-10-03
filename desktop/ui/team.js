@@ -938,7 +938,34 @@ async function loadMachines() {
   const key = JSON.stringify([s.user, machines, org && org.teams]);
   if (page.dataset.key === key && page.querySelector(".section")) return;
   page.dataset.key = key;
-  page.replaceChildren(...head, machines.length ? machinesSection(machines, org, s.user) : el("p", "sub", "No machines are listed for your team yet."));
+  const owner = org && (org.people[s.user] || {}).grants === null;
+  page.replaceChildren(...head, machines.length ? machinesSection(machines, org, s.user) : el("p", "sub", "No machines are listed for your team yet."),
+    ...(owner ? [cloudflareSection()] : []));
+}
+
+// Owners: the Cloudflare API token that lets this app add machines, sign SSH certificates and end people's
+// sign-ins. Pasted once and kept in the system keyring; it is never shown again and never written to a file.
+function cloudflareSection() {
+  const sec = el("div", "section"), body = el("div", "list");
+  sec.append(el("h2", null, "Cloudflare"), el("p", "sub", "For owners. The machines sit behind Cloudflare; with an API token this app can manage them for you."), body);
+  const paint = async () => {
+    const st = await invoke("cf_state");
+    if (st.connected) {
+      const forget = el("button", "small ghost", "Disconnect");
+      forget.onclick = async () => { await invoke("cf_forget"); paint(); };
+      return body.replaceChildren(item("Connected", st.expires ? `The token runs until ${st.expires}.` : "The token does not expire.", null, forget));
+    }
+    const input = el("input"); input.type = "password"; input.placeholder = "Paste the API token"; input.autocomplete = "off";
+    const go = el("button", "small", "Connect"), msg = el("p", "sub", st.problem ? `The kept token no longer works: ${st.problem}` : "");
+    go.onclick = async () => {
+      if (!input.value.trim()) return;
+      try { toast(await working(go, "Checking", () => invoke("cf_connect", { token: input.value }))); paint(); }
+      catch (e) { msg.textContent = `Cloudflare did not take it: ${e}`; }
+    };
+    body.replaceChildren(item("Not connected", "Create a token in the Cloudflare dashboard (My Profile, API Tokens) and paste it here. It goes to this computer's keyring only.", null, input, go), msg);
+  };
+  paint();
+  return sec;
 }
 
 // Who may connect to a machine: exactly what its Cloudflare Access policy lets through. That is the members of
