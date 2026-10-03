@@ -25,7 +25,7 @@ function badge(s) {
     el("span", "method " + (a.method === "temporary" ? "m-temporary" : "m-off"), "Temporary credential"),
     el("span", "method m-off", "Security key"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, labLine(s), claudeLine());
+  who.append(methods, labLine(s), claudeLine(), pythonLine());
   const out = el("button", "ghost small", "Sign out of GitHub");
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -112,6 +112,31 @@ function labLine(s) {
     if (id.missing && !topped) { topped = true; const b = el("button", "small", "Finish signing in"); line.append(b); return step2(b); }
     state.className = "method m-key"; state.textContent = `Signed in as ${id.email}`;
     msg.textContent = `until ${until}, ` + (id.matches ? `same person as @${s.user}` : `not checked against @${s.user}: this GitHub sign-in predates the email check, sign out and in once`);
+  };
+  paint();
+  return line;
+}
+
+// Python 3 on this computer: Sync vault and the vault's hooks run on it. Windows ships none, so the badge says
+// whether it is there and installs it.
+function pythonLine() {
+  const line = el("div", "claude-line");
+  const state = el("span", "method m-off"); state.append(el("span", "spinner"));
+  const msg = el("span", "sub");
+  line.append(el("span", "label", "Python"), state, msg);
+  const paint = async () => {
+    const p = await invoke("python_state");
+    line.querySelectorAll("button").forEach(b => b.remove());
+    if (p.version) { state.className = "method m-key"; state.textContent = `Python ${p.version}`; msg.textContent = ""; return; }
+    state.className = "method m-temporary"; state.textContent = "Not installed";
+    msg.textContent = "Sync vault in Obsidian needs it.";
+    const b = el("button", "small", "Install Python");
+    b.onclick = async () => {
+      msg.textContent = "";
+      try { toast(await working(b, "Installing, a few minutes", () => invoke("python_install"))); } catch (e) { msg.textContent = e; return; }
+      paint();
+    };
+    line.append(b);
   };
   paint();
   return line;

@@ -528,8 +528,24 @@ pub fn owners_gone(then: &str, now: &[String]) -> Vec<String> {
     then.lines().map(str::trim).filter(|l| !l.is_empty() && !now.iter().any(|n| n.eq_ignore_ascii_case(l))).map(String::from).collect()
 }
 
+/// The version in what `python --version` printed, when it is Python 3 ("Python 3.12.4" gives "3.12.4"). Python 2
+/// and the Microsoft Store alias's "Python was not found ..." give None.
+pub fn python_version(out: &str) -> Option<String> {
+    let v = out.lines().find_map(|l| l.trim().strip_prefix("Python "))?.trim();
+    (v.starts_with("3.") && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '+')).then(|| v.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_python_3_counts() {
+        assert_eq!(python_version("Python 3.12.4\r\n").as_deref(), Some("3.12.4"));
+        assert_eq!(python_version("Python 3.13.0rc1").as_deref(), Some("3.13.0rc1"));
+        assert_eq!(python_version("Python 2.7.18"), None);
+        assert_eq!(python_version("Python was not found; run without arguments to install from the Microsoft Store"), None);
+        assert_eq!(python_version(""), None);
+    }
+
     #[test]
     fn owners_who_left_since_a_secret_was_shared() {
         let now = vec!["eddLai".to_string(), "gnaixihZ".to_string()];
