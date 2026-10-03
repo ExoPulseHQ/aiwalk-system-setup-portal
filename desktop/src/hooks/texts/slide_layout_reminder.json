@@ -1,0 +1,11 @@
+{
+  "header": "⚠ 內部 slide 版型規則（Templates/Slide_Internal_Template.md ② 頁）— 你正在改 `{file}`。",
+  "rule_grid_heading": "  (1) **一頁只要用了 `<grid>`，標題也必須放進自己的 grid**。留在 grid 外的內容不受定位，會被 reveal 垂直置中、以大字壓在右欄文字上。",
+  "rule_font_size": "  (2) **字級改 deck 開頭的 `<style>`，不要在頁面裡寫 element style 的 font-size**。那個註解會黏到前一個元素，掛在清單最後一項時會把該項的項目符號吃掉。",
+  "rule_two_column": "  (3) 左圖右字的標準版位：標題 <grid drag=\"96 10\" drop=\"2 2\">、圖 <grid drag=\"58 80\" drop=\"2 14\">（圖加 element style max-height: 540px）、文字 <grid drag=\"36 60\" drop=\"62 22\">（一行一個重點，不寫成整段）。圖撞到標題就把圖 drop 的第二個數字調大。",
+  "rule_whole_deck": "  (4) 版型要**整份一致**：改了一頁就把同 deck 其餘有圖的頁一起改，不要半套。",
+  "status": "  現況：{figures} 頁有圖，其中 {two_column} 頁用左圖右字版型（{state}）。",
+  "state_all": "全部雙欄",
+  "state_none": "**尚未套用**",
+  "state_half": "**只套了一半**"
+}

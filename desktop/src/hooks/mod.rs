@@ -16,6 +16,12 @@ use serde_json::Value;
 use std::io::Read;
 use std::path::PathBuf;
 
+mod file_location_reminder;
+mod pycompat;
+mod skills_registry_reminder;
+mod slide_layout_reminder;
+mod training_run_reminder;
+
 /// What a hook answers: printed as they are, then the process exits with `code`.
 #[derive(Debug, Default, PartialEq)]
 pub struct Out { pub stdout: String, pub stderr: String, pub code: i32 }
@@ -52,6 +58,10 @@ pub fn main(args: &[String]) -> i32 {
     let _ = std::io::stdin().read_to_end(&mut stdin);
     let out = match name {
         // one line per hook, in the order of the vault's .claude/hooks folder
+        "file_location_reminder" => file_location_reminder::run(&stdin),
+        "skills_registry_reminder" => skills_registry_reminder::run(&stdin),
+        "slide_layout_reminder" => slide_layout_reminder::run(&stdin),
+        "training_run_reminder" => training_run_reminder::run(&stdin),
         _ => { eprintln!("aiwalk-setup hook: no hook called {name}"); return 2 }
     };
     #[allow(unreachable_code)]
@@ -59,4 +69,4 @@ pub fn main(args: &[String]) -> i32 {
 }
 
 /// The hooks this build runs, for `--can` and for whoever writes the vault's settings.json.
-pub const NAMES: &[&str] = &["root-only-guard"];
+pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder"];

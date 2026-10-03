@@ -1,0 +1,18 @@
+{
+  "header": "⚠ Function Validation Protocol（[[Function_Validation_Protocol]]）：偵測到 ExoPulse 訓練 / eval / SCONE 入口（matched: {matched}）。",
+  "fixtures_heading": "**這次跑到的 canonical fixture，以及它應該給出什麼**：",
+  "fixture_line": "  - `{pattern}` — {fact}",
+  "fixtures_footer": "  對不上就是退化，不要當成雜訊。完整表：§2.b2 / §2.c1。",
+  "no_fixture": "  這個 run 不在 §2 的 canonical fixture 表上。若它是新 fixture 的首次跑通，記下 first-pass commit SHA + Dev Topic 代碼 → §6 五欄登記。",
+  "fixture_files": "  **Fixture 實體**：GDrive `ExoPulse_FVP_data/`（5 個 tar.gz）；本地 mirror `.20:~/exo/fvp_data_local/`；腳本在 vault [[Function_Validation_Registry_README|Function_Validation_Registry]]。**不是** `~/exo/ExoPulse/test_set/`（2026-07-25 已清）。",
+  "env_canary": "  **Env canary**：升過 numpy / scipy / pytorch / OpenSim 後，先跑 `stand_to_walk_from_scratch --max_steps 1000` 對 +30.5~34.5 m（2026-08-23 放寬，見 §2.b2），未過 = 禁 merge。",
+  "log_path": "  **Log 路徑**：`~/ExoPulse/depRL/logs/YYYY-MM/<name>.log`（2026-08-21 repo 從 `~/exo/ExoPulse` 搬到 `~/ExoPulse`，舊路徑已不存在）。",
+  "fact_stand_to_walk": "canary fixture. Run it with --max_steps 1000 (10 s): successful episodes give pelvis +30.5 to +34.5 m, and 4-5 episodes average 32-34 m. The band was +33.5 to +34.5 until 2026-08-23, built from n=2 per machine; measured again at n=8 that band fails even on unmodified code, so it was widened. Compare A/B against the same fixture on the pre-change commit, never against the recorded number alone. State the step count -- the same policy covers +50 m at 1500 steps and +104 m at 3000, so an unqualified number looks like a 3x regression. numpy canary: with numpy<2.0 SOME episodes still fall at ~101 steps with fall_timeout_head_too_low (2 of 5 measured), so a fall on its own proves nothing; numpy 2.0 makes EVERY episode fall within tens of steps. Mirror: .20:~/exo/fvp_data_local/forward_sim/",
+  "fact_v12b_consol": "PIN step_10000000. The peak is narrow and has collapsed by 16M, while `checkpoint: last` resolves to step_16000000. resolves to step_16000000. Expect at 10M: hip 3.96 / knee 7.35 / ankle 6.50 / mean 5.94, 9 episodes 0 falls.",
+  "fact_v8": "Expect @10.2M: knee 8.02 / hip 3.98 / ankle 6.01, mean 6.01, walks +34 m.",
+  "fact_v13_emg": "Expect @13M (not step_10M): kinematic mean ~7.13 (7.30 and 7.35 when remeasured 2026-08-23). The per-muscle figures on record -- bifemsh 0.28 -> 0.72, hamstrings -0.59 -> -0.19 -- DO NOT reproduce under the current GRF-sliced pipeline, which reads 0.865 / -0.630 on unmodified code. The recorded numbers name no script, so they cannot be aligned. Say which script you measured with, and compare A/B across code versions rather than against the recorded value. Control-vs-kinematic trade-off is the point of this fixture.",
+  "fact_v9a_knee3": "Expect @16M: knee trough -51.6 deg. Deployable baseline is v8@10.2M; this one is the deeper-knee variant.",
+  "fact_v15a": "Expect @16M: kinematic champion (mean 5.01 / knee 6.59) but control r_ctrl ~ 0. Do not read it as best-of-both.",
+  "fact_v7": "Expect @8.8M: the only multi-reference baseline inside the 3-8 deg gold band; knee 10.4/14.1 deg is the known ceiling.",
+  "fact_ev6": "Expect a correctly loaded E3: tau_R +3.4 / tau_L -15.8 (left-hip extension bias) and |dtau| ~2.9 N.m per step. A random actor gives neither -- assert on the torque signature, not on the exit code."
+}
