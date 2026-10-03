@@ -435,12 +435,12 @@ pub fn terms_version(text: &str) -> Option<u32> {
 /// The title of the issue that records one person accepting a version; its author is who accepted.
 pub fn terms_title(version: u32) -> String { format!("Terms v{version} accepted") }
 
-/// (version, date) of the newest acceptance among `gh issue list --json title,createdAt` rows, if any.
+/// (version, date) of the newest acceptance among GitHub issue rows (title, created_at), if any.
 pub fn terms_accepted(issues_json: &str) -> Option<(u32, String)> {
     let rows: Vec<Value> = serde_json::from_str(issues_json).unwrap_or_default();
     rows.iter().filter_map(|r| {
         let v = r["title"].as_str()?.strip_prefix("Terms v")?.strip_suffix(" accepted")?.parse().ok()?;
-        Some((v, r["createdAt"].as_str().unwrap_or_default().chars().take(10).collect()))
+        Some((v, r["created_at"].as_str().unwrap_or_default().chars().take(10).collect()))
     }).max()
 }
 
@@ -495,9 +495,9 @@ mod tests {
     fn terms_versions_and_acceptances() {
         assert_eq!(terms_version("<!-- terms version: 3 -->\n# Terms"), Some(3));
         assert_eq!(terms_version("# Terms\nno version"), None);
-        let rows = r#"[{"title":"Terms v1 accepted","createdAt":"2026-10-03T01:02:03Z"},
-                       {"title":"Terms v2 accepted","createdAt":"2026-11-01T00:00:00Z"},
-                       {"title":"write access to NTKCAP","createdAt":"2026-12-01T00:00:00Z"}]"#;
+        let rows = r#"[{"title":"Terms v1 accepted","created_at":"2026-10-03T01:02:03Z"},
+                       {"title":"Terms v2 accepted","created_at":"2026-11-01T00:00:00Z"},
+                       {"title":"write access to NTKCAP","created_at":"2026-12-01T00:00:00Z"}]"#;
         assert_eq!(terms_accepted(rows), Some((2, "2026-11-01".into())));
         assert_eq!(terms_accepted("[]"), None);
         assert_eq!(terms_title(2), "Terms v2 accepted");

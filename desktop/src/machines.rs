@@ -220,9 +220,10 @@ pub fn lab_identity(tunnels: Vec<String>) -> Option<serde_json::Value> {
     let claims: serde_json::Value = serde_json::from_slice(&base64url(payload)?).ok()?;
     let email = claims["email"].as_str().unwrap_or_default().to_lowercase();
     // the GitHub account's own emails; reading them needs gh's user:email scope, so "matches" stays null without it
-    let mine = crate::gh(&["api", "user/emails", "--jq", ".[].email"]).ok()
-        .or_else(|| crate::gh(&["api", "user", "--jq", ".email // empty"]).ok().filter(|e| !e.trim().is_empty()));
-    let matches = mine.map(|m| m.lines().any(|l| l.trim().eq_ignore_ascii_case(&email)));
+    let mine: Option<Vec<String>> = crate::github::all("user/emails").ok()
+        .map(|es| es.iter().filter_map(|e| e["email"].as_str().map(String::from)).collect())
+        .or_else(|| crate::github::get("user").ok().and_then(|u| u["email"].as_str().map(|e| vec![e.to_string()])));
+    let matches = mine.map(|m| m.iter().any(|l| l.eq_ignore_ascii_case(&email)));
     Some(serde_json::json!({ "email": email, "expires": claims["exp"], "matches": matches, "missing": missing }))
 }
 

@@ -15,6 +15,7 @@ use tauri::Emitter;
 // The phone and VM modules drive a Linux desktop (adb, scrcpy, docker, GNOME keyring).
 mod admin;
 mod claude;
+mod github;
 mod machines;
 mod update;
 mod vault;
@@ -136,9 +137,7 @@ pub fn gh(args: &[&str]) -> Result<String, String> {
     }
 }
 
-fn raw(repo: &str, path: &str) -> Result<String, String> {
-    gh(&["api", &format!("repos/{repo}/contents/{path}"), "-H", "Accept: application/vnd.github.raw"])
-}
+fn raw(repo: &str, path: &str) -> Result<String, String> { github::raw(repo, path) }
 
 #[derive(Serialize)]
 struct Vault {
@@ -173,17 +172,22 @@ struct Request {
     body: String,
 }
 
-fn open_requests(org: &str, mine: bool) -> Vec<Request> {
-    let repo = format!("{org}/{REQUESTS}");
-    let mut args = vec!["issue", "list", "-R", &repo, "--state", "open", "--json", "number,author,body", "--limit", "100"];
-    if mine { args.extend(["--author", "@me"]) }
-    let Ok(out) = gh(&args) else { return vec![] };
-    let issues: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap_or_default();
-    issues.iter().filter_map(|i| {
+/// Every open request; whose they are is the issue's author.
+fn open_requests(org: &str) -> Vec<Request> {
+    let issues = github::all(&format!("repos/{org}/{REQUESTS}/issues?state=open")).unwrap_or_default();
+    issues.iter().filter(|i| i.get("pull_request").is_none()).filter_map(|i| {
         let body = i["body"].as_str()?.to_string();
         let (repo, level) = parse_request(&body)?;
-        Some(Request { number: i["number"].as_u64()?, author: i["author"]["login"].as_str()?.to_string(), repo, level, body })
+        Some(Request { number: i["number"].as_u64()?, author: i["user"]["login"].as_str()?.to_string(), repo, level, body })
     }).collect()
+}
+
+/// Closes an issue, with a comment first when one is given. `reason` is "completed" or "not_planned".
+fn close_issue(repo: &str, number: u64, reason: &str, comment: Option<&str>) -> Result<(), String> {
+    if let Some(c) = comment {
+        github::send("POST", &format!("repos/{repo}/issues/{number}/comments"), Some(serde_json::json!({ "body": c })))?;
+    }
+    github::send("PATCH", &format!("repos/{repo}/issues/{number}"), Some(serde_json::json!({ "state": "closed", "state_reason": reason }))).map(|_| ())
 }
 
 #[derive(Serialize)]
@@ -206,52 +210,59 @@ fn team_access(app: tauri::AppHandle) -> State {
 }
 
 fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
-    let steps = 2 + VAULTS.len() * 3;
-    stage(1, steps, "Checking who is signed in");
-    let (user, name) = match gh(&["api", "user", "--jq", ".login, .name"]) {
-        Ok(out) => { let mut l = out.lines(); (l.next().unwrap_or_default().to_string(), l.next().filter(|n| *n != "null").map(String::from)) }
+    stage(1, 2, "Checking who is signed in");
+    let me = match github::get("user") {
+        Ok(v) => v,
         Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![] },
     };
-    // gh auth status writes to stderr; sh merges both
-    let accounts = parse_gh_status(&sh("gh", &["auth", "status", "--hostname", "github.com"], 15).1);
-    stage(2, steps, "Checking how this computer is signed in");
-    let vaults = VAULTS.iter().enumerate().map(|(k, &(name, repo, about))| {
-        let at = 3 + k * 3;
-        stage(at, steps, &format!("Reading how {name} is organised"));
+    let user = me["login"].as_str().unwrap_or_default().to_string();
+    let name = me["name"].as_str().filter(|n| !n.is_empty()).map(String::from);
+    stage(2, 2, "Reading your access from GitHub");
+    // the vaults are read side by side, next to gh's own account list; each vault asks its questions side by side too
+    let (accounts, vaults) = std::thread::scope(|s| {
+        // gh auth status writes to stderr; sh merges both
+        let accounts = s.spawn(|| parse_gh_status(&sh("gh", &["auth", "status", "--hostname", "github.com"], 15).1));
+        let vaults: Vec<_> = VAULTS.iter().map(|&(name, repo, about)| { let user = &user; s.spawn(move || read_vault(name, repo, about, user)) }).collect();
+        (accounts.join().unwrap_or_default(), vaults.into_iter().filter_map(|h| h.join().ok()).collect())
+    });
+    State { user: Some(user), name, accounts, error: None, vaults }
+}
+
+fn read_vault(name: &'static str, repo: &'static str, about: &'static str, user: &str) -> Vault {
+    std::thread::scope(|s| {
+        let permission = s.spawn(|| {
+            let p = github::get(&format!("repos/{repo}")).map(|v| v["permissions"].clone()).unwrap_or_default();
+            if p["admin"] == true { 4 } else if p["maintain"] == true { 3 } else if p["push"] == true { 2 }
+            else if p["triage"] == true || p["pull"] == true { 1 } else { 0 }
+        });
         let rules = RULES_PATHS.iter().find_map(|p| raw(repo, p).ok());
         let access = rules.as_deref().and_then(vault_repos).map(|v| {
-            let query = |q: String| gh(&["api", "graphql", "-f", &format!("query={q}")]).unwrap_or_default();
-            stage(at + 1, steps, &format!("Reading who can open what in {name}"));
+            let requests = s.spawn({ let org = v.org.clone(); move || open_requests(&org) });
+            let query = |q: String| github::graphql(&q).unwrap_or_default();
             let mut org = org_access(&query(org_query(&v.org)));
-            let owner = org.people.get(&user).is_some_and(|p| p.grants.is_none());
-            repo_grants(&mut org.people, &query(repos_query(&v.org, owner)), &user);
-            stage(at + 2, steps, "Reading access requests");
+            let owner = org.people.get(user).is_some_and(|p| p.grants.is_none());
+            repo_grants(&mut org.people, &query(repos_query(&v.org, owner)), user);
             // owners see every team; anyone else only the teams they are in, with no one else's name, which is
             // enough to tell them which machines they may reach
             let teams = if owner { org.teams } else {
-                org.teams.into_iter().filter(|t| t.members.contains(&user))
-                    .map(|mut t| { t.members.retain(|m| m == &user); t }).collect()
+                org.teams.into_iter().filter(|t| t.members.contains(user))
+                    .map(|mut t| { t.members.retain(|m| m == user); t }).collect()
             };
             let machines = machines(rules.as_deref().unwrap_or_default());
-            let people = visible_to(org.people, &user);
-            Access {
-                tree: build_tree(&v, &org.repo_teams), people, teams, machines,
-                requests: open_requests(&v.org, !owner), org: v.org,
-            }
+            let people = visible_to(org.people, user);
+            // an owner's requests are everyone's, anyone else's are their own
+            let requests = requests.join().unwrap_or_default().into_iter().filter(|r| owner || r.author == user).collect();
+            Access { tree: build_tree(&v, &org.repo_teams), people, teams, machines, requests, org: v.org }
         });
-        let p = gh(&["api", &format!("repos/{repo}"), "--jq", ".permissions | [.admin, .maintain, .push, .triage, .pull] | map(tostring) | join(\" \")"]).unwrap_or_default();
-        let permission = match p.split_whitespace().collect::<Vec<_>>()[..] {
-            ["true", ..] => 4, [_, "true", ..] => 3, [_, _, "true", ..] => 2, [.., "true", _] | [.., "true"] => 1, _ => 0,
-        };
-        Vault { name, repo, about, access, permission }
-    }).collect();
-    State { user: Some(user), name, accounts, error: None, vaults }
+        Vault { name, repo, about, access, permission: permission.join().unwrap_or(0) }
+    })
 }
 
 /// Signs `login` out of gh on this computer; any other account stays signed in and gh makes one of them active.
 #[tauri::command(async)]
 fn sign_out(login: String) -> Result<(), String> {
     gh(&["auth", "logout", "--hostname", "github.com", "--user", &login])?;
+    github::forget_token();
     machines::forget_access();   // the machines must not keep letting the signed-out person in
     Ok(())
 }
@@ -260,6 +271,7 @@ fn sign_out(login: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn switch_account(login: String) -> Result<(), String> {
     gh(&["auth", "switch", "--hostname", "github.com", "--user", &login])?;
+    github::forget_token();
     machines::forget_access();   // the next lab connection signs in as this account, not the previous one
     Ok(())
 }
@@ -268,15 +280,15 @@ fn switch_account(login: String) -> Result<(), String> {
 #[tauri::command(async)]
 fn set_team(org: String, team: String, login: String, member: bool) -> Result<(), String> {
     let path = format!("orgs/{org}/teams/{team}/memberships/{login}");
-    if member { gh(&["api", "-X", "PUT", &path, "-f", "role=member"]) } else { gh(&["api", "-X", "DELETE", &path]) }.map(|_| ())
+    if member { github::send("PUT", &path, Some(serde_json::json!({ "role": "member" }))) } else { github::send("DELETE", &path, None) }.map(|_| ())
 }
 
 /// Opens an access request as an issue in the org's request repo.
 #[tauri::command(async)]
 fn request_access(org: String, repo: String, level: String, note: String) -> Result<(), String> {
     if level != "read" && level != "write" { return Err(format!("unknown level {level}")) }
-    gh(&["issue", "create", "-R", &format!("{org}/{REQUESTS}"), "--title", &format!("{level} access to {repo}"),
-         "--body", &request_body(&repo, &level, &note)]).map(|_| ())
+    github::send("POST", &format!("repos/{org}/{REQUESTS}/issues"), Some(serde_json::json!({
+        "title": format!("{level} access to {repo}"), "body": request_body(&repo, &level, &note) }))).map(|_| ())
 }
 
 /// Grants an open request and closes it. Who gets access is the issue's author, never anything in its body.
@@ -284,28 +296,24 @@ fn request_access(org: String, repo: String, level: String, note: String) -> Res
 #[tauri::command(async)]
 fn approve_request(org: String, number: u64) -> Result<(), String> {
     let issues = format!("{org}/{REQUESTS}");
-    let n = number.to_string();
-    let issue: serde_json::Value = serde_json::from_str(&gh(&["issue", "view", &n, "-R", &issues, "--json", "author,body,state"])?)
-        .map_err(|e| e.to_string())?;
-    if issue["state"] != "OPEN" { return Err("this request is already closed".into()) }
-    let login = issue["author"]["login"].as_str().ok_or("request has no author")?;
+    let issue = github::get(&format!("repos/{issues}/issues/{number}"))?;
+    if issue["state"] != "open" { return Err("this request is already closed".into()) }
+    let login = issue["user"]["login"].as_str().ok_or("request has no author")?;
     let (repo, level) = parse_request(issue["body"].as_str().unwrap_or_default()).ok_or("request body is not readable")?;
     let rank = if level == "write" { 2 } else { 1 };
-    let org_json = gh(&["api", "graphql", "-f", &format!("query={}", org_query(&org))])?;
-    let team = org_access(&org_json).teams.into_iter()
+    let team = org_access(&github::graphql(&org_query(&org))?).teams.into_iter()
         .find(|t| t.slug != "core" && t.repos.len() == 1 && t.repos[0] == (repo.clone(), rank));
     match team {
-        Some(t) => gh(&["api", "-X", "PUT", &format!("orgs/{org}/teams/{}/memberships/{login}", t.slug), "-f", "role=member"])?,
-        None => gh(&["api", "-X", "PUT", &format!("repos/{org}/{repo}/collaborators/{login}"),
-                     "-f", &format!("permission={}", if level == "write" { "push" } else { "pull" })])?,
+        Some(t) => github::send("PUT", &format!("orgs/{org}/teams/{}/memberships/{login}", t.slug), Some(serde_json::json!({ "role": "member" })))?,
+        None => github::send("PUT", &format!("repos/{org}/{repo}/collaborators/{login}"),
+                             Some(serde_json::json!({ "permission": if level == "write" { "push" } else { "pull" } })))?,
     };
-    gh(&["issue", "close", &n, "-R", &issues, "--comment", "Approved in aIwalk System Setup."]).map(|_| ())
+    close_issue(&issues, number, "completed", Some("Approved in aIwalk System Setup."))
 }
 
 #[tauri::command(async)]
 fn decline_request(org: String, number: u64) -> Result<(), String> {
-    gh(&["issue", "close", &number.to_string(), "-R", &format!("{org}/{REQUESTS}"), "--reason", "not planned",
-         "--comment", "Declined in aIwalk System Setup."]).map(|_| ())
+    close_issue(&format!("{org}/{REQUESTS}"), number, "not_planned", Some("Declined in aIwalk System Setup."))
 }
 
 // ---------------------------------------------------------------- Terms
@@ -322,31 +330,35 @@ fn terms_state() -> Option<serde_json::Value> {
     // asked before anything else is read, so the organisation is the first vault's owner, not the vault's rules
     let org = VAULTS[0].1.split('/').next()?.to_string();
     let repo = format!("{org}/{REQUESTS}");
-    let text = gh(&["api", &format!("repos/{repo}/contents/{TERMS}"), "-H", "Accept: application/vnd.github.raw"]).ok()?;
+    // the text and this account's acceptances, side by side
+    let (text, mine) = std::thread::scope(|s| {
+        let text = s.spawn(|| github::raw(&repo, TERMS).ok());
+        let login = github::get("user").ok().and_then(|u| u["login"].as_str().map(String::from)).unwrap_or_default();
+        let mine = github::all(&format!("repos/{repo}/issues?state=all&creator={login}")).unwrap_or_default();
+        (text.join().ok().flatten(), mine)
+    });
+    let text = text?;
     let version = terms_version(&text)?;
-    // the author filter is GitHub's issue list, not search, so an acceptance made a moment ago is already there
-    let mine = gh(&["issue", "list", "-R", &repo, "--author", "@me", "--state", "all", "--json", "title,createdAt", "--limit", "200"]).unwrap_or_default();
-    let accepted = terms_accepted(&mine).map(|(v, date)| serde_json::json!({ "version": v, "date": date }));
+    let accepted = terms_accepted(&serde_json::Value::Array(mine).to_string()).map(|(v, date)| serde_json::json!({ "version": v, "date": date }));
     Some(serde_json::json!({ "org": org, "version": version, "text": text, "accepted": accepted }))
 }
 
 #[tauri::command(async)]
 fn terms_accept(org: String, version: u32) -> Result<(), String> {
     let repo = format!("{org}/{REQUESTS}");
-    let url = gh(&["issue", "create", "-R", &repo, "--title", &terms_title(version),
-                   "--body", &format!("terms: {version}\n\nAccepted in aIwalk System Setup.")])?;
+    let issue = github::send("POST", &format!("repos/{repo}/issues"), Some(serde_json::json!({
+        "title": terms_title(version), "body": format!("terms: {version}\n\nAccepted in aIwalk System Setup.") })))?;
     // closed at once: it is a record, not something for the owners to act on
-    let _ = gh(&["issue", "close", url.trim(), "-R", &repo]);
+    if let Some(n) = issue["number"].as_u64() { let _ = close_issue(&repo, n, "completed", None); }
     Ok(())
 }
 
 /// Owners: everyone's newest acceptance, login -> {version, date}.
 #[tauri::command(async)]
 fn terms_everyone(org: String) -> BTreeMap<String, serde_json::Value> {
-    let out = gh(&["issue", "list", "-R", &format!("{org}/{REQUESTS}"), "--state", "all", "--json", "title,createdAt,author", "--limit", "1000"]).unwrap_or_default();
-    let rows: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap_or_default();
+    let rows = github::all(&format!("repos/{org}/{REQUESTS}/issues?state=all")).unwrap_or_default();
     let mut by: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-    for r in rows { if let Some(l) = r["author"]["login"].as_str() { by.entry(l.to_string()).or_default().push(r.clone()) } }
+    for r in rows { if let Some(l) = r["user"]["login"].as_str() { by.entry(l.to_string()).or_default().push(r.clone()) } }
     by.into_iter().filter_map(|(login, rs)| {
         let (v, date) = terms_accepted(&serde_json::to_string(&rs).ok()?)?;
         Some((login, serde_json::json!({ "version": v, "date": date })))
@@ -392,6 +404,7 @@ fn sign_in(app: tauri::AppHandle) -> bool {
     }
     let ok = child.wait().is_ok_and(|s| s.success());
     if ok {
+        github::forget_token();
         let _ = gh(&["auth", "setup-git"]);
     }
     ok
@@ -449,6 +462,13 @@ fn main() {
     }
     if std::env::args().any(|a| a == "--claude") {
         println!("{}", serde_json::to_string(&claude::claude_state()).unwrap());
+        return;
+    }
+    // --api METHOD PATH [JSON]: one question to GitHub through the app's own client, for checking it by hand
+    if let Some(i) = std::env::args().position(|a| a == "--api") {
+        let a: Vec<String> = std::env::args().skip(i + 1).collect();
+        let body = a.get(2).map(|b| serde_json::from_str(b).expect("the body must be JSON"));
+        match github::send(&a[0], &a[1], body) { Ok(v) => println!("{v}"), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }
         return;
     }
     if std::env::args().any(|a| a == "--dump") {

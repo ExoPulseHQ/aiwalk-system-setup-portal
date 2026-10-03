@@ -5,7 +5,7 @@
 //! everyone's computer. The release workflow builds only for an owner's tag; keep write access to the repository
 //! to people trusted with that.
 
-use crate::{cmd, gh, sh};
+use crate::{cmd, sh};
 use exo_core::newer;
 
 const REPO: &str = "ExoPulseHQ/aiwalk-system-setup-portal";
@@ -34,7 +34,8 @@ fn pattern() -> Option<&'static str> {
 /// This version, the newest release, and whether one click can install it here.
 #[tauri::command(async)]
 pub fn update_state() -> serde_json::Value {
-    let latest = gh(&["release", "view", "-R", REPO, "--json", "tagName", "--jq", ".tagName"]).map(|t| t.trim().to_string()).unwrap_or_default();
+    let latest = crate::github::get(&format!("repos/{REPO}/releases/latest")).ok()
+        .and_then(|r| r["tag_name"].as_str().map(String::from)).unwrap_or_default();
     serde_json::json!({ "current": VERSION, "latest": latest, "newer": newer(&latest, VERSION), "can": pattern().is_some() })
 }
 
