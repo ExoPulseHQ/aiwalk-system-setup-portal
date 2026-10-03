@@ -12,6 +12,8 @@
 
 #![allow(dead_code)]   // the helpers below are for the hooks, which land one file at a time
 
+mod writing_style_reminder;
+
 use serde_json::Value;
 use std::io::Read;
 use std::path::PathBuf;
@@ -52,6 +54,7 @@ pub fn main(args: &[String]) -> i32 {
     let _ = std::io::stdin().read_to_end(&mut stdin);
     let out = match name {
         // one line per hook, in the order of the vault's .claude/hooks folder
+        "writing_style_reminder" => writing_style_reminder::run(&stdin),
         _ => { eprintln!("aiwalk-setup hook: no hook called {name}"); return 2 }
     };
     #[allow(unreachable_code)]
@@ -59,4 +62,4 @@ pub fn main(args: &[String]) -> i32 {
 }
 
 /// The hooks this build runs, for `--can` and for whoever writes the vault's settings.json.
-pub const NAMES: &[&str] = &["root-only-guard"];
+pub const NAMES: &[&str] = &["root-only-guard", "writing_style_reminder"];
