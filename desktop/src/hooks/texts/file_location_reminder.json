@@ -1,0 +1,3 @@
+{
+  "reminder": "⚠ File Location Discipline 必觸發提醒（[[Function_Validation_Protocol]] §5）：你正把輸出寫到 **home 根層** ({targets})，違反檔案位置紀律。改用以下 canonical 位置：\n  • 訓練 log（`.log` from deprl.main / SCONE / eval_cli）→ `~/ExoPulse/depRL/logs/YYYY-MM/<experiment>.log`\n  • Probe / eval 腳本（`.py`/`.sh`）→ vault `Project_Management/Function_Validation_Registry/debug/probes/`（`.20` 執行位置:`~/ExoPulse_docs/Project_Management/Function_Validation_Registry/debug/probes/<yyyymmdd>_<purpose>.py`）\n  • 分析輸出（`.png`/`.sto`/`.mot`）→ 進實驗夾或 `~/thesis_results/figures/staging/`\n  • Env dump（conda list / pip freeze）→ `~/archive/env_snapshots/YYYY-MM-DD/`\n若真的短暫落 ~/ 是必要的（例如 nohup 跑完立刻搬），開跑前 `mkdir -p` 目標夾、跑完 `mv` 過去。"
+}

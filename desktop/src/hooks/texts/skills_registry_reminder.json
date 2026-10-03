@@ -1,0 +1,4 @@
+{
+  "row": "- `{skill}`: {description}",
+  "context": "VAULT SKILLS REGISTRY (from System/Skills_Registry.md) — these skills are installed/registered for this vault:\n{rows}\n\nRULE: before doing a task ad-hoc, check this list. If a registered skill covers the task, tell the user which skill applies and ASK whether to use it (AskUserQuestion or a one-line question) instead of silently ignoring it. Details/trial notes: [[Skills_Registry]]."
+}
