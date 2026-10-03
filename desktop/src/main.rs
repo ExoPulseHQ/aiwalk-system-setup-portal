@@ -19,6 +19,7 @@ mod claude;
 mod cloudflare;
 mod github;
 mod machines;
+mod ptycli;
 mod python;
 mod update;
 mod vault;
@@ -410,6 +411,9 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 fn main() {
     use_bundled_tools();
     // `vault <cmd>`: scripts/vault_ship.py for computers without Python, run in the vault's folder
+    if std::env::args().nth(1).as_deref() == Some("pty") {
+        std::process::exit(ptycli::main(&std::env::args().skip(2).collect::<Vec<_>>()));
+    }
     if std::env::args().nth(1).as_deref() == Some("vault") {
         vaultcli::main(&std::env::args().skip(2).collect::<Vec<_>>());
         return;
@@ -481,7 +485,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": false, "guard": false, "hook": false }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "guard": false, "hook": false }));
         return;
     }
     // --python: which Python 3 this computer has, as the badge reads it

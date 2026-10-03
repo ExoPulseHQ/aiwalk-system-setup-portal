@@ -537,8 +537,61 @@ pub fn python_version(out: &str) -> Option<String> {
     (v.starts_with("3.") && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '+')).then(|| v.to_string())
 }
 
+/// Takes terminal resize requests out of a byte stream headed for a pseudo-terminal. A request is
+/// ESC ] 777 ; resize ; COLS ; ROWS BEL. Everything else passes through untouched, in order, including bytes that
+/// only began like a request. A request may be split across reads; the scanner keeps the unfinished part.
+#[derive(Default)]
+pub struct ResizeScanner { held: Vec<u8> }
+
+impl ResizeScanner {
+    const START: &'static [u8] = b"\x1b]777;resize;";
+
+    /// (bytes for the terminal, sizes asked for as (cols, rows)) from the next chunk of the stream.
+    pub fn feed(&mut self, chunk: &[u8]) -> (Vec<u8>, Vec<(u16, u16)>) {
+        let (mut out, mut sizes) = (Vec::with_capacity(chunk.len()), vec![]);
+        for &b in chunk {
+            if self.held.is_empty() {
+                if b == 0x1b { self.held.push(b) } else { out.push(b) }
+                continue;
+            }
+            let at = self.held.len();
+            if at < Self::START.len() {
+                if b == Self::START[at] { self.held.push(b); continue }
+            } else if b == 0x07 {
+                let body = String::from_utf8_lossy(&self.held[Self::START.len()..]).into_owned();
+                let size = body.split_once(';').and_then(|(c, r)| Some((c.parse().ok()?, r.parse().ok()?)));
+                match size { Some(s) => { sizes.push(s); self.held.clear(); continue } None => {} }
+            } else if (b.is_ascii_digit() || b == b';') && at < Self::START.len() + 11 {
+                self.held.push(b);
+                continue;
+            }
+            // not a request after all: what was held goes to the terminal, and this byte is looked at afresh
+            out.append(&mut self.held);
+            if b == 0x1b { self.held.push(b) } else { out.push(b) }
+        }
+        (out, sizes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resize_requests_leave_the_stream_and_nothing_else_does() {
+        let mut sc = ResizeScanner::default();
+        assert_eq!(sc.feed(b"ls\r\x1b]777;resize;120;40\x07cd"), (b"ls\rcd".to_vec(), vec![(120, 40)]));
+        // split across reads, one byte at a time
+        let mut all = (vec![], vec![]);
+        for b in b"a\x1b]777;resize;80;24\x07b" { let (o, z) = sc.feed(&[*b]); all.0.extend(o); all.1.extend(z); }
+        assert_eq!(all, (b"ab".to_vec(), vec![(80, 24)]));
+        // other escape sequences, a look-alike and a malformed request pass through whole
+        for other in [&b"\x1b[A"[..], b"\x1b]0;title\x07", b"\x1b]777;notify;hi\x07", b"\x1b]777;resize;x\x07", b"\x1b]777;resize;12;\x07", b"\x1b\x1b[B"] {
+            assert_eq!(sc.feed(other), (other.to_vec(), vec![]), "{other:?}");
+        }
+        // an unfinished request stays held until the stream says more
+        assert_eq!(sc.feed(b"x\x1b]777;res"), (b"x".to_vec(), vec![]));
+        assert_eq!(sc.feed(b"et"), (b"\x1b]777;reset".to_vec(), vec![]));
+    }
+
     #[test]
     fn only_python_3_counts() {
         assert_eq!(python_version("Python 3.12.4\r\n").as_deref(), Some("3.12.4"));
