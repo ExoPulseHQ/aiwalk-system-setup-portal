@@ -789,14 +789,12 @@ async function loadTeam(viewAs) {
   if (first) page.replaceChildren(el("h1", null, "Team access"), progress);
   const t = await invoke("tools");
   if (!t.gh || !t.git) return page.replaceChildren(missingTools(t));
+  // the team's terms come first, once per version: two quick questions to GitHub, before the long read of access
+  if (!termsOk() || !termsNow) termsNow = await invoke("terms_state");
+  if (!termsOk()) return page.replaceChildren(termsView(termsNow, termsNow.org, true));
   const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
   const s = lastTeam = await invoke("team_access").finally(stop);
   if (!s.user) return page.replaceChildren(signInView(s.error));
-  // the team's terms come before anything else, once per version
-  const termsOrg = (s.vaults.find(v => v.access) || {}).access;
-  if (termsOrg && (termsNow = await invoke("terms_state", { org: termsOrg.org })) && !termsOk()) {
-    return page.replaceChildren(termsView(termsNow, termsOrg.org, true));
-  }
   await refreshLocal();
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
   const parts = [el("h1", null, "Team access"),
@@ -973,7 +971,11 @@ function termsView(t, org, asking) {
     agree.disabled = true;
     text.onscroll = atEnd; setTimeout(atEnd, 0);   // a short text fits without scrolling
     agree.onclick = async () => {
-      try { await working(agree, "Recording", () => invoke("terms_accept", { org, version: t.version })); termsNow = null; loadTeam(); }
+      try {
+        await working(agree, "Recording", () => invoke("terms_accept", { org, version: t.version }));
+        t.accepted = { version: t.version, date: new Date().toISOString().slice(0, 10) };   // recorded: no second look-up
+        loadTeam();
+      }
       catch (e) { note.textContent = `Could not record it: ${e}`; }
     };
     const row = el("div", "agree"); row.append(agree, note); wrap.append(row);
@@ -986,7 +988,7 @@ async function loadTerms() {
   const s = lastTeam, access = s && (s.vaults.find(v => v.access) || {}).access;
   if (!access) return page.replaceChildren(el("h1", null, "Terms"), el("p", "sub", "Sign in on Team access to read the team's terms."));
   page.replaceChildren(el("h1", null, "Terms"), stage("Reading the terms"));
-  const t = termsNow || await invoke("terms_state", { org: access.org });
+  const t = termsNow || await invoke("terms_state");
   if (!t) return page.replaceChildren(el("h1", null, "Terms"), el("p", "sub", "Your team has no terms yet."));
   const view = termsView(t, access.org, false);
   page.replaceChildren(view);

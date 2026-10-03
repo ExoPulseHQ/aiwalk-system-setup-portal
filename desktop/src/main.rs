@@ -316,16 +316,18 @@ fn decline_request(org: String, number: u64) -> Result<(), String> {
 const TERMS: &str = "TERMS.md";
 
 /// The terms text, its version, and the newest version this account accepted (with the date). None when the
-/// organisation has no terms file, so nothing is asked.
+/// organisation has no terms file or nobody is signed in, so nothing is asked.
 #[tauri::command(async)]
-fn terms_state(org: String) -> Option<serde_json::Value> {
+fn terms_state() -> Option<serde_json::Value> {
+    // asked before anything else is read, so the organisation is the first vault's owner, not the vault's rules
+    let org = VAULTS[0].1.split('/').next()?.to_string();
     let repo = format!("{org}/{REQUESTS}");
     let text = gh(&["api", &format!("repos/{repo}/contents/{TERMS}"), "-H", "Accept: application/vnd.github.raw"]).ok()?;
     let version = terms_version(&text)?;
     // the author filter is GitHub's issue list, not search, so an acceptance made a moment ago is already there
     let mine = gh(&["issue", "list", "-R", &repo, "--author", "@me", "--state", "all", "--json", "title,createdAt", "--limit", "200"]).unwrap_or_default();
     let accepted = terms_accepted(&mine).map(|(v, date)| serde_json::json!({ "version": v, "date": date }));
-    Some(serde_json::json!({ "version": version, "text": text, "accepted": accepted }))
+    Some(serde_json::json!({ "org": org, "version": version, "text": text, "accepted": accepted }))
 }
 
 #[tauri::command(async)]
