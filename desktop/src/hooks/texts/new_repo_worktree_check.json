@@ -1,0 +1,3 @@
+{
+  "reminder": "⚠ Git Worktree Development Protocol 必觸發提醒（CLAUDE.md §Git Rules）：\n你正在編輯外部 git repo 的 **main 工作樹** `{repo}`（不是 vault、不是 submodule、不是 linked worktree）。\n\n**強制走 worktree 副本**（詳見 [[Git_Worktree_Protocol]]）：\n  1. `cd {repo} && git worktree add ~/<repo>-<feature> -b feat/<feature>`\n  2. 進副本 `~/<repo>-<feature>/` 開發，所有變更寫在 branch\n  3. 本體停 main 不直接改；merge 於副本內執行、過測試 protocol 才 push\n\n**例外**：若這是使用者尚未登記的**全新 repo**（測試中、還沒決定要不要納入），先詢問使用者要 (a) 建成專案分支（worktree + branch）(b) 納為本 vault 的 submodule (c) 暫不處理；得到答覆前勿逕自就地大改。已登記/共用 repo（如 `~/NTKCAP`）沒有此例外。"
+}
