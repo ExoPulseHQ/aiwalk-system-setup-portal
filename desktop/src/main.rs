@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 // The phone and VM modules drive a Linux desktop (adb, scrcpy, docker, GNOME keyring).
+mod access;
 mod admin;
 mod claude;
 mod cloudflare;
@@ -416,6 +417,18 @@ fn main() {
         let state = vm::vm_state();
         let password_saved = vm::find().is_some_and(|v| vm::load_password(&v.user).is_some());
         println!("{}", serde_json::json!({ "vm": state, "password_saved": password_saved, "phones": android::phones() }));
+        return;
+    }
+    // Cloudflare Access done by the app itself (access.rs). `--ssh-proxy <host>` is ssh's ProxyCommand; `--ssh-cert
+    // <host>` and `--access-get <url>` are for checking by hand. Errors go to stderr, where ssh shows them.
+    if let Some(flag @ ("--ssh-proxy" | "--ssh-cert" | "--access-get")) = std::env::args().nth(1).as_deref() {
+        let Some(arg) = std::env::args().nth(2) else { eprintln!("{flag} needs a host or URL"); std::process::exit(2) };
+        let done = match flag {
+            "--ssh-proxy" => access::ssh_proxy(&arg),
+            "--ssh-cert" => access::ssh_cert(&arg).map(|(k, c)| println!("key {}\ncertificate {}", k.display(), c.display())),
+            _ => access::get(&arg).map(|body| println!("{body}")),
+        };
+        if let Err(e) = done { eprintln!("{e}"); std::process::exit(1) }
         return;
     }
     // `--reach a b …` prints the connection check for those aliases or addresses
