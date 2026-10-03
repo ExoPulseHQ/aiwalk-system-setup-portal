@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""exo: the lab machines' side of the vault plugin's "Sync code" page.
+
+    exo code status [--no-fetch] [--repos ExoPulse,NTKCAP,depRL] [repo-path ...]
+    exo code diff WORKTREE
+    exo code commit WORKTREE --name N --email E -m SUBJECT [--body B] FILE...
+    exo code push WORKTREE
+    exo code pull WORKTREE        (the main copy, on the trunk: fast-forward only)
+    exo code finish WORKTREE      (merged and clean: removes the worktree and its branch)
+
+`status` prints one JSON object describing every git repo in this account: its worktrees, what is changed or unpushed in each,
+how far `main` is behind GitHub, and the branches that have no worktree. It only reads; nothing is changed except
+`git fetch`. With no paths it looks for repos (a `.git` folder, so not worktrees) up to two levels below $HOME;
+`--repos` keeps those whose GitHub repo has one of these names (any owner, so a repo not yet moved into the org still counts).
+The other commands change one worktree and print {"ok": true, ...}; each checks its own rules (never commit or push the
+trunk, never finish a worktree with work not in git) instead of trusting the caller, and refuses with {"ok": false, "error"}.
+The plugin runs it over ssh; a person can run it too. Design: vault Project_Management/Code_Repo_Sync_PR_Plugin_Design_Summary.md
+"""
+import argparse, json, os, re, socket, subprocess, sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+FETCH_TIMEOUT = 15   # seconds per repo; a slow GitHub must not hold the page
+
+
+def git(repo, *args, timeout=10):
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=timeout)
+    return r.stdout.rstrip() if r.returncode == 0 else None   # rstrip: porcelain lines start with a meaningful space
+
+
+def strip_git(url):   # str.removesuffix needs Python 3.9; ox runs Ubuntu 20.04 with 3.8
+    return url[:-4] if url.endswith(".git") else url
+
+
+def count(repo, *rng):
+    n = git(repo, "rev-list", "--count", *rng)
+    return int(n) if n is not None else None
+
+
+def find_repos(home):
+    out = []
+    for root, dirs, _ in os.walk(home):
+        depth = root[len(home):].count(os.sep)
+        if ".git" in dirs and os.path.isdir(os.path.join(root, ".git")):
+            out.append(root)
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "__pycache__")] if depth < 2 else []
+    return sorted(out)
+
+
+def default_branch(repo):
+    ref = git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if ref:
+        return ref.split("/", 1)[1]
+    for b in ("main", "master"):   # NTKCAP's trunk is master; never assume main
+        if git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{b}") is not None:
+            return b
+    return "main"
+
+
+def worktrees(repo):
+    wts, cur = [], {}
+    for line in (git(repo, "worktree", "list", "--porcelain") or "").splitlines() + [""]:
+        if not line:
+            if cur: wts.append(cur)
+            cur = {}
+        elif line.startswith("worktree "): cur["path"] = line[9:]
+        elif line.startswith("HEAD "): cur["head"] = line[5:12]
+        elif line.startswith("branch "): cur["branch"] = line[7:][11:] if line[7:].startswith("refs/heads/") else line[7:]
+        elif line == "detached": cur["branch"] = None
+    return wts
+
+
+def status(repo, fetch):
+    fetched = None
+    if fetch:
+        try:
+            r = subprocess.run(["git", "-C", repo, "fetch", "-q", "--prune", "origin"], capture_output=True, text=True, timeout=FETCH_TIMEOUT)
+            fetched = "ok" if r.returncode == 0 else (r.stderr.strip().splitlines() or ["failed"])[-1]
+        except subprocess.TimeoutExpired:
+            fetched = f"timed out after {FETCH_TIMEOUT} s"
+    url = git(repo, "remote", "get-url", "origin") or ""
+    dflt = default_branch(repo)
+    base = f"origin/{dflt}"
+    rows = []
+    for i, w in enumerate(worktrees(repo)):
+        b = w.get("branch")
+        st = [(l[:2], l[3:]) for l in (git(w["path"], "status", "--porcelain=v1", "--untracked-files=normal") or "").splitlines() if len(l) > 3]
+        # edits to tracked files are work to upload; new files are often outputs (runs, logs, .so), so they are listed apart, as Sync vault does
+        changed, new = [p for x, p in st if x != "??"], [p for x, p in st if x == "??"]
+        row = {"path": w["path"], "branch": b, "head": w.get("head"), "main": i == 0, "changed": changed[:50], "changed_count": len(changed), "new": new[:50], "new_count": len(new)}
+        if b == dflt:
+            row["behind"] = count(w["path"], f"HEAD..{base}")
+            row["ahead"] = count(w["path"], f"{base}..HEAD")
+        elif b:
+            pushed = git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{b}") is not None
+            row["pushed"] = pushed
+            row["unpushed"] = count(repo, f"origin/{b}..{b}") if pushed else count(repo, f"{base}..{b}")
+            # merged: some commit on the trunk descends from this branch's tip by a merge (squash merges are off)
+            row["merged"] = (count(repo, "--merges", "--ancestry-path", f"{b}..{base}") or 0) > 0
+            row["author"] = git(repo, "log", "-1", "--format=%an", f"{base}..{b}") or git(repo, "log", "-1", "--format=%an", b)
+        rows.append(row)
+    with_wt = {r["branch"] for r in rows}
+    loose = [b for b in (git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads") or "").splitlines() if b not in with_wt]
+    return {"repo": os.path.basename(repo), "path": repo, "remote": strip_git(url.split(":", 1)[-1]),
+            "default": dflt, "fetch": fetched, "worktrees": rows, "no_worktree": loose}
+
+
+# a login token or key never goes up from here, whatever the caller ticked (same pattern as the vault's Sync)
+SECRET = re.compile(r"(^|/)(\.env|[^/]*(token|credential|secret|password|id_rsa|id_ed25519)[^/]*)$", re.I)
+
+
+class Refuse(Exception):
+    pass
+
+
+def must(repo, *args, timeout=60):
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=timeout)
+    if r.returncode:
+        raise Refuse(((r.stderr or r.stdout).strip().splitlines() or [f"git {args[0]} failed"])[-1])
+    return r.stdout
+
+
+def where(path):
+    """The worktree's repo, branch, trunk and whether it is the repo's main copy."""
+    top = git(path, "rev-parse", "--show-toplevel")
+    if not top:
+        raise Refuse(f"{path} is not inside a git worktree")
+    repo = os.path.dirname(git(path, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    return repo, git(path, "symbolic-ref", "--short", "-q", "HEAD"), default_branch(repo), os.path.realpath(top) == os.path.realpath(repo), top
+
+
+def feature(path):
+    repo, b, dflt, is_main, top = where(path)
+    if not b or b == dflt:
+        raise Refuse(f"{top} is on {b or 'a detached commit'}; work on a feature branch in its own worktree")
+    return repo, b, dflt, top
+
+
+def act(cmd, a):
+    if cmd == "diff":
+        repo, b, dflt, _, top = where(a.path)
+        base = f"origin/{b}" if b and git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{b}") is not None else f"origin/{dflt}"
+        diff = git(top, "diff", "HEAD") or ""
+        return {"branch": b, "diff": diff[:60000], "truncated": len(diff) > 60000,
+                "new": [l[3:] for l in (git(top, "status", "--porcelain=v1") or "").splitlines() if l.startswith("??")],
+                "unpushed": (git(top, "log", "--format=%s", f"{base}..HEAD") or "").splitlines()}
+    if cmd == "commit":
+        repo, b, _, top = feature(a.path)
+        if not a.files:
+            raise Refuse("no files ticked")
+        bad = [f for f in a.files if SECRET.search(f)]
+        if bad:
+            raise Refuse(f"looks like a login token or key, not uploaded: {', '.join(bad)}")
+        must(top, "add", "-A", "--", *a.files)
+        msg = ["-m", a.m] + (["-m", a.body] if a.body else [])
+        # ponytail: the author comes from the caller's gh login; once each person signs in with a certificate, take it from EXO_USER instead
+        env = {**os.environ, "GIT_AUTHOR_NAME": a.name, "GIT_AUTHOR_EMAIL": a.email, "GIT_COMMITTER_NAME": a.name, "GIT_COMMITTER_EMAIL": a.email}
+        r = subprocess.run(["git", "-C", top, "commit", "-q", *msg, "--", *a.files], capture_output=True, text=True, env=env, timeout=60)
+        if r.returncode:
+            raise Refuse(((r.stderr or r.stdout).strip().splitlines() or ["commit failed"])[-1])
+        return {"branch": b, "commit": git(top, "rev-parse", "--short", "HEAD")}
+    if cmd == "push":
+        repo, b, _, top = feature(a.path)
+        must(top, "push", "-q", "-u", "origin", f"HEAD:refs/heads/{b}", timeout=180)
+        return {"branch": b}
+    if cmd == "pull":
+        repo, b, dflt, is_main, top = where(a.path)
+        if not is_main or b != dflt:
+            raise Refuse(f"bring in updates only on the main copy on {dflt}")
+        must(top, "fetch", "-q", "origin", timeout=120)
+        before = git(top, "rev-parse", "--short", "HEAD")
+        must(top, "merge", "-q", "--ff-only", f"origin/{dflt}")
+        return {"branch": b, "from": before, "to": git(top, "rev-parse", "--short", "HEAD")}
+    if cmd == "finish":
+        repo, b, dflt, top = feature(a.path)
+        if os.path.realpath(top) == os.path.realpath(repo):
+            raise Refuse("the main copy is never removed")
+        left = (git(top, "status", "--porcelain=v1") or "").splitlines()
+        if left:
+            raise Refuse(f"{len(left)} changes are not in git yet; keep or drop them first")
+        must(repo, "fetch", "-q", "origin", timeout=120)
+        if (count(repo, "--merges", "--ancestry-path", f"{b}..origin/{dflt}") or 0) == 0:
+            raise Refuse(f"{b} is not merged into {dflt} on GitHub yet")
+        must(repo, "worktree", "remove", top)
+        must(repo, "branch", "-D", b)   # -D: merged into origin's trunk was checked above; the local trunk may lag
+        return {"branch": b, "removed": top}
+
+
+def main(argv):
+    if argv[:1] != ["code"] or len(argv) < 2:
+        print(__doc__.strip(), file=sys.stderr); return 2
+    if argv[1] != "status":
+        p = argparse.ArgumentParser(prog=f"exo code {argv[1]}")
+        p.add_argument("path")
+        if argv[1] == "commit":
+            p.add_argument("--name", required=True); p.add_argument("--email", required=True)
+            p.add_argument("-m", required=True); p.add_argument("--body", default="")
+            p.add_argument("files", nargs="*")
+        if argv[1] not in ("diff", "commit", "push", "pull", "finish"):
+            print(__doc__.strip(), file=sys.stderr); return 2
+        a = p.parse_intermixed_args(argv[2:])   # path, options, then files, in any order
+        try:
+            print(json.dumps({"ok": True, **act(argv[1], a)}, ensure_ascii=False)); return 0
+        except (Refuse, subprocess.TimeoutExpired) as e:
+            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)); return 1
+    rest = argv[2:]
+    fetch = "--no-fetch" not in rest
+    names = next((rest[i + 1] for i, a in enumerate(rest[:-1]) if a == "--repos"), "")
+    want = {n.lower() for n in names.split(",") if n}
+    paths = [os.path.abspath(os.path.expanduser(p)) for p in rest if not p.startswith("--") and p != names] or find_repos(os.path.expanduser("~"))
+    if want:   # the remote's last part, so a second clone of the same repo shows up too (and can be flagged)
+        paths = [p for p in paths if strip_git((git(p, "remote", "get-url", "origin") or "").rstrip("/")).rsplit("/", 1)[-1].lower() in want]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        repos = list(ex.map(lambda p: status(p, fetch), paths))
+    print(json.dumps({"host": socket.gethostname(), "user": os.environ.get("USER"), "checked": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                      "repos": repos}, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
