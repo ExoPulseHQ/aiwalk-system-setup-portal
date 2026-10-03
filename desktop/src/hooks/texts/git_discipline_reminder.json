@@ -1,0 +1,14 @@
+{
+  "deny": "⛔ {host} 上的 commit／push 走 `exo code`，不直接下 git（與 plugin 的 Sync code 同一套規則：不動主幹、不上傳像金鑰的檔案、作者＝gh 帳號）。改用：\n{commands}\n先 `~/.local/bin/exo code status` 找 worktree 路徑、`~/.local/bin/exo code diff <worktree>` 看內容；push 之後在本機用 `gh pr create --draft` 開 PR。exo 拒絕的事（例如在主幹上）不要繞過；exo 做不到而使用者明確同意時，才在指令裡加 `EXO_RAW=1` 重跑。",
+  "deny_commit": "ssh ntk@{host} \"~/.local/bin/exo code commit <worktree> {ident} -m '<type(scope): message>' [--body '<why>'] <file> ...\"",
+  "deny_push": "ssh ntk@{host} \"~/.local/bin/exo code push <worktree>\"",
+  "ident": "--name {login} --email {email}",
+  "ident_unknown": "--name <gh login> --email <id>+<login>@users.noreply.github.com",
+  "header": "⚠ Git 規則（CLAUDE.md §Git Rules）必觸發提醒：",
+  "identity": "• 身分＝gh 登入的帳號，**不問使用者**：`{login} <{email}>`。commit 一律帶 `git -c user.name={login} -c user.email={email} commit …`（vault 走 `scripts/vault_ship.py`，同一個身分）。push 前確認要推的 commit 作者都是這個身分；gh 切到別的帳號時身分跟著變，這是設計。",
+  "identity_unknown": "• 身分＝gh 登入的帳號，但 **gh 沒登入或讀不到**：停下，請使用者在 aIwalk System Setup 登入 GitHub 後再 commit／push，不要用本機 git config 的身分。",
+  "push": "• `git push`：若推的是共用 code repo，先確認變更都在 branch、已過測試集 merge gate。",
+  "merge": "• `git merge`：共用 code repo（NTKCAP/depRL/Patient Cloud）merge 回 main 前**必過回歸測試集 merge gate**（見 [[Function_Validation_Protocol]] §2/§3；事件與歸屬見 [[Test_dataset_CICD_Preservation_Summary]]），且 merge 在 **worktree 副本內**執行、不切回 `~/NTKCAP` 本體。",
+  "merge_worktree": "• **worktree 是拋棄式的**：清理要和 merge／push 在**同一串指令**裡 —— `… && git -C <repo> worktree remove ~/<repo>-<feature> && git -C <repo> branch -d feat/<feature>`。git 不會自動回收，`worktree prune` 也只清目錄已消失的，所以「等等再刪」＝永遠不刪。驗收：`git worktree list` 除本體外不留已 merge 的 `<repo>-*`。",
+  "commit": "• `git commit`：共用 code repo 的版本變更**必走 worktree 副本 + branch**（`~/NTKCAP` 停 main、勿直接動）；詳見 [[Git_Worktree_Protocol]]。**例外**：本 docs vault（ExoPulse_docs）自身不套此規範，可直接在主工作樹 commit。"
+}

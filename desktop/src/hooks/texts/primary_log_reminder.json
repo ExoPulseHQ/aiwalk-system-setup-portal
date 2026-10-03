@@ -1,0 +1,7 @@
+{
+  "reminder": "⚠ 主幹編輯規則（CLAUDE.md §Primary Log Editing Rule）— 你正在改 primary log `{file}`。若新增／編輯 Dev Topic 請確認：(1) 每個 `# YYYY/MM/DD` heading 前有 `---` 分隔；(2) 母文件只留 3–5 句 + 單一 `- **Summary & Control**: [[sub-doc]]` wikilink；(3) 長內容／H2/H3／表格／清單一律先抽 sub-doc（frontmatter 帶 parent_log）；(4) Summary 行不得出現 >1 個 [[...]]；(5) 代碼用該開發者既有 `-DEV`（勿自編）。",
+  "ownership": " ⚠ 分工區塊（CLAUDE.md §主幹分工表硬規則）：這條主幹最下方有分工區塊，其中「實際活動」{state}。改完 Dev Topic 後跑 `python3 scripts/sync_ownership.py \"{path}\"`。「近期的分工」與「長遠要做的事情」是人寫的，不新增、不改寫、不刪除項目文字。",
+  "state_stale": "已經過期",
+  "state_ok": "和主幹一致",
+  "state_failed": "檢查失敗：{stderr}"
+}
