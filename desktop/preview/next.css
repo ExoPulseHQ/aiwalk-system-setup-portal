@@ -313,6 +313,8 @@ details.vault[open] > summary h2::before { margin-bottom: 5px; }
 .terms .lang { border-radius: var(--r-control); padding: 2px; }
 .terms .lang button { padding: 4px var(--s4); border-radius: 3px; height: auto; box-shadow: none; }
 .terms .lang button.on { box-shadow: none; }
+/* the unpicked language on the switch's hairline track: ink at 80%, AA there (muted was 4.3:1) */
+.terms .lang button:not(.on) { color: color-mix(in srgb, var(--ink) 80%, var(--line)); }
 .terms .agree { gap: var(--s3); }
 
 /* the empty states (sign in, missing tools) */
