@@ -112,16 +112,26 @@ strong { font-weight: 600; }
 /* the page's own sentence (next.js): the page name drops to a label above it */
 .page h1:has(+ .nx-summary) { font-size: var(--fs-s); font-weight: 500; color: var(--muted); margin: 0 0 var(--s2); letter-spacing: 0; }
 .nx-summary { margin: 0 0 var(--s3); }
-.nx-state { font: var(--d-weight) var(--d-state)/var(--d-lh) var(--display); letter-spacing: var(--d-track); margin: 0;
-  position: relative; font-variant-numeric: tabular-nums; }
-/* the state mark hangs in the margin, so the sentence keeps the page's left edge; its shape says the state too */
-.nx-state > .nx-i { position: absolute; left: -30px; top: calc((var(--d-lh) * 1em - 20px) / 2); width: 20px; height: 20px; color: var(--purple); }
-.nx-state[data-tone="warn"] > .nx-i { color: var(--amber); }
-.nx-state[data-tone="bad"] > .nx-i { color: var(--red); }
-.nx-state[data-tone="wait"] > .nx-i, .nx-state[data-tone="off"] > .nx-i { color: var(--muted); }
-.nx-detail { margin: var(--s2) 0 0; color: var(--muted); font-size: var(--fs-m); font-variant-numeric: tabular-nums; }
-.nx-detail .nx-dev { color: var(--amber-ink); }
-.nx-detail .nx-dev.bad { color: var(--red-ink); }
+/* the opening state is a strip: icons and figures, the figures in the display face; words only where something deviates
+   or asks for action. The state mark hangs in the margin, so the strip keeps the page's left edge. */
+.nx-strip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s8); position: relative; margin: 0; min-height: calc(var(--d-state) * var(--d-lh)); }
+.nx-mark { position: absolute; left: -30px; top: calc((var(--d-state) * var(--d-lh) - 20px) / 2); line-height: 0; color: var(--purple); }
+.nx-mark > .nx-i { width: 20px; height: 20px; }
+.nx-strip[data-tone="warn"] > .nx-mark { color: var(--amber); }
+.nx-strip[data-tone="bad"] > .nx-mark { color: var(--red); }
+.nx-strip[data-tone="wait"] > .nx-mark, .nx-strip[data-tone="off"] > .nx-mark { color: var(--muted); }
+.nx-it { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink); border-radius: var(--r-control); cursor: default; }
+.nx-it > .nx-i { width: 22px; height: 22px; stroke-width: 1.6; color: var(--muted); }
+.nx-num { font: var(--d-weight) var(--d-state)/var(--d-lh) var(--display); letter-spacing: var(--d-track); font-variant-numeric: tabular-nums lining-nums; }
+.nx-unit { font-size: var(--fs-s); color: var(--muted); margin-left: -4px; align-self: flex-end; padding-bottom: .55em; }
+.nx-it-t { font-size: var(--fs-m); font-weight: 500; }
+.nx-it > .nx-chip + .nx-chip { margin-left: -4px; }
+.nx-it.calm, .nx-it.calm > .nx-i { color: var(--muted); }
+.nx-it.warn { color: var(--amber-ink); } .nx-it.warn > .nx-i { color: var(--amber); }
+.nx-it.bad { color: var(--red-ink); } .nx-it.bad > .nx-i { color: var(--red); }
+/* waiting for you: the page's call to act, in the action colour */
+.nx-it.act { color: var(--purple-ink); } .nx-it.act > .nx-i { color: var(--purple); }
+.nx-it > .nx-i[data-icon="check"] { color: var(--purple); width: 18px; height: 18px; }
 .nx-summary + .lede, .nx-summary + .badge { margin-top: var(--s6); }
 .nx-summary + .lede { font-size: var(--fs-s); color: var(--muted); }
 /* Team access and People: the old lede says what the sentence now says */

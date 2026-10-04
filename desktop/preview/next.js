@@ -420,15 +420,21 @@
     buttons.forEach(b => b.classList.toggle("nx-primary", b === pick));
   }
 
-  // (1) the page's one sentence: [tone, sentence, detail parts] or null while the page is still reading
-  const dev = (text, bad) => span("nx-dev" + (bad ? " bad" : ""), text);
+  // (1) the page's opening state, as a strip of icons and figures: [tone, sentence, detail, items] or null while the
+  // page is still reading. The old sentence and its detail stay, visually hidden, as what a screen reader hears; each
+  // item is focusable and named by its fragment of that sentence. Words show only for deviations and things to do.
+  // item: {icon, num, unit, chips, text, tone: warn | bad | act | calm, tip}
   function teamSentence(page) {
     const s = tl(), t = typeof termsNow === "undefined" ? null : termsNow;
     // the terms come before anything else is read, so this one stands on termsNow alone
-    if (page.querySelector(".terms") && t) return ["warn", t.accepted ? `The team changed its terms. Please agree to version ${t.version}.` : "The team asks you to agree to its terms.",
-      [`Version ${t.version}. Read it to the end, then press I agree. You are asked once per version.`]];
+    if (page.querySelector(".terms") && t) {
+      const said = t.accepted ? `The team changed its terms. Please agree to version ${t.version}.` : "The team asks you to agree to its terms.";
+      return ["warn", said, [`Version ${t.version}. Read it to the end, then press I agree. You are asked once per version.`],
+        [{ icon: "scroll-text", text: `Agree to version ${t.version}`, tone: "warn", tip: `${said} Read it to the end, then press I agree.` }]];
+    }
     if (page.querySelector(".stage") || !s) return null;
-    if (!s.user) return ["warn", "You are not signed in.", ["Nothing is connected yet: no vaults, no machines."]];
+    if (!s.user) return ["warn", "You are not signed in.", ["Nothing is connected yet: no vaults, no machines."],
+      [{ icon: "github", text: "Not signed in", tone: "warn", tip: "You are not signed in: no vaults, no machines yet" }]];
     const org = orgOf(s), machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
     const reach = [...new Set(machines.map(m => m.host))].filter(h => !org || connectRule(h, machines, org).may(s.user));
     const here = s.vaults.filter(v => local.copies[v.repo]).length;
@@ -437,9 +443,13 @@
       .filter(([k, v]) => k && v && k.textContent !== "GitHub" && (v.classList.contains("m-temporary") || /not done/.test(v.textContent)))
       .map(([k]) => k.textContent);
     if ($(page, ".item .title").some(t => t.textContent === "Owner tools are locked")) todo.push("Owner tools");
-    const detail = ["Signed in as ", chip(s.user), `. ${n(here, "vault")} on this computer, ${n(reach.length, "machine")} within reach.`];
-    if (todo.length) return ["warn", "Almost everything is connected.", [...detail, " ", dev(`Still to do: ${todo.join(", ")}.`)]];
-    return ["ok", "Everything is connected.", detail];
+    const detail = [`Signed in as ${s.user}. ${n(here, "vault")} on this computer, ${n(reach.length, "machine")} within reach.`];
+    const items = [{ icon: "check", chips: [s.user], tip: `Signed in as ${s.user}` },
+      { icon: "monitor-check", num: here, unit: here === 1 ? "vault here" : "vaults here", tip: `${n(here, "vault")} on this computer` },
+      { icon: "server", num: reach.length, unit: "in reach", tip: `${n(reach.length, "machine")} within reach` }];
+    if (todo.length) return ["warn", "Almost everything is connected.", [...detail, ` Still to do: ${todo.join(", ")}.`],
+      [...items, { icon: "circle-alert", text: `To do: ${todo.join(", ")}`, tone: "warn", tip: `Still to do: ${todo.join(", ")}` }]];
+    return ["ok", "Everything is connected.", detail, items];
   }
   function machinesSentence(page) {
     const pills = $(page, ".list .item .perm");
@@ -447,70 +457,105 @@
     const host = p => p.closest(".item").querySelector(".title").textContent;
     const up = pills.filter(p => p.classList.contains("nx-ok")), bad = pills.filter(p => p.classList.contains("nx-bad"));
     const off = pills.filter(p => p.textContent.trim() === "No access"), checking = pills.filter(p => p.classList.contains("checking"));
-    if (checking.length === pills.length) return ["wait", "Checking the machines.", []];
+    if (checking.length === pills.length) return ["wait", "Checking the machines.", [], [{ icon: "circle-dashed", text: "Checking", tone: "calm", tip: "Checking the machines" }]];
     const warns = $(page, ".specs .warn").map(w => {
       const row = w.closest(".specs").previousElementSibling;
-      return `${row ? row.querySelector(".title").textContent : "A machine"}: ${w.textContent.replace(/^\w/, c => c.toLowerCase()).replace(": ", ", ")}`;
+      return [row ? row.querySelector(".title").textContent : "A machine", w.textContent.trim().replace(/^\w/, c => c.toLowerCase()).replace(": ", ", ").replace(/\.$/, "")];
     });
-    const detail = [];
-    if (up.length) detail.push("Within reach: ", ...up.flatMap((p, i) => [i ? " " : "", chip(host(p))]), ".");
-    if (off.length) detail.push(` ${n(off.length, "other needs", "others need")} access from an owner.`);
-    warns.forEach(w => detail.push(" ", dev(w)));
-    if (bad.length) return ["bad", `${bad.length} of ${n(pills.length, "machine")} cannot be reached.`, [...detail, " ", dev(`Down: ${bad.map(host).join(", ")}.`, true)]];
+    const items = [], detail = [];
+    if (up.length) { items.push({ icon: "server", num: up.length, chips: up.map(host), tip: `${up.length === 1 ? "1 machine is" : `${up.length} machines are`} up: ${up.map(host).join(", ")}` });
+      detail.push(`Within reach: ${up.map(host).join(", ")}.`); }
+    if (off.length) { const t = `${n(off.length, "other needs", "others need")} access from an owner`; items.push({ icon: "lock", num: off.length, unit: "no access", tone: "calm", tip: t }); detail.push(` ${t}.`); }
+    warns.forEach(([h, w]) => { items.push({ icon: "circle-alert", chips: [h], text: w, tone: "warn", tip: `${h}: ${w}` }); detail.push(` ${h}: ${w}.`); });
+    if (bad.length) {
+      items.push({ icon: "circle-x", chips: bad.map(host), text: "down", tone: "bad", tip: `Cannot be reached: ${bad.map(host).join(", ")}` });
+      return ["bad", `${bad.length} of ${n(pills.length, "machine")} cannot be reached.`, [...detail, ` Down: ${bad.map(host).join(", ")}.`], items];
+    }
     const lead = up.length === 1 ? "1 machine is up." : `${up.length} machines are up.`;
-    return [warns.length ? "warn" : "ok", warns.length ? lead.replace(".", `, ${warns.length} needs a look.`) : lead, detail];
+    return [warns.length ? "warn" : "ok", warns.length ? lead.replace(".", `, ${warns.length} needs a look.`) : lead, detail, items];
   }
   function peopleSentence(page) {
     const org = orgOf(tl());
     if (!org || !page.querySelector(".section") || (org.people[tl().user] || {}).grants !== null) return null;
     const people = Object.keys(org.people).length, waiting = org.requests.length;
     const invited = $(page, ".tag").filter(t => t.textContent === "Invited").length, interns = $(page, ".tag").filter(t => t.textContent === "Intern").length;
+    const items = [{ icon: "users-round", num: people, unit: people === 1 ? "person" : "people", tip: n(people, "person", "people") },
+      waiting ? { icon: "inbox", num: waiting, text: "waiting", tone: "act", tip: `${waiting} waiting for you to approve or decline` }
+        : { icon: "inbox", num: 0, unit: "waiting", tone: "calm", tip: "Nobody waiting for you" }];
+    if (invited) items.push({ icon: "mail", num: invited, unit: "invited", tone: "calm", tip: `${n(invited, "invitation")} not accepted yet` });
+    if (interns) items.push({ icon: "graduation-cap", num: interns, unit: interns === 1 ? "intern" : "interns", tone: "calm", tip: `${n(interns, "intern", "interns")} outside ${org.org}` });
     const detail = [[invited, `${n(invited, "invitation")} not accepted yet.`], [interns, `${n(interns, "intern", "interns")} outside ${org.org}.`]]
       .filter(([k]) => k).map(([, t]) => t).join(" ");
-    return ["ok", `${n(people, "person", "people")}, ${waiting ? `${waiting} waiting for you` : "nobody waiting"}.`, detail ? [detail] : []];
+    return ["ok", `${n(people, "person", "people")}, ${waiting ? `${waiting} waiting for you` : "nobody waiting"}.`, detail ? [detail] : [], items];
   }
   function termsSentence(page) {
     const t = typeof termsNow === "undefined" ? null : termsNow;
     if (!t || !page.querySelector(".terms")) return null;
-    if (!t.accepted || t.accepted.version < t.version) return ["warn", `Version ${t.version} of the terms is waiting for you.`, []];
+    if (!t.accepted || t.accepted.version < t.version) return ["warn", `Version ${t.version} of the terms is waiting for you.`, [],
+      [{ icon: "scroll-text", text: `Agree to version ${t.version}`, tone: "warn", tip: `Version ${t.version} of the terms is waiting for you` }]];
     const marks = $(page, ".list .perm"), behind = marks.filter(p => !p.classList.contains("nx-ok"));
     const detail = [`Version ${t.version}, agreed on ${t.accepted.date}.`];
-    if (marks.length) detail.push(" ", behind.length ? dev(`${behind.length} of ${marks.length} have not agreed to it yet.`) : `All ${marks.length} have agreed to it.`);
-    return [behind.length ? "warn" : "ok", "You agreed to the current terms.", detail];
+    const items = [{ icon: "scroll-text", num: `v${t.version}`, tip: `You agreed to version ${t.version} on ${t.accepted.date}` }];
+    if (marks.length) {
+      items.push({ icon: "users-round", num: `${marks.length - behind.length}/${marks.length}`, unit: "agreed", tip: `${marks.length - behind.length} of ${marks.length} have agreed to version ${t.version}` });
+      if (behind.length) items.push({ icon: "circle-alert", num: behind.length, text: "not yet", tone: "warn", tip: `${behind.length} of ${marks.length} have not agreed to version ${t.version} yet` });
+      detail.push(behind.length ? ` ${behind.length} of ${marks.length} have not agreed to it yet.` : ` All ${marks.length} have agreed to it.`);
+    }
+    return [behind.length ? "warn" : "ok", "You agreed to the current terms.", detail, items];
   }
   function vmSentence(page) {
     const vm = typeof lastVm === "undefined" ? null : lastVm;
     if (!vm || !page.querySelector(".list")) return null;
-    const gb = v => String(v).replace(/^(\d+)G$/, "$1 GB");
+    const gb = v => String(v).replace(/^(\d+)G$/, "$1 GB"), num = v => (/^(\d+)/.exec(String(v)) || [, v])[1];
     const used = /takes (\d+) GB/.exec((page.querySelector("#clean-sub") || {}).textContent || "");
     const detail = [`${gb(vm.ram)} memory, ${vm.cpus} CPU cores, ${gb(vm.disk)} disk` + (used ? `, ${used[1]} GB of it used.` : ".")];
-    return vm.running ? ["ok", "Windows is running.", detail] : ["off", "Windows is off.", [...detail, " Open Windows starts it."]];
+    const items = [{ icon: "memory-stick", num: num(vm.ram), unit: "GB", tip: `${gb(vm.ram)} memory` },
+      { icon: "cpu", num: vm.cpus, unit: "cores", tip: `${vm.cpus} CPU cores` },
+      { icon: "hard-drive", num: num(vm.disk), unit: "GB", tip: `${gb(vm.disk)} disk` + (used ? `, ${used[1]} GB of it used` : "") }];
+    // on or off is what this page is asked first, so it keeps its word
+    return vm.running ? ["ok", "Windows is running.", detail, [{ icon: "power", text: "Running", tip: "Windows is running" }, ...items]]
+      : ["off", "Windows is off.", [...detail, " Open Windows starts it."], [{ icon: "power", text: "Off", tone: "calm", tip: "Windows is off: Open Windows starts it" }, ...items]];
   }
   function phonesSentence(page) {
     if (typeof phonesSig === "undefined" || !phonesSig) return null;
     const [phones, waiting] = JSON.parse(phonesSig);
     const how = p => `${p.model} over ${p.wireless ? "Wi-Fi" : "USB"}`;
-    const ask = dev("A phone is waiting: unlock it and tap Allow on the USB debugging prompt.");
-    if (!phones.length) return waiting ? ["warn", "A phone is waiting for you to allow debugging.", []] : null;
+    const ask = "A phone is waiting: unlock it and tap Allow on the USB debugging prompt.";
+    const askItem = { icon: "circle-alert", text: "Allow debugging", tone: "warn", tip: ask };
+    if (!phones.length) return waiting ? ["warn", "A phone is waiting for you to allow debugging.", [], [askItem]] : null;
     const lead = phones.length === 1 ? `${phones[0].model} is connected.` : `${phones.length} phones are connected.`;
     const detail = [phones.map(how).join(", ") + "."];
-    return waiting ? ["warn", lead, [...detail, " ", ask]] : ["ok", lead, detail];
+    const items = [{ icon: "smartphone", num: phones.length, tip: `Connected: ${phones.map(how).join(", ")}` }];
+    return waiting ? ["warn", lead, [...detail, " " + ask], [...items, askItem]] : ["ok", lead, detail, items];
   }
   const SENTENCE = { team: teamSentence, machines: machinesSentence, people: peopleSentence, terms: termsSentence, vm: vmSentence, android: phonesSentence };
 
+  function stripItem({ icon, num, unit, chips: logins, text, tone, tip }) {
+    const it = span("nx-it" + (tone ? " " + tone : ""), "");
+    it.tabIndex = 0; it.dataset.tip = tip; it.setAttribute("role", "img"); it.setAttribute("aria-label", tip);
+    if (icon) it.append(svg(icon));
+    if (num !== undefined) it.append(span("nx-num", String(num)));
+    if (unit) it.append(span("nx-unit", unit));
+    (logins || []).forEach(l => it.append(span("nx-chip", l)));
+    if (text) it.append(span("nx-it-t", text));
+    return it;
+  }
   function summary(page) {
     const make = SENTENCE[page.id], got = make && make(page);
     const old = page.querySelector(".nx-summary");
     if (!got) { if (old) old.remove(); return; }
-    const [tone, sentence, detail] = got;
-    const key = JSON.stringify([tone, sentence, detail.map(d => typeof d === "string" ? d : d.textContent)]);
+    const [tone, sentence, detail, items] = got;
+    const key = JSON.stringify([tone, sentence, detail, items]);
     if (old && old.dataset.key === key) return;
     const box = document.createElement("div"); box.className = "nx-summary"; box.dataset.key = key;
     box.setAttribute("role", "status");
-    const p = document.createElement("p"); p.className = "nx-state"; p.dataset.tone = tone; p.textContent = sentence;
-    p.prepend(svg({ ok: "circle-check", warn: "circle-alert", bad: "circle-x", wait: "circle-dashed", off: "power" }[tone]));
-    box.append(p);
-    if (detail.length) { const d = document.createElement("p"); d.className = "nx-detail"; d.append(...detail); box.append(d); }
+    const strip = document.createElement("div"); strip.className = "nx-strip"; strip.dataset.tone = tone;
+    // the state mark hangs in the margin; hovering it says the whole old sentence
+    const m = span("nx-mark", ""); m.dataset.tip = sentence; m.setAttribute("aria-hidden", "true");
+    m.append(svg({ ok: "circle-check", warn: "circle-alert", bad: "circle-x", wait: "circle-dashed", off: "power" }[tone]));
+    const said = span("nx-sr", [sentence, ...detail].join(" "));
+    strip.append(m, said, ...items.map(stripItem));
+    box.append(strip);
     // after the page name; on the phone page the name shares a row with Look again, so after that row
     const h1 = page.querySelector("h1"), at = h1 && h1.parentNode.classList.contains("row") ? h1.parentNode : h1;
     if (old) old.replaceWith(box); else if (at) at.after(box); else page.prepend(box);
