@@ -396,3 +396,9 @@ dialog .buttons { gap: var(--s2); }
 .nx-who select.nx-off, .nx-who button[hidden] { display: none; }
 .who-connect > .row { align-items: center; }
 .pr .specs > .nx-who { margin: 0; }
+
+/* a glyph that only says something (a state, a tag, a level you cannot change) has no frame; a frame means a button.
+   The levels an owner can click keep theirs. */
+.nx-glyph:not(.edit) { box-shadow: none !important; background: none !important; width: 18px; min-width: 18px !important; }
+.nx-glyph:not(.edit) > .nx-i { width: 15px; height: 15px; }
+.tag.nx-glyph:not(.edit), .method.nx-glyph:not(.edit) { color: var(--muted); }
