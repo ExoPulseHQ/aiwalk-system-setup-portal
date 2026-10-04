@@ -152,11 +152,19 @@
       if (loose.length) { let acts = d.querySelector(":scope > .nx-acts"); if (!acts) { acts = span("nx-acts", ""); d.append(acts); } acts.append(...loose); }
       const addr = d.querySelector("strong.cmd"), copy = $(d, "button").find(b => b.textContent.trim() === "Copy");
       if (copy && addr) { copy.classList.add("nx-icon-only"); copy.setAttribute("aria-label", `Copy ${addr.textContent}`); copy.dataset.tip = `Copy ${addr.textContent}`; }
+      // Close ends the desktop for everyone on it, Disconnect only stops this computer's view: two different glyphs, and
+      // tooltips that say the difference (an x read as "hide this row")
+      const disp = (d.querySelector(":scope > span").textContent.match(/^:\d+/) || [""])[0];
+      $(d, "button").forEach(b => {
+        const t = b.textContent.trim();
+        if (t === "Close") { b.dataset.tip = `Close desktop ${disp}: ends it for everyone on it`; b.dataset.nxIcon = "power"; }
+        if (t === "Disconnect") b.dataset.tip = `Disconnect from ${disp}: it keeps running`;
+      });
     });
     $(page, "button").forEach(b => {
       if (b.classList.contains("working") || b.classList.contains("nx-info") || b.closest(".lang, .segmented, .nx-who")) return;
       const t = b.textContent.trim();
-      mark(b, BUTTON[t] || null);
+      mark(b, b.dataset.nxIcon || BUTTON[t] || null);
       // a column of Remove marks names whom each one removes, for the tooltip and for a screen reader's list of buttons
       if (t === "Remove" && !b.dataset.tip) {
         const r = b.closest(".item"), who = r && (r.querySelector(".text .nx-chip") || r.querySelector(".text > .title"));
