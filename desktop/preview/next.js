@@ -252,7 +252,10 @@
         if (!p.hasAttribute("tabindex")) p.tabIndex = 0;
       }
     });
-    $(page, ".tag").forEach(g => { const t = g.textContent.trim(); if (TAG[t]) glyph(g, ...TAG[t]); });
+    // a tag that explains a deviation keeps its words beside the glyph: "Often off" is why a machine does not answer
+    const WORDED = new Set(["Often off"]);
+    $(page, ".tag").forEach(g => { const t = g.textContent.trim(); if (!TAG[t]) return;
+      if (WORDED.has(t)) { mark(g, TAG[t][0]); g.dataset.tip = TAG[t][1]; g.classList.add("nx-worded"); } else glyph(g, ...TAG[t]); });
     // the identity block: the method in use keeps its word, the other ways to sign in are their icon
     $(page, ".claude-line .method").forEach(m => {
       const t = m.textContent.trim();
