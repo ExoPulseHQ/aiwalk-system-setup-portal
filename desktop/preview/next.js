@@ -438,7 +438,7 @@
     const buttons = $(page, "button").filter(b => !b.closest("dialog, .lang, .segmented") && !b.classList.contains("tile") && !b.classList.contains("nx-info"));
     const live = buttons.filter(b => !b.disabled || b.classList.contains("working"));
     // with the invite drawer open, sending it is the page's action, not the Close that replaced Invite someone
-    const want = PRIMARY[page.id] && (live.find(b => b.textContent.trim() === "Send invitation" && b.offsetParent) || live.find(b => PRIMARY[page.id].test(b.textContent.trim())));
+    const want = PRIMARY[page.id] && (live.find(b => b.textContent.trim() === "Send invitation" && b.closest(".drawer.open")) || live.find(b => PRIMARY[page.id].test(b.textContent.trim())));
     // the Windows VM and phone pages act through their rows; no button there is the page's one action
     const pick = NO_PRIMARY.has(page.id) ? null : want || live.find(b => !b.classList.contains("ghost"));
     buttons.forEach(b => b.classList.toggle("nx-primary", b === pick));
