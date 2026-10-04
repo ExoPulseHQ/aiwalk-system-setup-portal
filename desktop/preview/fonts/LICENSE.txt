@@ -91,3 +91,11 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+
+-----------------------------------------------------------
+The display faces (?display=a|b|c), all from the @fontsource packages v5.3.0, Latin subset, under the same SIL Open
+Font License 1.1 as above:
+  InstrumentSerif-Regular-Latin.woff2      Copyright 2022 The Instrument Serif Project Authors (https://github.com/Instrument/instrument-serif)
+  YoungSerif-Regular-Latin.woff2           Copyright 2023 The Young Serif Project Authors (https://github.com/noirblancrouge/YoungSerif)
+  BricolageGrotesque-*-Latin.woff2         Copyright 2022 The Bricolage Grotesque Project Authors (https://github.com/ateliertriay/bricolage)

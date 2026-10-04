@@ -4,11 +4,19 @@
 // (3) turns logins and machine names into the shared chip, (4) picks the page's one primary button, (5) sets the
 // icons (icons.js), each beside a word that says the same, so no state rests on colour alone.
 (() => {
-  if (new URLSearchParams(location.search).get("theme") === "dark") document.documentElement.dataset.theme = "dark";
+  const q = new URLSearchParams(location.search);
+  if (q.get("theme") === "dark") document.documentElement.dataset.theme = "dark";
+  // the display face for the name, the sentence and the wordmark: three candidates, a by default (next.css)
+  document.documentElement.dataset.display = /^[abc]$/.test(q.get("display")) ? q.get("display") : "a";
+  const mark0 = document.querySelector("nav .app");
+  if (mark0 && mark0.firstChild && mark0.firstChild.nodeType === 3 && mark0.firstChild.textContent === "aIwalk") {
+    const i = document.createElement("span"); i.className = "nx-cap-i"; i.textContent = "I";
+    mark0.firstChild.replaceWith("a", i, "walk");
+  }
   const $ = (root, sel) => [...root.querySelectorAll(sel)];
   const n = (k, one, many = one + "s") => `${k} ${k === 1 ? one : many}`;
   const span = (cls, text) => { const s = document.createElement("span"); s.className = cls; s.textContent = text; return s; };
-  const chip = (text, title) => { const c = span("nx-chip", text); if (title) c.title = title; return c; };
+  const chip = (text, title) => { const c = span("nx-chip", text); if (title) c.dataset.tip = title; return c; };
   const orgOf = s => s && s.user ? (s.vaults.find(v => v.access) || {}).access : null;
   const tl = () => typeof lastTeam === "undefined" ? null : lastTeam;
   const loginByName = (org, name) => org && Object.keys(org.people).find(l => org.people[l].name === name);
@@ -31,7 +39,7 @@
   }
 
   // (2) states by their words: the app reuses its "Admin" style for "Can connect", so the class alone cannot tell
-  const OK = /^(Can connect|Version \d)/, BAD = /^(Can't connect|Tunnel not set up)/, WARN = /^(Not yet|Finish sign-in)/;
+  const OK = /^(Can connect|Version \d|Connected over)/, BAD = /^(Can't connect|Tunnel not set up)/, WARN = /^(Not yet|Finish sign-in)/;
   function states(root) {
     $(root, ".perm").forEach(p => {
       const t = p.textContent.trim();
@@ -46,7 +54,11 @@
   }
   const STATE_ICON = (p, t) => p.classList.contains("nx-ok") || p.classList.contains("m-key") || p.classList.contains("m-account") ? "check"
     : p.classList.contains("nx-bad") ? "x" : p.classList.contains("nx-warn") || p.classList.contains("m-temporary") ? "circle-alert"
-    : t === "No access" ? "lock" : null;
+    : LEVEL[t] ? LEVEL[t][0] : p.classList.contains("m-off") && METHOD[t] ? METHOD[t] : null;
+
+  // access levels: one glyph each, wherever a level shows (the word stays in the vault heading, the tooltip says it)
+  const LEVEL = { Admin: ["shield", "Admin: opens the repo and changes who else can"], Write: ["pencil", "Write: opens the repo and changes its files"],
+    Read: ["eye", "Read: opens and downloads the repo, no changes"], "No access": ["lock", "No access: ask an owner"] };
 
   // (3) one chip for people and machines
   function chips(root) {
@@ -71,7 +83,7 @@
     $(root, ".who-connect .spec > .k, .pr .tag").forEach(k => {
       if (k.dataset.nx) return;
       const login = loginByName(org, k.textContent) || (k.closest(".pr") && /^[\w-]+$/.test(k.textContent) && k.textContent);
-      if (login) { k.dataset.nx = 1; k.className = k.className.replace(/\btag\b/, "") + " nx-chip"; k.title = k.textContent; k.textContent = login; }
+      if (login) { k.dataset.nx = 1; k.className = k.className.replace(/\btag\b/, "") + " nx-chip"; k.dataset.tip = k.textContent; k.textContent = login; }
     });
     const who = root.querySelector(".badge .who > .dim");
     if (who && s && who.textContent === `@${s.user}`) { who.textContent = s.user; who.className = "nx-chip"; }
@@ -109,11 +121,19 @@
   const NAV = { team: "key-round", machines: "server", people: "users-round", android: "smartphone", vm: "app-window", terms: "scroll-text" };
   const LINE = { GitHub: "github", Machines: "server", "Claude Code": "square-terminal" };
   const BUTTON = { Copy: "copy", "Open viewer": "external-link", "Open in Obsidian": "external-link", "Check again": "refresh-cw",
-    "Invite someone": "user-plus", "New desktop": "plus" };   // Remove stays a word: a column of icons on it only added weight
+    "Invite someone": "user-plus", "New desktop": "plus", "Look again": "refresh-cw", "Add a GitHub account": "user-plus",
+    "Sign out of GitHub": "log-out", "Change folder": "folder-open", "Get latest": "arrow-down-to-line", "Update host tools": "wrench",
+    Disconnect: "unplug", Close: "x", Remove: "user-minus", "Change password": "key-round" };
+  // (6) the buttons that are their icon alone, the words in the tooltip and the accessible name. Disconnect and Close only on
+  // a desktop row (the Cloudflare panel's Disconnect has no confirmation, and Close on the invite drawer is a word).
+  // Kept as words: each page's one primary action, Open viewer and Open desktop (what a desktop row is for), and actions
+  // that act at once without asking (Decline, Cancel invitation, the Cloudflare panel).
+  const ICON_ONLY = new Set(["Copy", "Add a GitHub account", "Sign out of GitHub", "Change folder", "Get latest", "Check again",
+    "Update host tools", "New desktop", "Remove", "Change password", "Look again"]);
+  const iconOnly = (b, t) => ICON_ONLY.has(t) || (/^(Disconnect|Close)$/.test(t) && !!b.closest(".desk"));
   function icons(page) {
     $(document, "nav button[data-page]").forEach(b => mark(b, NAV[b.dataset.page]));
     $(page, ".claude-line > .label").forEach(l => mark(l, LINE[l.textContent]));
-    $(page, "details.vault > summary h2").forEach(h => mark(h, "book-open"));
     $(page, ".section.pr > header > h2").forEach(h => mark(h, "git-pull-request"));
     // rows: a machine, a person, an invitation, a request
     const heading = r => { const sec = r.closest(".section"); return sec ? (sec.querySelector("h2") || {}).textContent || "" : ""; };
@@ -131,32 +151,186 @@
       const loose = $(d, ":scope > button");
       if (loose.length) { let acts = d.querySelector(":scope > .nx-acts"); if (!acts) { acts = span("nx-acts", ""); d.append(acts); } acts.append(...loose); }
       const addr = d.querySelector("strong.cmd"), copy = $(d, "button").find(b => b.textContent.trim() === "Copy");
-      if (copy && addr) { copy.classList.add("nx-icon-only"); copy.setAttribute("aria-label", `Copy ${addr.textContent}`); copy.title = `Copy ${addr.textContent}`; }
+      if (copy && addr) { copy.classList.add("nx-icon-only"); copy.setAttribute("aria-label", `Copy ${addr.textContent}`); copy.dataset.tip = `Copy ${addr.textContent}`; }
     });
     $(page, "button").forEach(b => {
-      if (b.classList.contains("working") || b.closest(".lang, .segmented")) return;
+      if (b.classList.contains("working") || b.classList.contains("nx-info") || b.closest(".lang, .segmented")) return;
       const t = b.textContent.trim();
       mark(b, BUTTON[t] || null);
+      if (iconOnly(b, t)) {
+        b.classList.add("nx-icon-only");
+        if (!b.dataset.tip) b.dataset.tip = t;
+        if (!b.getAttribute("aria-label")) b.setAttribute("aria-label", b.dataset.tip);
+      }
     });
   }
 
+  // the Windows VM and phone rows, and the member's line on a machine they cannot reach
+  const ROW = { "Card reader": "credit-card", "Windows account": "user-round", "VM folder": "folder", "Memory (GB)": "memory-stick",
+    "CPU cores": "cpu", "Disk size (GB)": "hard-drive", "Clean up space": "trash-2",
+    "Type with this keyboard": "keyboard", "Show the phone screen here": "screen-share", Desktop: "monitor", "Switch to Wi-Fi": "wifi", "Disconnect Wi-Fi": "wifi-off" };
+  // the app's own shortcut icons, as the desktop shows them (serve.mjs serves icons/ at /__icons/)
+  const APP_ICON = { "Open Windows": "windows-open", "Shut down Windows": "windows-stop" };
+  function rows(page) {
+    if (page.id === "vm" || page.id === "android") $(page, ".list > .item").forEach(r => {
+      const t = (r.querySelector(".text > .title") || {}).textContent;
+      if (APP_ICON[t]) {
+        if (!r.querySelector(":scope > img.nx-app-i")) {
+          const img = document.createElement("img"); img.className = "nx-app-i"; img.alt = ""; img.width = img.height = 28;
+          img.src = `/__icons/${APP_ICON[t]}.svg`; r.prepend(img);
+        }
+      } else if (ROW[t]) { mark(r, ROW[t]); r.classList.add("nx-row-i"); }
+      else r.classList.add("nx-row-pad");
+      const sub = r.querySelector(".text > .sub");
+      if (t === "VM folder" && sub) sub.classList.add("nx-mono");
+      if (t === "Windows account" && sub && !sub.dataset.nx) { sub.dataset.nx = 1; sub.replaceChildren(chip(sub.textContent)); }
+    });
+    if (page.id === "android") $(page, ".card > .row").forEach(head => {
+      const draw = head.querySelector("svg"), link = head.querySelector(".dim");
+      if (draw && !draw.getAttribute("viewBox")) { draw.setAttribute("viewBox", "0 0 96 112"); draw.setAttribute("width", 72); draw.setAttribute("height", 84); }
+      if (link && /^Connected over/.test(link.textContent)) link.className = "perm";
+    });
+    $(page, ".who-connect > p.sub").forEach(p => {
+      if (/^You can't connect/.test(p.textContent)) { p.className = "nx-ask"; mark(p, "lock"); }
+    });
+  }
+
+  // (7) states as glyphs, explanations behind an info mark, hardware labels as icons. The word stays in the DOM (hidden
+  // from the eye, read by assistive tech) and in the tooltip, so the page's sentences and counts still read it.
+  const sr = text => span("nx-sr", text);
+  function glyph(el, icon, tipText) {
+    if (icon) mark(el, icon);
+    el.classList.add("nx-glyph"); el.dataset.tip = tipText;
+    if (!el.hasAttribute("tabindex")) el.tabIndex = 0;   // so the tooltip also opens from the keyboard
+  }
+  const TAG = { "Often off": ["moon", "Often off: this machine is switched off at times"],
+    "On this computer": ["monitor-check", "On this computer: a copy of this vault is here"],
+    "Not downloaded": ["cloud", "Not downloaded: it stays on GitHub until you download it"],
+    Invited: ["hourglass", "Invited: has not accepted yet"], Intern: ["graduation-cap", "Intern: outside the organisation, single repos only"] };
+  const METHOD = { "GitHub account": "user-round", "Temporary credential": "clock", "Security key": "key-round" };
+  const HW = { Processor: "cpu", Memory: "memory-stick", Disk: "hard-drive", System: "server-cog", GPU: "gpu" };
+  // explanations that move behind an info mark: [the sentence's start, where the mark goes]
+  // the heading a sentence sits under: the nearest h2/h3 before it, or its section's
+  const headingBefore = el => {
+    for (let x = el.previousElementSibling; x; x = x.previousElementSibling) {
+      if (/^H[23]$/.test(x.tagName)) return x;
+      const h = x.matches("header") && x.querySelector("h2, h3");
+      if (h) return h;
+    }
+    return el.parentElement && !el.parentElement.classList.contains("page") ? headingBefore(el.parentElement) : null;
+  };
+  const INFO = [[/^Click a permission to choose/, el => headingBefore(el.closest(".view-as") || el)],
+    [/^Whether this computer can reach/, headingBefore],
+    [/^Changes reach the machine at that person's next sign-in/, el => el.closest(".who-connect").querySelector(".k")],
+    [/^For owners\. The machines sit behind/, headingBefore],
+    [/ on GitHub\. Owners can open every repo/, headingBefore],
+    [/; they have single repos only\.$/, headingBefore],
+    [/^(Added to the desktop and the app menu|Applied while Windows is off)$/, headingBefore]];
+  function info(sentence, host, extra) {
+    if (!host || sentence.classList.contains("nx-moved")) return;
+    const text = sentence.textContent.trim() + (extra ? " " + extra : "");
+    sentence.classList.add("nx-moved");
+    if ([...host.querySelectorAll(":scope > .nx-info")].some(i => i.dataset.tip === text)) return;   // the sentence was redrawn
+    const b = document.createElement("button"); b.type = "button"; b.className = "nx-info"; b.dataset.tip = text; b.setAttribute("aria-label", text);
+    b.append(svg("info"));
+    host.append(b);
+  }
+  function compact(page) {
+    $(page, ".perm").forEach(p => {
+      if (p.classList.contains("checking") || p.closest(".badge")) return;
+      const t = p.textContent.trim(), host = (p.closest(".item") || {}).querySelector ? p.closest(".item").querySelector(".title") : null;
+      if (LEVEL[t] && !p.closest("summary")) glyph(p, null, LEVEL[t][1] + (p.classList.contains("edit") ? ". Click to change who can open it." : ""));
+      else if (LEVEL[t]) p.dataset.tip = LEVEL[t][1];
+      else if (t === "Can connect") glyph(p, null, `Can connect: this computer reaches ${host ? host.textContent : "it"} now, through Cloudflare`);
+      else p.classList.remove("nx-glyph");
+      // terms: who agreed to the current version shows the date; the version is in the tooltip
+      const v = /^Version (\d+), (\S+)$/.exec(t);
+      if (v && p.classList.contains("nx-ok") && !p.querySelector(".nx-sr")) {
+        p.dataset.tip = `Agreed to version ${v[1]} on ${v[2]}`;
+        p.replaceChildren(...[p.querySelector(":scope > svg")].filter(Boolean), sr(`Version ${v[1]}, `), v[2]);
+        if (!p.hasAttribute("tabindex")) p.tabIndex = 0;
+      }
+    });
+    $(page, ".tag").forEach(g => { const t = g.textContent.trim(); if (TAG[t]) glyph(g, ...TAG[t]); });
+    // the identity block: the method in use keeps its word, the other ways to sign in are their icon
+    $(page, ".claude-line .method").forEach(m => {
+      const t = m.textContent.trim();
+      if (METHOD[t] && m.classList.contains("m-off")) glyph(m, METHOD[t], `${t}: another way to sign in, not in use`);
+      const said = /^(Signed in (?:as|with) )(.+)$/.exec(t);
+      if (said && !m.querySelector(".nx-sr")) { m.dataset.tip = t; m.replaceChildren(...[m.querySelector(":scope > svg")].filter(Boolean), sr(said[1]), said[2]); }
+    });
+    $(page, ".specs .spec > .k").forEach(k => {
+      if (k.classList.contains("nx-hw") || k.classList.contains("nx-chip")) return;
+      const m = /^(Processor|Memory|Disk|System|GPU)(?: (\d+))?$/.exec(k.textContent.trim());
+      if (!m) return;
+      k.classList.add("nx-hw"); k.dataset.tip = k.textContent.trim();
+      k.replaceChildren(svg(HW[m[1]]), sr(m[1] + (m[2] ? " " : "")), ...(m[2] ? [m[2]] : []));
+    });
+    $(page, ".sub, p").forEach(p => {
+      if (p.classList.contains("nx-moved") || p.closest(".nx-summary, .terms > .text")) return;
+      const t = p.textContent.trim(), hit = INFO.find(([re]) => re.test(t));
+      if (!hit) return;
+      // the Machines page's opening paragraph joins the section's info mark
+      const lede = /^Whether this computer/.test(t) && page.querySelector(":scope > .lede");
+      if (lede) lede.classList.add("nx-moved");
+      info(p, hit[1](p), lede ? lede.textContent.trim() : "");
+    });
+  }
+
+  // the one tooltip: on hover after 120 ms, at once on keyboard focus, gone on Escape, on leaving, or when its element goes
+  const tipBox = document.createElement("div");
+  tipBox.id = "nx-tip"; tipBox.setAttribute("role", "tooltip"); tipBox.hidden = true; document.body.append(tipBox);
+  let tipFor = null, tipTimer = 0;
+  function showTip(el) {
+    clearTimeout(tipTimer); tipFor = el;
+    tipBox.textContent = el.dataset.tip; tipBox.hidden = false;
+    if (el.getAttribute("aria-label") !== el.dataset.tip) el.setAttribute("aria-describedby", "nx-tip");
+    const r = el.getBoundingClientRect(), w = tipBox.offsetWidth, h = tipBox.offsetHeight;
+    const below = r.bottom + 6 + h <= innerHeight - 8;
+    tipBox.style.top = `${below ? r.bottom + 6 : r.top - h - 6}px`;
+    tipBox.style.left = `${Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8))}px`;
+  }
+  function hideTip() {
+    clearTimeout(tipTimer);
+    if (tipFor) tipFor.removeAttribute("aria-describedby");
+    tipFor = null; tipBox.hidden = true;
+  }
+  const tipOf = e => e.target instanceof Element ? e.target.closest("[data-tip]") : null;
+  document.addEventListener("pointerover", e => {
+    const t = tipOf(e);
+    if (t === tipFor) return;
+    clearTimeout(tipTimer);
+    if (!t) return hideTip();
+    tipTimer = setTimeout(() => showTip(t), 120);
+  });
+  document.addEventListener("pointerleave", hideTip);
+  document.addEventListener("focusin", e => { const t = tipOf(e); t ? showTip(t) : hideTip(); });
+  document.addEventListener("focusout", hideTip);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") hideTip(); });
+  // focusing an element scrolls it into view: follow it rather than drop the tooltip
+  document.addEventListener("scroll", () => { if (tipFor) showTip(tipFor); }, true);
+
   // (4) one primary button per page: the action the page is for, else its first filled button
+  const NO_PRIMARY = new Set(["vm", "android"]);
   const PRIMARY = { team: /^(Open in Obsidian|Sign in with GitHub|Approve on GitHub|Finish signing in|I agree)$/, people: /^Invite someone$/, terms: /^I agree$/ };
   function primary(page) {
-    const buttons = $(page, "button").filter(b => !b.closest("dialog, .lang, .segmented") && !b.classList.contains("tile"));
+    const buttons = $(page, "button").filter(b => !b.closest("dialog, .lang, .segmented") && !b.classList.contains("tile") && !b.classList.contains("nx-info"));
     const live = buttons.filter(b => !b.disabled || b.classList.contains("working"));
     const want = PRIMARY[page.id] && live.find(b => PRIMARY[page.id].test(b.textContent.trim()));
-    const pick = want || live.find(b => !b.classList.contains("ghost"));
+    // the Windows VM and phone pages act through their rows; no button there is the page's one action
+    const pick = NO_PRIMARY.has(page.id) ? null : want || live.find(b => !b.classList.contains("ghost"));
     buttons.forEach(b => b.classList.toggle("nx-primary", b === pick));
   }
 
   // (1) the page's one sentence: [tone, sentence, detail parts] or null while the page is still reading
   const dev = (text, bad) => span("nx-dev" + (bad ? " bad" : ""), text);
   function teamSentence(page) {
-    const s = tl();
+    const s = tl(), t = typeof termsNow === "undefined" ? null : termsNow;
+    // the terms come before anything else is read, so this one stands on termsNow alone
+    if (page.querySelector(".terms") && t) return ["warn", t.accepted ? `The team changed its terms. Please agree to version ${t.version}.` : "The team asks you to agree to its terms.",
+      [`Version ${t.version}. Read it to the end, then press I agree. You are asked once per version.`]];
     if (page.querySelector(".stage") || !s) return null;
     if (!s.user) return ["warn", "You are not signed in.", ["Nothing is connected yet: no vaults, no machines."]];
-    if (page.querySelector(".terms")) return ["warn", "The team's terms are waiting for you.", ["Read them below; you are asked once per version."]];
     const org = orgOf(s), machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
     const reach = [...new Set(machines.map(m => m.host))].filter(h => !org || connectRule(h, machines, org).may(s.user));
     const here = s.vaults.filter(v => local.copies[v.repo]).length;
@@ -206,7 +380,25 @@
     if (marks.length) detail.push(" ", behind.length ? dev(`${behind.length} of ${marks.length} have not agreed to it yet.`) : `All ${marks.length} have agreed to it.`);
     return [behind.length ? "warn" : "ok", "You agreed to the current terms.", detail];
   }
-  const SENTENCE = { team: teamSentence, machines: machinesSentence, people: peopleSentence, terms: termsSentence };
+  function vmSentence(page) {
+    const vm = typeof lastVm === "undefined" ? null : lastVm;
+    if (!vm || !page.querySelector(".list")) return null;
+    const gb = v => String(v).replace(/^(\d+)G$/, "$1 GB");
+    const used = /takes (\d+) GB/.exec((page.querySelector("#clean-sub") || {}).textContent || "");
+    const detail = [`${gb(vm.ram)} memory, ${vm.cpus} CPU cores, ${gb(vm.disk)} disk` + (used ? `, ${used[1]} GB of it used.` : ".")];
+    return vm.running ? ["ok", "Windows is running.", detail] : ["off", "Windows is off.", [...detail, " Open Windows starts it."]];
+  }
+  function phonesSentence(page) {
+    if (typeof phonesSig === "undefined" || !phonesSig) return null;
+    const [phones, waiting] = JSON.parse(phonesSig);
+    const how = p => `${p.model} over ${p.wireless ? "Wi-Fi" : "USB"}`;
+    const ask = dev("A phone is waiting: unlock it and tap Allow on the USB debugging prompt.");
+    if (!phones.length) return waiting ? ["warn", "A phone is waiting for you to allow debugging.", []] : null;
+    const lead = phones.length === 1 ? `${phones[0].model} is connected.` : `${phones.length} phones are connected.`;
+    const detail = [phones.map(how).join(", ") + "."];
+    return waiting ? ["warn", lead, [...detail, " ", ask]] : ["ok", lead, detail];
+  }
+  const SENTENCE = { team: teamSentence, machines: machinesSentence, people: peopleSentence, terms: termsSentence, vm: vmSentence, android: phonesSentence };
 
   function summary(page) {
     const make = SENTENCE[page.id], got = make && make(page);
@@ -218,11 +410,12 @@
     const box = document.createElement("div"); box.className = "nx-summary"; box.dataset.key = key;
     box.setAttribute("role", "status");
     const p = document.createElement("p"); p.className = "nx-state"; p.dataset.tone = tone; p.textContent = sentence;
-    p.prepend(svg({ ok: "circle-check", warn: "circle-alert", bad: "circle-x", wait: "circle-dashed" }[tone]));
+    p.prepend(svg({ ok: "circle-check", warn: "circle-alert", bad: "circle-x", wait: "circle-dashed", off: "power" }[tone]));
     box.append(p);
     if (detail.length) { const d = document.createElement("p"); d.className = "nx-detail"; d.append(...detail); box.append(d); }
-    const h1 = page.querySelector("h1");
-    if (old) old.replaceWith(box); else if (h1) h1.after(box); else page.prepend(box);
+    // after the page name; on the phone page the name shares a row with Look again, so after that row
+    const h1 = page.querySelector("h1"), at = h1 && h1.parentNode.classList.contains("row") ? h1.parentNode : h1;
+    if (old) old.replaceWith(box); else if (at) at.after(box); else page.prepend(box);
   }
 
   // after every redraw, once per frame; our own edits are skipped by the key checks above, so this settles
@@ -231,9 +424,10 @@
     queued = false;
     observer.disconnect();
     try {
-      $(document, ".page").forEach(page => { if (page.hidden) return; states(page); chips(page); summary(page); icons(page); primary(page); });
+      $(document, ".page").forEach(page => { if (page.hidden) return; rows(page); states(page); chips(page); summary(page); icons(page); compact(page); primary(page); });
+      if (tipFor && !tipFor.isConnected) hideTip();
     } finally { observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "hidden"] }); }
   };
-  const observer = new MutationObserver(() => { if (!queued) { queued = true; requestAnimationFrame(run); } });
+  const observer = new MutationObserver(ms => { if (ms.every(m => tipBox.contains(m.target))) return; if (!queued) { queued = true; requestAnimationFrame(run); } });
   run();
 })();

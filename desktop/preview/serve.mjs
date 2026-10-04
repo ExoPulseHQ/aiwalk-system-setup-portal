@@ -14,6 +14,8 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   let root = ui, rel = decodeURIComponent(url.pathname);
   if (rel.startsWith("/__preview/")) { root = here; rel = rel.slice("/__preview".length); }
+  // the app's own shortcut icons (icons/ at the repo root), shown as drawn on the Windows VM page
+  else if (rel.startsWith("/__icons/")) { root = path.join(here, "..", "..", "icons"); rel = rel.slice("/__icons".length); }
   if (rel === "/") rel = "/index.html";
   const file = path.join(root, path.normalize(rel));
   if (!file.startsWith(root + path.sep)) { res.writeHead(403).end(); return; }

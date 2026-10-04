@@ -8,6 +8,10 @@
 @font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-SemiBold-Latin1.woff2) format("woff2"); font-weight: 600 700; font-display: swap; }
 @font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Regular-Latin1.woff2) format("woff2"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Medium-Latin1.woff2) format("woff2"); font-weight: 500 700; font-display: swap; }
+/* the display face, ?display=a|b|c (next.js sets data-display): three candidates for the client to choose by eye */
+@font-face { font-family: "Instrument Serif"; src: url(fonts/InstrumentSerif-Regular-Latin.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Young Serif"; src: url(fonts/YoungSerif-Regular-Latin.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Bricolage Grotesque"; src: url(fonts/BricolageGrotesque-SemiBold-Latin.woff2) format("woff2"); font-weight: 600 700; font-display: swap; }
 
 :root {
   /* colour: roles, not hues */
@@ -29,6 +33,11 @@
   --fs-xl: 20px;   /* dialog titles, the name */
   --fs-xxl: 28px;  /* the page's one sentence */
   --lh: 1.5; --lh-tight: 1.25;
+  /* display: only the person's name, the page's sentence and the wordmark. Latin subsets, so a Chinese name falls
+     through to a Traditional Chinese face of the same kind (serif to Song/Ming, grotesque to Hei) */
+  --serif-tc: "Noto Serif TC", "Source Han Serif TC", "Songti TC", "PMingLiU", serif;
+  --display: "Instrument Serif", var(--serif-tc);
+  --d-weight: 400; --d-state: 36px; --d-name: 28px; --d-mark: 26px; --d-track: -.005em; --d-lh: 1.1;
 
   /* space: a 4px unit */
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px; --s10: 40px; --s12: 48px;
@@ -46,6 +55,10 @@
   --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #0D0B12; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
   color-scheme: dark;
 } }
+:root[data-display="b"] { --display: "Young Serif", var(--serif-tc);
+  --d-weight: 400; --d-state: 28px; --d-name: 22px; --d-mark: 21px; --d-track: -.02em; --d-lh: 1.2; }
+:root[data-display="c"] { --display: "Bricolage Grotesque", "IBM Plex Sans TC", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  --d-weight: 600; --d-state: 30px; --d-name: 22px; --d-mark: 22px; --d-track: -.03em; --d-lh: 1.15; }
 :root[data-theme="dark"] {
   --paper: #1E1A27; --surface: #26212F; --ink: #ECE8F3; --muted: #A49DB3; --line: #3A3347;
   --rail: #0D0B12; --rail-ink: #E2DCEC; --rail-muted: #8F88A0; --rail-edge: #2A2434;
@@ -66,8 +79,11 @@ code, .cmd, .place .path, .desk > span:first-of-type { font-family: var(--mono);
 
 /* ---------------------------------------------------------------- sidebar: same structure, quieter */
 nav { width: 208px; padding: var(--s6) var(--s3); gap: 2px; box-shadow: inset -1px 0 0 var(--rail-edge); }
-nav .app { font-size: var(--fs-l); font-weight: 600; padding: 0 var(--s3) var(--s6); letter-spacing: 0; }
-nav .app span { font-size: var(--fs-s); color: var(--rail-muted); opacity: 1; font-weight: 400; }
+nav .app { font: var(--d-weight) var(--d-mark)/28px var(--display); letter-spacing: var(--d-track); padding: 0 var(--s3) var(--s6); }
+/* Bricolage draws I and l as the same bar: the wordmark's capital I keeps Plex's serifed I there (next.js wraps it) */
+nav .app .nx-cap-i { display: inline; font: inherit; letter-spacing: inherit; color: inherit; opacity: 1; margin: 0; }
+:root[data-display="c"] nav .app .nx-cap-i { font-family: var(--font); font-weight: 600; }
+nav .app span:not(.nx-cap-i) { font: 400 var(--fs-s)/var(--lh) var(--font); letter-spacing: 0; margin-top: 2px; color: var(--rail-muted); opacity: 1; }
 nav button { height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-size: var(--fs-m); box-sizing: border-box;
   justify-content: flex-start; gap: var(--s3); }
 nav button .nx-i { width: 18px; height: 18px; stroke-width: 1.6; }
@@ -94,13 +110,13 @@ strong { font-weight: 600; }
 /* the page's own sentence (next.js): the page name drops to a label above it */
 .page h1:has(+ .nx-summary) { font-size: var(--fs-s); font-weight: 500; color: var(--muted); margin: 0 0 var(--s2); letter-spacing: 0; }
 .nx-summary { margin: 0 0 var(--s3); }
-.nx-state { font-size: var(--fs-xxl); line-height: var(--lh-tight); font-weight: 500; letter-spacing: -.012em; margin: 0;
+.nx-state { font: var(--d-weight) var(--d-state)/var(--d-lh) var(--display); letter-spacing: var(--d-track); margin: 0;
   position: relative; font-variant-numeric: tabular-nums; }
 /* the state mark hangs in the margin, so the sentence keeps the page's left edge; its shape says the state too */
-.nx-state > .nx-i { position: absolute; left: -30px; top: calc((1.25em - 20px) / 2); width: 20px; height: 20px; color: var(--purple); }
+.nx-state > .nx-i { position: absolute; left: -30px; top: calc((var(--d-lh) * 1em - 20px) / 2); width: 20px; height: 20px; color: var(--purple); }
 .nx-state[data-tone="warn"] > .nx-i { color: var(--amber); }
 .nx-state[data-tone="bad"] > .nx-i { color: var(--red); }
-.nx-state[data-tone="wait"] > .nx-i { color: var(--muted); }
+.nx-state[data-tone="wait"] > .nx-i, .nx-state[data-tone="off"] > .nx-i { color: var(--muted); }
 .nx-detail { margin: var(--s2) 0 0; color: var(--muted); font-size: var(--fs-m); font-variant-numeric: tabular-nums; }
 .nx-detail .nx-dev { color: var(--amber-ink); }
 .nx-detail .nx-dev.bad { color: var(--red-ink); }
@@ -125,9 +141,12 @@ button:has(> .nx-i) { display: inline-flex; align-items: center; gap: 6px; }
 button > .nx-i { width: 14px; height: 14px; }
 button.nx-icon-only { font-size: 0; width: 28px; padding: 0; justify-content: center; gap: 0; }
 select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radius: var(--r-control); border-color: var(--line); padding: 0 var(--s2); }
-.switch { height: 20px; width: 34px; border-radius: 10px; }
-.switch::after { top: 3px; left: 3px; width: 14px; height: 14px; box-shadow: none; }
-.switch:checked::after { left: 17px; }
+/* toggles: a hairline track when off, purple when on; the knob is the page's surface, never a shadow */
+.switch { height: 20px; width: 34px; border-radius: 10px; background: var(--line); }
+.switch::after { top: 3px; left: 3px; width: 14px; height: 14px; box-shadow: none; background: var(--surface); }
+.switch:checked { background: var(--purple); }
+.switch:checked::after { left: 17px; background: #FFFFFF; }
+.switch:hover:not(:disabled) { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent); }
 @media (prefers-reduced-motion: no-preference) {
   button, .item.click, .tile { transition: background-color .15s var(--ease), box-shadow .15s var(--ease); }
 }
@@ -168,7 +187,7 @@ select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radi
 .badge + .section, .badge + * + .section { margin-top: var(--s4); }
 .badge .band, .badge .face { display: none; }
 .badge .who { padding: var(--s3) 0 var(--s4); }
-.badge .who .name { font-size: var(--fs-l); font-weight: 600; }
+.badge .who .name:not(.nx-chip) { display: block; font: var(--d-weight) var(--d-name)/var(--d-lh) var(--display); letter-spacing: var(--d-track); margin-bottom: var(--s2); }
 .badge .who > .dim { font-size: var(--fs-s); }
 .claude-line { gap: var(--s2); margin-top: 0; min-height: var(--row); padding: var(--s2) 0; border-top: 1px solid var(--line); }
 .badge .methods { margin-top: var(--s3); }
@@ -204,7 +223,9 @@ select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radi
 /* vault fold */
 details.vault > summary header { padding-top: var(--s6); gap: var(--s3); }
 details.vault > summary h2 { display: inline-flex; align-items: center; gap: var(--s2); }
-details.vault > summary h2::before, details.vault[open] > summary h2::before { width: 6px; height: 6px; border-width: 0 1.5px 1.5px 0; margin: 0 var(--s1) 0 2px; }
+/* one affordance: the chevron says it folds; no book icon beside it */
+details.vault > summary h2::before, details.vault[open] > summary h2::before { width: 7px; height: 7px; border-width: 0 1.5px 1.5px 0; margin: 0 var(--s2) 3px 2px; }
+details.vault[open] > summary h2::before { margin-bottom: 5px; }
 .view-as { margin-bottom: var(--s2); }
 
 /* the access tree: 1px connectors, 40px rows */
@@ -241,6 +262,12 @@ details.vault > summary h2::before, details.vault[open] > summary h2::before { w
 .nx-acts button.small { padding: 0 10px; }
 .nx-acts button.nx-icon-only { padding: 0; }
 .who-connect { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--line); }
+/* a machine with nothing to show yet (no access, or not answering): no empty block, the row opens straight to who may
+   connect, and for a member who cannot, the one line that says whom to ask */
+.specs > div:empty { display: none; }
+.specs > div:empty + .who-connect { margin-top: 0; padding-top: 0; border-top: 0; }
+.who-connect > p.nx-ask { display: flex; align-items: flex-start; gap: var(--s2); margin: var(--s2) 0 0; color: var(--ink); font-size: var(--fs-s); }
+.who-connect > p.nx-ask > .nx-i { width: 14px; height: 14px; margin-top: 3px; color: var(--muted); }
 .who-connect .spec { margin: var(--s1) 0; align-items: center; }
 .who-connect select { margin-top: var(--s2); }
 
@@ -268,7 +295,8 @@ details.vault > summary h2::before, details.vault[open] > summary h2::before { w
    label in its copy's face); only the chrome around it is Plex */
 .terms { max-width: 720px; }
 .terms .item .text { all: unset; display: block; flex: 1; min-width: 0; }   /* "Who accepted" rows are rows, not the text box */
-.terms .nx-summary + .lede { display: none; }   /* says what the sentence already says */
+.terms .nx-summary + .lede { display: none; }
+.terms .nx-summary { margin-bottom: var(--s6); }   /* says what the sentence already says */
 .terms > .text { border-radius: var(--r-panel); padding: var(--s2) var(--s6) var(--s4); }
 .terms .lang { border-radius: var(--r-control); padding: 2px; }
 .terms .lang button { padding: 4px var(--s4); border-radius: 3px; height: auto; box-shadow: none; }
@@ -285,3 +313,53 @@ dialog { border-radius: var(--r-panel); padding: var(--s6); border: 1px solid va
 dialog h3 { font-size: var(--fs-xl); font-weight: 600; }
 dialog .buttons { gap: var(--s2); }
 @media (prefers-reduced-motion: no-preference) { dialog[open] { animation: rise .18s var(--ease); } }
+
+/* ---------------------------------------------------------------- Windows VM and Android phone (next.js marks them) */
+/* the page name above its sentence, also where the title shares a row with a button */
+#android > .row:has(+ .nx-summary) { margin-bottom: var(--s1); }
+#android > .row:has(+ .nx-summary) h1 { font-size: var(--fs-s); font-weight: 500; color: var(--muted); margin: 0; letter-spacing: 0; }
+#vm:has(> .nx-summary) > h2, #vm:has(> .nx-summary) > h2 + .dim { display: none; }
+#vm > h3, #android .card h3 { font-size: var(--fs-m); margin: var(--s10) 0 var(--s1); }
+#vm > h3 + .sub { margin: 0; }
+#vm .list, #android .list { margin-top: var(--s3); }
+/* rows say what they are: one 28px column for the app's own tiles and the Lucide marks alike, so text lines up */
+#vm .item.nx-row-i > .nx-i, #android .item.nx-row-i > .nx-i { box-sizing: content-box; padding: 0 6px; }
+#vm .item.nx-row-pad { padding-left: 40px; }
+.item > img.nx-app-i { width: 28px; height: 28px; flex: none; }
+#vm .item .sub.nx-mono { font-family: var(--mono); font-size: var(--fs-xs); }
+#vm input[type=number] { width: 72px; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+#vm progress { width: 120px; height: 4px; }
+/* phones: a hairline section each; the drawing shows mode and link, in the connected colour */
+#android .card { margin: var(--s8) 0 0; }
+#android .card > .row { gap: var(--s4); align-items: center; }
+#android .card > .row > div:first-child { color: var(--muted); line-height: 0; }
+#android .card svg [stroke="#188038"], #android .card svg [stroke="#1A73E8"] { stroke: var(--purple); }
+#android .card svg [fill="#188038"], #android .card svg [fill="#1A73E8"] { fill: var(--purple); }
+#android .card h2 { font-size: var(--fs-l); font-weight: 600; margin-bottom: var(--s2); }
+#android .card > .row .dim { font-size: var(--fs-s); }
+#android .card > .row .perm { margin-bottom: var(--s1); }
+#android .card .list { margin-top: var(--s4); }
+
+/* ---------------------------------------------------------------- icons carry it, words on hover (next.js (6), (7)) */
+/* a state, tag or level as its glyph alone: the word stays in the DOM for assistive tech and the page's own sentences */
+.nx-glyph { font-size: 0 !important; width: 22px; min-width: 22px !important; padding: 0 !important; justify-content: center; gap: 0; cursor: default; }
+.nx-glyph > .nx-i { margin: 0 !important; width: 13px; height: 13px; }
+.perm.edit.nx-glyph { cursor: pointer; }
+.tag > .nx-i { width: 12px; height: 12px; stroke-width: 2; }
+.nx-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* an explanation behind a small info mark */
+.nx-info { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+  margin-left: var(--s1); border-radius: 50%; color: var(--muted); cursor: help; vertical-align: middle; flex: none; }
+.nx-info:hover { color: var(--ink); }
+.nx-info:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+.nx-info > .nx-i { width: 15px; height: 15px; }
+.nx-moved { display: none !important; }
+.view-as .nx-info { margin: 0 auto 0 0; }
+/* hardware: the label is its icon, the values stay text and numbers */
+.spec > .k.nx-hw { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.spec > .k.nx-hw > .nx-i { width: 15px; height: 15px; }
+.specs .spec:has(> .k.nx-hw) { grid-template-columns: 36px 1fr; }
+/* the tooltip: ink on paper, one line where it fits, never covering the pointer */
+#nx-tip { position: fixed; z-index: 30; max-width: 300px; padding: 6px 8px; border-radius: var(--r-control); background: var(--ink); color: var(--paper);
+  font: 400 var(--fs-xs)/1.45 var(--font); pointer-events: none; box-shadow: 0 6px 16px -8px rgba(0, 0, 0, .35); }
+#nx-tip[hidden] { display: none; }
