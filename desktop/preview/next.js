@@ -133,7 +133,11 @@
     "Update host tools", "New desktop", "Remove", "Change password", "Look again"]);
   const iconOnly = (b, t) => ICON_ONLY.has(t) || (/^(Disconnect|Close)$/.test(t) && !!b.closest(".desk"));
   function icons(page) {
-    $(document, "nav button[data-page]").forEach(b => mark(b, NAV[b.dataset.page]));
+    // the sidebar: below 700px it is its icons alone (next.css), so each button also carries its words as a tooltip
+    $(document, "nav button[data-page]").forEach(b => { mark(b, NAV[b.dataset.page]);
+      const label = [...b.childNodes].filter(x => x.nodeType === 3).map(x => x.textContent).join("").trim(), os = b.querySelector(".os");
+      b.dataset.tip = label + (os && /^\d+$/.test(os.textContent) ? `, ${os.textContent} waiting` : ""); b.dataset.tipNarrow = 1; });
+    $(document, "nav button.update").forEach(b => { mark(b, "arrow-down-to-line"); b.dataset.tip = b.textContent.trim(); b.dataset.tipNarrow = 1; });
     $(page, ".claude-line > .label").forEach(l => mark(l, LINE[l.textContent]));
     $(page, ".section.pr > header > h2").forEach(h => mark(h, "git-pull-request"));
     // rows: a machine, a person, an invitation, a request
@@ -397,7 +401,9 @@
   tipBox.id = "nx-tip"; tipBox.setAttribute("role", "tooltip"); tipBox.hidden = true; document.body.append(tipBox);
   let tipFor = null, tipTimer = 0;
   function showTip(el) {
-    clearTimeout(tipTimer); tipFor = el;
+    clearTimeout(tipTimer);
+    if (el.dataset.tipNarrow && innerWidth > 700) return;   // the sidebar's words are on screen there
+    tipFor = el;
     tipBox.textContent = el.dataset.tip; tipBox.hidden = false;
     if (el.getAttribute("aria-label") !== el.dataset.tip) el.setAttribute("aria-describedby", "nx-tip");
     const r = el.getBoundingClientRect(), w = tipBox.offsetWidth, h = tipBox.offsetHeight;
@@ -432,7 +438,7 @@
     const buttons = $(page, "button").filter(b => !b.closest("dialog, .lang, .segmented") && !b.classList.contains("tile") && !b.classList.contains("nx-info"));
     const live = buttons.filter(b => !b.disabled || b.classList.contains("working"));
     // with the invite drawer open, sending it is the page's action, not the Close that replaced Invite someone
-    const want = PRIMARY[page.id] && (live.find(b => b.textContent.trim() === "Send invitation") || live.find(b => PRIMARY[page.id].test(b.textContent.trim())));
+    const want = PRIMARY[page.id] && (live.find(b => b.textContent.trim() === "Send invitation" && b.offsetParent) || live.find(b => PRIMARY[page.id].test(b.textContent.trim())));
     // the Windows VM and phone pages act through their rows; no button there is the page's one action
     const pick = NO_PRIMARY.has(page.id) ? null : want || live.find(b => !b.classList.contains("ghost"));
     buttons.forEach(b => b.classList.toggle("nx-primary", b === pick));
