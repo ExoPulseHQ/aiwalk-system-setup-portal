@@ -365,3 +365,24 @@ dialog .buttons { gap: var(--s2); }
 #nx-tip { position: fixed; z-index: 30; max-width: 300px; padding: 6px 8px; border-radius: var(--r-control); background: var(--ink); color: var(--paper);
   font: 400 var(--fs-xs)/1.45 var(--font); pointer-events: none; box-shadow: 0 6px 16px -8px rgba(0, 0, 0, .35); }
 #nx-tip[hidden] { display: none; }
+
+/* who may use a thing (next.js (8)): one wrapping line, people grouped under a quiet label that says why, once */
+.nx-who { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); margin: var(--s2) 0 0; }
+.nx-who-g { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
+.nx-who-k { font-size: var(--fs-xs); color: var(--muted); margin-right: 2px; white-space: nowrap; }
+.nx-who .nx-chip:focus-visible { outline-offset: 1px; }
+/* added by hand: the chip carries its own remove mark */
+.nx-chip.nx-has-x { padding-right: 0; gap: 2px; }
+.nx-who button.nx-x { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  margin-right: 1px; border-radius: 3px; font-size: 0; color: var(--muted); cursor: pointer; }
+.nx-who button.nx-x > .nx-i { width: 12px; height: 12px; stroke-width: 2; }
+.nx-who button.nx-x:hover { color: var(--red-ink); background: var(--hover); }
+.nx-who button.nx-x:focus-visible { outline: 2px solid var(--purple); outline-offset: 0; }
+.nx-who-add { display: inline-flex; align-items: center; }
+.nx-who button.nx-add { height: 22px; width: 22px; box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--r-control); color: var(--muted); }
+.nx-who button.nx-add:hover { color: var(--ink); }
+.nx-who button.nx-add > .nx-i { width: 13px; height: 13px; }
+.nx-who select { margin: 0 !important; height: 28px; }
+.nx-who select.nx-off, .nx-who button[hidden] { display: none; }
+.who-connect > .row { align-items: center; }
+.pr .specs > .nx-who { margin: 0; }

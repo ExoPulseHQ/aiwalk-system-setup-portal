@@ -154,7 +154,7 @@
       if (copy && addr) { copy.classList.add("nx-icon-only"); copy.setAttribute("aria-label", `Copy ${addr.textContent}`); copy.dataset.tip = `Copy ${addr.textContent}`; }
     });
     $(page, "button").forEach(b => {
-      if (b.classList.contains("working") || b.classList.contains("nx-info") || b.closest(".lang, .segmented")) return;
+      if (b.classList.contains("working") || b.classList.contains("nx-info") || b.closest(".lang, .segmented, .nx-who")) return;
       const t = b.textContent.trim();
       mark(b, BUTTON[t] || null);
       if (iconOnly(b, t)) {
@@ -226,9 +226,10 @@
     [/ on GitHub\. Owners can open every repo/, headingBefore],
     [/; they have single repos only\.$/, headingBefore],
     [/^(Added to the desktop and the app menu|Applied while Windows is off)$/, headingBefore]];
-  function info(sentence, host, extra) {
+  // `extra` follows the sentence's own words; `instead` replaces them
+  function info(sentence, host, extra, instead) {
     if (!host || sentence.classList.contains("nx-moved")) return;
-    const text = sentence.textContent.trim() + (extra ? " " + extra : "");
+    const text = instead || sentence.textContent.trim() + (extra ? " " + extra : "");
     sentence.classList.add("nx-moved");
     if ([...host.querySelectorAll(":scope > .nx-info")].some(i => i.dataset.tip === text)) return;   // the sentence was redrawn
     const b = document.createElement("button"); b.type = "button"; b.className = "nx-info"; b.dataset.tip = text; b.setAttribute("aria-label", text);
@@ -274,6 +275,103 @@
       const lede = /^Whether this computer/.test(t) && page.querySelector(":scope > .lede");
       if (lede) lede.classList.add("nx-moved");
       info(p, hit[1](p), lede ? lede.textContent.trim() : "");
+    });
+  }
+
+  // (8) who may use a thing, as one wrapping line of people grouped by why: the reason is a quiet label said once, the
+  // person is the chip. Added-by-hand people carry their own remove mark; the add control is a "+" at the end of the
+  // line that opens the page's own select in place. One component for "Who can connect" and the merge lists.
+  // people: [{login, name, why: [group, ...], rm: button | null}], groups in the order given
+  function whoLine(people, order, add, label) {
+    const line = document.createElement("div"); line.className = "nx-who"; line.setAttribute("role", "list"); line.setAttribute("aria-label", label);
+    const byGroup = new Map(order.map(g => [g, []]));
+    people.forEach(p => { const g = p.why[0]; if (!byGroup.has(g)) byGroup.set(g, []); byGroup.get(g).push(p); });
+    byGroup.forEach((ps, g) => {
+      if (!ps.length) return;
+      const grp = span("nx-who-g", ""); grp.setAttribute("role", "listitem");
+      grp.append(span("nx-who-k", g));
+      ps.forEach(p => {
+        const c = chip(p.login, [p.name !== p.login ? p.name : "", p.why.length > 1 ? `also ${p.why.slice(1).join(", ")}` : ""].filter(Boolean).join(", ") || p.login);
+        c.tabIndex = 0;
+        if (p.rm) {
+          c.classList.add("nx-has-x");
+          p.rm.classList.add("nx-x"); p.rm.dataset.tip = p.rmTip; p.rm.setAttribute("aria-label", p.rmTip);
+          mark(p.rm, "x"); c.append(p.rm);
+        }
+        grp.append(c);
+      });
+      line.append(grp);
+    });
+    if (!people.length) line.append(span("nx-who-k", "Nobody yet"));
+    if (add) {
+      const wrap = span("nx-who-add", ""), b = document.createElement("button");
+      b.type = "button"; b.className = "small ghost nx-icon-only nx-add"; b.textContent = add.options[0].text;
+      b.dataset.tip = add.options[0].text; b.setAttribute("aria-label", add.options[0].text); mark(b, "user-plus");
+      add.classList.add("nx-off");
+      b.onclick = e => { e.stopPropagation(); add.classList.remove("nx-off"); b.hidden = true; add.focus(); try { add.showPicker(); } catch {} };
+      add.addEventListener("blur", () => { if (!add.value) { add.classList.add("nx-off"); b.hidden = false; } });
+      wrap.append(b, add); line.append(wrap);
+    }
+    return line;
+  }
+  function whoLists(page) {
+    const s = tl(), org = orgOf(s);
+    if (!org) return;
+    const nameOf = l => (org.people[l] || {}).name || l;
+    // Who can connect, owner and member alike, read from the same rule the app uses
+    $(page, ".who-connect").forEach(box => {
+      if (box.querySelector(":scope > .nx-who") || typeof connectRule === "undefined") return;
+      const row = box.closest(".specs") && box.closest(".specs").previousElementSibling;
+      const host = row && row.querySelector(".text > .title") && row.querySelector(".text > .title").textContent;
+      const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
+      if (!host || !machines.some(m => m.host === host)) return;
+      const rule = connectRule(host, machines, org), extra = new Set(rule.team(`machine-${host}`).members);
+      const HAND = "added by hand";
+      const rms = new Map($(box, ":scope > .spec").map(sp => [((sp.querySelector(".k") || {}).textContent || ""), sp.querySelector("button")]));
+      const people = Object.keys(org.people).sort((a, b) => nameOf(a).localeCompare(nameOf(b)))
+        .filter(l => rule.via(l).length || extra.has(l))
+        .map(l => { const rm = rms.get(l) || rms.get(nameOf(l)) || null;
+          return { login: l, name: nameOf(l), why: [...rule.via(l), ...(extra.has(l) ? [HAND] : [])], rm, rmTip: `Remove ${l}'s ${rule.via(l).length ? "extra " : ""}access to ${host}` }; });
+      // a member's copy of the rule may know only their own teams: then their own sentence says more than a line of one
+      const owner = (org.people[s.user] || {}).grants === null;
+      const solo = !owner && !people.some(p => p.login !== s.user);
+      const pick = box.querySelector(":scope > select");
+      const head = box.querySelector(":scope > .row"), teams = head && head.querySelector(":scope > .sub");
+      const changes = $(box, ":scope > p.sub").find(p => /^Changes reach/.test(p.textContent));
+      if (solo && teams && !teams.classList.contains("nx-moved")) {
+        const m = /^Teams: (.*?)(, plus extra people)?$/.exec(teams.textContent.trim());
+        info(teams, head.querySelector(".k"), "", m ? `Members of ${m[1]} can connect${m[2] ? ", and anyone an owner adds by hand" : ""}.` : "");
+      }
+      if (solo) return;
+      // the reason, said once behind the heading's info mark; the group labels say who
+      if (teams && head) {
+        const m = /^Teams: (.*?)(, plus extra people)?$/.exec(teams.textContent.trim());
+        info(teams, head.querySelector(".k"), "", (m ? `Members of ${m[1]} can connect${m[2] ? ", and anyone an owner adds by hand" : ""}.` : teams.textContent) + (changes ? " " + changes.textContent.trim() : ""));
+        if (changes) changes.classList.add("nx-moved");
+      }
+      $(box, ":scope > .spec").forEach(sp => sp.remove());
+      const yours = $(box, ":scope > p.sub").find(p => /^You can connect/.test(p.textContent));
+      if (yours) yours.classList.add("nx-moved");
+      (head || box.firstChild).after(whoLine(people, [...rule.teamsFor, HAND], pick, `Who can connect to ${host}`));
+    });
+    // who may merge: the same line, "can merge" and "opens pull requests" as its two groups
+    $(page, ".pr .specs").forEach(box => {
+      const specs = $(box, ":scope > .spec");
+      if (!specs.length) return;
+      const title = box.previousElementSibling && box.previousElementSibling.querySelector(".title"), repo = title ? title.textContent : "this repo";
+      const people = [], seen = new Map();
+      specs.forEach(sp => {
+        const g = (sp.querySelector(".k") || {}).textContent === "Can merge" ? "can merge" : "opens pull requests";
+        $(sp, ".nx-chip, .tag").forEach(c => {
+          const login = c.textContent.trim(), rm = c.nextElementSibling && c.nextElementSibling.tagName === "BUTTON" ? c.nextElementSibling : null;
+          if (seen.has(login)) { seen.get(login).why.push(g); return; }
+          const p = { login, name: nameOf(login), why: [g], rm, rmTip: `Remove ${login}'s merge right on ${repo}` };
+          seen.set(login, p); people.push(p);
+        });
+      });
+      const pick = box.querySelector(":scope > select");
+      specs.forEach(sp => sp.remove());
+      box.prepend(whoLine(people, ["can merge", "opens pull requests"], pick, `Who can merge on ${repo}`));
     });
   }
 
@@ -424,7 +522,7 @@
     queued = false;
     observer.disconnect();
     try {
-      $(document, ".page").forEach(page => { if (page.hidden) return; rows(page); states(page); chips(page); summary(page); icons(page); compact(page); primary(page); });
+      $(document, ".page").forEach(page => { if (page.hidden) return; rows(page); states(page); chips(page); whoLists(page); summary(page); icons(page); compact(page); primary(page); });
       if (tipFor && !tipFor.isConnected) hideTip();
     } finally { observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "hidden"] }); }
   };
