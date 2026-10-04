@@ -548,7 +548,10 @@ pub fn python_version(out: &str) -> Option<String> {
 
 /// Takes terminal resize requests out of a byte stream headed for a pseudo-terminal. A request is
 /// ESC ] 777 ; resize ; COLS ; ROWS BEL. Everything else passes through untouched, in order, including bytes that
-/// only began like a request. A request may be split across reads; the scanner keeps the unfinished part.
+/// only began like a request. A request may be split across reads; the scanner keeps the unfinished part, with one
+/// exception: an ESC that ends a read is passed on at once. On its own it is the Esc key (how a person interrupts
+/// Claude), and holding it until the next byte made the key seem dead. A request is written whole, so its ESC does
+/// not arrive alone.
 #[derive(Default)]
 pub struct ResizeScanner { held: Vec<u8> }
 
@@ -578,6 +581,7 @@ impl ResizeScanner {
             out.append(&mut self.held);
             if b == 0x1b { self.held.push(b) } else { out.push(b) }
         }
+        if self.held == [0x1b] { out.append(&mut self.held) }
         (out, sizes)
     }
 }
@@ -628,10 +632,14 @@ mod tests {
     fn resize_requests_leave_the_stream_and_nothing_else_does() {
         let mut sc = ResizeScanner::default();
         assert_eq!(sc.feed(b"ls\r\x1b]777;resize;120;40\x07cd"), (b"ls\rcd".to_vec(), vec![(120, 40)]));
-        // split across reads, one byte at a time
-        let mut all = (vec![], vec![]);
-        for b in b"a\x1b]777;resize;80;24\x07b" { let (o, z) = sc.feed(&[*b]); all.0.extend(o); all.1.extend(z); }
+        // split across reads anywhere after its first two bytes
+        let mut all = sc.feed(b"a\x1b]");
+        for b in b"777;resize;80;24\x07b" { let (o, z) = sc.feed(&[*b]); all.0.extend(o); all.1.extend(z); }
         assert_eq!(all, (b"ab".to_vec(), vec![(80, 24)]));
+        // the Esc key alone goes through at once, also right after other input
+        assert_eq!(sc.feed(b"\x1b"), (b"\x1b".to_vec(), vec![]));
+        assert_eq!(sc.feed(b"hi\x1b"), (b"hi\x1b".to_vec(), vec![]));
+        assert_eq!(sc.feed(b"x"), (b"x".to_vec(), vec![]));
         // other escape sequences, a look-alike and a malformed request pass through whole
         for other in [&b"\x1b[A"[..], b"\x1b]0;title\x07", b"\x1b]777;notify;hi\x07", b"\x1b]777;resize;x\x07", b"\x1b]777;resize;12;\x07", b"\x1b\x1b[B"] {
             assert_eq!(sc.feed(other), (other.to_vec(), vec![]), "{other:?}");
