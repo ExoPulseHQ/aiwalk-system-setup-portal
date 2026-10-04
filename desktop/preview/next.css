@@ -1,0 +1,256 @@
+/* ?design=next: the approved direction, laid over desktop/ui/index.html for review. Loaded after the page's own
+   <style>, so equal specificity wins by order; every rule here restyles an existing class, nothing in desktop/ui changes.
+   A calm instrument panel: type, alignment and hairlines; purple only for selected, the page's one primary button,
+   and connected / healthy; amber and red only where something deviates. */
+
+@font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-Regular-Latin1.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-Medium-Latin1.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-SemiBold-Latin1.woff2) format("woff2"); font-weight: 600 700; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Regular-Latin1.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Medium-Latin1.woff2) format("woff2"); font-weight: 500 700; font-display: swap; }
+
+:root {
+  /* colour: roles, not hues */
+  --paper: #F7F6FA; --surface: #FFFFFF; --ink: #1E1A29; --muted: #6B6578; --line: #E4E0EC;
+  --rail: #1B1724; --rail-ink: #E9E5F0; --rail-muted: #9C95AB;
+  --purple: #8C54D9; --purple-ink: #7A42C8;          /* -ink: the same purple as small text on paper, AA */
+  --amber: #C77A12; --amber-ink: #9A5B0A; --red: #C8402F; --red-ink: #B3361F;
+  --orange: var(--amber); --peach: transparent;      /* the old accent tokens fold into the deviation colour */
+  --tint: color-mix(in srgb, var(--purple) 8%, transparent); --on-purple: #FFFFFF;
+  --hover: color-mix(in srgb, var(--ink) 4%, transparent);
+
+  /* type: one scale, ratio about 1.2 from a 14px body */
+  --font: "IBM Plex Sans", "IBM Plex Sans TC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --fs-xs: 12px;   /* chips, meter labels */
+  --fs-s: 13px;    /* secondary lines, controls */
+  --fs-m: 14px;    /* body */
+  --fs-l: 16px;    /* section titles */
+  --fs-xl: 20px;   /* dialog titles, the name */
+  --fs-xxl: 28px;  /* the page's one sentence */
+  --lh: 1.5; --lh-tight: 1.25;
+
+  /* space: a 4px unit */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px; --s10: 40px; --s12: 48px;
+  --row: 44px;
+  /* radius by size: controls and chips, panels and dialogs, the largest containers */
+  --r-control: 4px; --r-panel: 8px; --r-large: 12px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #15121C; --surface: #1E1A27; --ink: #ECE8F3; --muted: #A49DB3; --line: #312B3D;
+  --rail: #0F0C15; --rail-ink: #E2DCEC; --rail-muted: #8F88A0;
+  --purple: #A97CEB; --purple-ink: #B48CF0;
+  --amber: #E0A040; --amber-ink: #E0A040; --red: #E8735F; --red-ink: #EF7F6C;
+  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #15121C; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --paper: #15121C; --surface: #1E1A27; --ink: #ECE8F3; --muted: #A49DB3; --line: #312B3D;
+  --rail: #0F0C15; --rail-ink: #E2DCEC; --rail-muted: #8F88A0;
+  --purple: #A97CEB; --purple-ink: #B48CF0;
+  --amber: #E0A040; --amber-ink: #E0A040; --red: #E8735F; --red-ink: #EF7F6C;
+  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #15121C; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
+  color-scheme: dark;
+}
+
+body { font: var(--fs-m)/var(--lh) var(--font); background: var(--paper); -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+code, .cmd, .place .path, .desk > span:first-child { font-family: var(--mono); font-size: var(--fs-s); }
+
+/* ---------------------------------------------------------------- sidebar: same structure, quieter */
+nav { width: 208px; padding: var(--s6) var(--s3); gap: 2px; }
+nav .app { font-size: var(--fs-l); font-weight: 600; padding: 0 var(--s3) var(--s6); letter-spacing: 0; }
+nav .app span { font-size: var(--fs-s); color: var(--rail-muted); opacity: 1; font-weight: 400; }
+nav button { height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-size: var(--fs-m); box-sizing: border-box; }
+nav button:hover { background: rgba(255, 255, 255, .05); }
+nav button.on { background: var(--purple); color: var(--on-purple); font-weight: 500; }
+nav .os { font-size: var(--fs-xs); color: var(--rail-muted); opacity: 1; font-variant-numeric: tabular-nums; }
+nav button.on .os { color: inherit; opacity: .8; }
+nav #ver { padding: var(--s3) var(--s3) 0; font-size: var(--fs-xs); color: var(--rail-muted); opacity: 1; font-family: var(--mono); }
+/* the update offer is not this page's primary action: an outline in the rail */
+nav button.update, nav button.update:hover { background: transparent; color: var(--rail-ink); font-weight: 500; filter: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18); justify-content: flex-start; margin-top: var(--s2); }
+nav button.update:hover { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .32); }
+
+/* ---------------------------------------------------------------- page: one column, 720px of content, left aligned */
+.page { max-width: calc(720px + 2 * var(--s10)); padding: var(--s10) var(--s10) var(--s12); }
+h1 { font-size: var(--fs-xl); line-height: var(--lh-tight); font-weight: 600; margin: 0 0 var(--s1); letter-spacing: -.005em; }
+h2 { font-size: var(--fs-l); line-height: var(--lh-tight); font-weight: 600; }
+h3 { font-size: var(--fs-m); font-weight: 600; margin: var(--s8) 0 var(--s2); }
+.sub { font-size: var(--fs-s); }
+.lede { font-size: var(--fs-m); margin: 0 0 var(--s8); max-width: 64ch; }
+strong { font-weight: 600; }
+
+/* the page's own sentence (next.js): the page name drops to a label above it */
+.page h1:has(+ .nx-summary) { font-size: var(--fs-s); font-weight: 500; color: var(--muted); margin: 0 0 var(--s2); letter-spacing: 0; }
+.nx-summary { margin: 0 0 var(--s3); }
+.nx-state { font-size: var(--fs-xxl); line-height: var(--lh-tight); font-weight: 500; letter-spacing: -.012em; margin: 0;
+  position: relative; font-variant-numeric: tabular-nums; }
+/* the state mark hangs in the margin, so the sentence keeps the page's left edge */
+.nx-state::before { content: ""; position: absolute; left: -22px; top: .5em; width: 10px; height: 10px; border-radius: 50%; background: var(--purple); }
+.nx-state[data-tone="warn"]::before { background: var(--amber); }
+.nx-state[data-tone="bad"]::before { background: var(--red); }
+.nx-state[data-tone="wait"]::before { background: var(--line); }
+.nx-detail { margin: var(--s2) 0 0; color: var(--muted); font-size: var(--fs-m); font-variant-numeric: tabular-nums; }
+.nx-detail .nx-dev { color: var(--amber-ink); }
+.nx-detail .nx-dev.bad { color: var(--red-ink); }
+.nx-summary + .lede, .nx-summary + .badge { margin-top: var(--s6); }
+.nx-summary + .lede { font-size: var(--fs-s); color: var(--muted); }
+
+/* ---------------------------------------------------------------- controls */
+button { font-weight: 500; font-size: var(--fs-s); height: 32px; padding: 0 var(--s4); border-radius: var(--r-control);
+  background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+button:hover { filter: none; background: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
+button.small { height: 28px; padding: 0 var(--s3); font-size: var(--fs-s); }
+button.ghost { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+button.ghost:hover { background: var(--hover); }
+/* the one primary action of the page, chosen in next.js */
+button.nx-primary { background: var(--purple); color: var(--on-purple); box-shadow: none; }
+button.nx-primary:hover { background: color-mix(in srgb, #000 8%, var(--purple)); }
+button.working { gap: var(--s2); }
+select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radius: var(--r-control); border-color: var(--line); padding: 0 var(--s2); }
+.switch { height: 20px; width: 34px; border-radius: 10px; }
+.switch::after { top: 3px; left: 3px; width: 14px; height: 14px; box-shadow: none; }
+.switch:checked::after { left: 17px; }
+@media (prefers-reduced-motion: no-preference) {
+  button, .item.click, .tile { transition: background-color .15s var(--ease), box-shadow .15s var(--ease); }
+}
+
+/* ---------------------------------------------------------------- chips: one object for people and machines.
+   .nx-chip is the identity chip (a login, a machine name), monospace; tags, levels and states share its geometry in
+   the UI face, so everything small and pill-shaped on a page is the same shape. */
+.nx-chip, .tag, .perm, .method {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: var(--r-control);
+  font-size: var(--fs-xs); font-weight: 500; line-height: 1; white-space: nowrap; vertical-align: middle;
+  background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); min-width: 0; background-image: none;
+}
+.nx-chip { font-family: var(--mono); font-weight: 500; background: var(--surface); letter-spacing: -.01em; }
+.item .title.nx-chip { font-size: var(--fs-s); height: 24px; padding: 0 8px; }
+.tag { color: var(--muted); }
+/* access levels: neutral, the word carries the meaning */
+.perm { justify-content: center; min-width: 76px; }
+.p4, .p3, .p2 { color: var(--ink); background: transparent; }
+.p1 { color: var(--muted); background: transparent; }
+.p0 { color: var(--muted); font-weight: 400; background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.perm.edit:hover { outline: 0; box-shadow: inset 0 0 0 1px var(--ink); }
+/* states: purple is healthy, amber deviates, red is broken; next.js names them from the words */
+.nx-ok { color: var(--purple-ink) !important; background: transparent !important; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 45%, transparent) !important; }
+.nx-warn { color: var(--amber-ink) !important; background: transparent !important; box-shadow: inset 0 0 0 1px var(--amber) !important; }
+.nx-bad { color: var(--red-ink) !important; background: transparent !important; box-shadow: inset 0 0 0 1px var(--red) !important; }
+.m-off { color: var(--muted); font-weight: 400; }
+.m-account, .m-key { color: var(--purple-ink); background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 45%, transparent); }
+.m-temporary { color: var(--amber-ink); background: transparent; box-shadow: inset 0 0 0 1px var(--amber); }
+.pending { color: var(--amber-ink); box-shadow: inset 0 0 0 1px var(--amber); }
+.who-connect .tag.extra, .pr .tag.extra { background: transparent; color: var(--ink); }
+.warn { color: var(--amber-ink); font-size: var(--fs-s); }
+
+/* ---------------------------------------------------------------- the badge becomes rows, not a card */
+.badge { display: block; background: none; border-radius: 0; box-shadow: none; margin: 0 0 var(--s8);
+  border-top: 1px solid var(--line); overflow: visible; }
+.badge + .section, .badge + * + .section { margin-top: var(--s4); }
+.badge .band, .badge .face { display: none; }
+.badge .who { padding: var(--s3) 0 var(--s4); }
+.badge .who .name { font-size: var(--fs-l); font-weight: 600; }
+.badge .who > .dim { font-size: var(--fs-s); }
+.claude-line { gap: var(--s2); margin-top: 0; min-height: var(--row); padding: var(--s2) 0; border-top: 1px solid var(--line); }
+.badge .methods { margin-top: var(--s3); }
+.claude-line .label { width: 112px; font-size: var(--fs-s); }
+.claude-line .sub { font-size: var(--fs-s); }
+.badge .actions { margin: 0; padding: var(--s3) 0 0; gap: var(--s2); }
+
+/* ---------------------------------------------------------------- sections and lists: hairline rows */
+.section { border-top: 1px solid var(--line); margin-top: var(--s8); padding: 0 0 var(--s2); }
+.section > header { padding-top: var(--s6); gap: var(--s3); }
+.section > .sub, .section > p.sub { margin: var(--s2) 0 var(--s3); }
+.list { margin: var(--s3) 0; }
+.item { min-height: var(--row); padding: var(--s2) 0; gap: var(--s3); }
+.item .title { font-weight: 500; }
+.item .sub { margin-top: 2px; }
+.item.click { border-radius: 0; }
+.item.click:hover { background: var(--hover); }
+.item.busy .title { color: var(--ink); }
+.quiet { padding: var(--s4) 0 0; font-size: var(--fs-s); }
+.place { padding: var(--s3) 0; }
+.place .title { font-weight: 500; }
+.place .buttons { justify-content: flex-start; gap: var(--s2); }
+.banner { background: transparent; color: var(--ink); border-radius: 0; padding: var(--s3) 0; border-top: 1px solid var(--amber); border-bottom: 1px solid var(--line); margin: 0 0 var(--s6); }
+
+/* vault fold */
+details.vault > summary header { padding-top: var(--s6); gap: var(--s3); }
+details.vault > summary h2::before { width: 6px; height: 6px; border-width: 0 1.5px 1.5px 0; margin: 0 var(--s3) 3px 2px; }
+.view-as { margin-bottom: var(--s2); }
+
+/* the access tree: 1px connectors, 40px rows */
+.tree ul { margin-left: 7px; padding-left: var(--s4); border-left: 1px solid var(--line); }
+.tree ul > li::before { left: calc(-1 * var(--s4)); top: 20px; width: 10px; border-top: 1px solid var(--line); }
+.tree ul > li:last-child::after { left: calc(-1 * var(--s4) - 1px); top: 20px; border-left: 1px solid var(--paper); }
+.node { min-height: 40px; gap: var(--s3); padding: 0; }
+.node .title { font-weight: 500; }
+.node.group > .title { font-size: var(--fs-m); font-weight: 600; }
+.node .where { font-size: var(--fs-s); }
+
+/* machines: meters and specs */
+.meters { gap: var(--s4); margin-top: var(--s2); }
+.meter-mini { font-size: var(--fs-xs); gap: var(--s2); font-family: var(--mono); }
+.meter-mini .k { width: 26px; font-family: var(--font); }
+.meter-mini .v { width: 34px; }
+.meter-mini .track { width: 64px; height: 4px; border-radius: 2px; background: var(--line); }
+.meter-mini i { background: var(--muted); }
+.meter-mini i.hot { background: var(--amber); }
+.specs { padding: var(--s2) 0 var(--s4) var(--s4); gap: var(--s1); }
+.spec > .nx-chip { justify-self: start; }
+.spec > span:last-child:not(.nx-chip) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
+.pr .tag, .who-connect .tag, .pr .spec .nx-chip { margin: 0; }
+.nx-chip.extra { box-shadow: inset 0 0 0 1px var(--ink); }
+.spec { grid-template-columns: 112px 1fr; gap: var(--s3); font-size: var(--fs-s); font-variant-numeric: tabular-nums; }
+.pr .spec { grid-template-columns: 112px 1fr; }
+.desktops { margin-top: var(--s3); gap: var(--s2); }
+.desktops > .k, .desk { font-size: var(--fs-s); }
+.who-connect { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.who-connect .spec { margin: var(--s1) 0; align-items: center; }
+.who-connect select { margin-top: var(--s2); }
+
+/* waiting: a plain purple line, no sweep of colours */
+#topline { height: 2px; margin-bottom: -2px; }
+#topline::before { background: var(--purple); }
+.meter { height: 4px; border-radius: 2px; }
+.meter > i { background: var(--muted); }
+.ring { background: conic-gradient(var(--purple) calc(var(--p) * 1%), var(--line) 0); }   /* a fill, not a gradient */
+.stage .line { font-size: var(--fs-s); }
+
+/* invite drawer, tiles, segmented */
+.invite { border-radius: var(--r-panel); border: 1px solid var(--line); padding: var(--s4) var(--s4) var(--s3); gap: var(--s3); margin: var(--s2) 0 var(--s6); }
+.invite .who { font-size: var(--fs-m); height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-family: var(--mono); }
+.invite .label { font-size: var(--fs-s); }
+.segmented { padding: 2px; border-radius: var(--r-control); background: var(--line); }
+.segmented button { height: 28px; padding: 0 var(--s4); border-radius: 3px; box-shadow: none; font-weight: 500; background: transparent; }
+.segmented button[aria-checked="true"] { box-shadow: none; background: var(--surface); }
+.tile { border-radius: var(--r-control); padding: var(--s2) var(--s3) var(--s2) 32px; }
+.tile::before { left: 10px; top: 11px; border-radius: 3px; }
+.tile-title { font-weight: 500; font-size: var(--fs-m); }
+.tile-sub { font-size: var(--fs-xs); font-family: var(--mono); }
+
+/* terms: the same faces as the rest of the app */
+.terms { max-width: 720px; }
+.terms .item .text { all: unset; flex: 1; min-width: 0; }
+.terms .nx-summary + .lede { display: none; }   /* says what the sentence already says */
+.terms > .text { font-family: var(--font); font-size: var(--fs-m); border-radius: var(--r-panel); padding: var(--s2) var(--s6) var(--s4); }
+.terms > .text h2 { font-size: var(--fs-l); margin: var(--s6) 0 var(--s2); }
+.terms > .text li { margin: var(--s1) 0; line-height: var(--lh); }
+.terms .lang { border-radius: var(--r-control); padding: 2px; }
+.terms .lang button, .terms .lang button.zh, .terms .lang button.en { font-family: var(--font); font-size: var(--fs-s); padding: 4px var(--s4); border-radius: 3px; height: auto; box-shadow: none; }
+.terms .lang button.on { box-shadow: none; }
+.terms .agree { gap: var(--s3); }
+
+/* the empty states (sign in, missing tools) */
+.empty { padding: 0 0 var(--s12); }
+.empty h1 { font-size: var(--fs-xxl); font-weight: 500; letter-spacing: -.012em; margin-bottom: var(--s3); }
+
+/* toast and dialog: 8px panels, one soft shadow at most */
+#toast { border-radius: var(--r-panel); font-size: var(--fs-s); padding: var(--s3) var(--s4); }
+dialog { border-radius: var(--r-panel); padding: var(--s6); border: 1px solid var(--line); box-shadow: 0 12px 32px -16px rgba(0, 0, 0, .3); }
+dialog h3 { font-size: var(--fs-xl); font-weight: 600; }
+dialog .buttons { gap: var(--s2); }
+@media (prefers-reduced-motion: no-preference) { dialog[open] { animation: rise .18s var(--ease); } }

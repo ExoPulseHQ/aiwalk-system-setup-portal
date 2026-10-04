@@ -20,7 +20,13 @@ http.createServer(async (req, res) => {
   try {
     let body = await readFile(file);
     // String.replace with a string pattern changes the first match only
-    if (root === ui && rel === "/index.html") body = Buffer.from(body.toString().replace("<script", '<script src="/__preview/mock.js"></script>\n<script'));
+    if (root === ui && rel === "/index.html") {
+      let html = body.toString().replace("<script", '<script src="/__preview/mock.js"></script>\n<script');
+      // ?design=next: the proposed restyle, after the page's own CSS and scripts (see next.css)
+      if (url.searchParams.get("design") === "next")
+        html = html.replace("</head>", '<link rel="stylesheet" href="/__preview/next.css">\n</head>').replace("</body>", '<script src="/__preview/next.js"></script>\n</body>');
+      body = Buffer.from(html);
+    }
     res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream", "cache-control": "no-store" }).end(body);
   } catch { res.writeHead(404).end("not found"); }
 }).listen(port, () => console.log(`preview on http://localhost:${port}/?as=owner&page=team`));

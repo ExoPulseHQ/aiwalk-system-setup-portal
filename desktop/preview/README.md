@@ -14,7 +14,8 @@ Then open `http://localhost:4173/?as=owner&page=people`.
 | `as` | `owner` (default), `member`, `signedout`, `terms` | who is signed in; `terms` = signed in, terms not yet accepted |
 | `page` | `team`, `machines`, `people`, `terms`, `android`, `vm` | opens that page after load |
 | `os` | `linux` (default), `windows`, `macos` | what `platform` and `tools` report; non-Linux hides the phone and VM pages |
-| `theme` | `light` | forces the light theme. Dark follows `prefers-color-scheme` only, so for dark use the browser: Chrome headless `--force-dark-mode`, or DevTools > Rendering > Emulate prefers-color-scheme |
+| `design` | `next` | lays the proposed restyle over the real pages: `next.css` after the page's CSS, `next.js` after its scripts (fonts in `fonts/`, IBM Plex, OFL). Without it nothing changes |
+| `theme` | `light` | forces the light theme. With `design=next`, `theme=dark` forces dark too. Dark follows `prefers-color-scheme` only, so for dark use the browser: Chrome headless `--force-dark-mode`, or DevTools > Rendering > Emulate prefers-color-scheme |
 
 Files: `serve.mjs` (server; injects `mock.js` before the first `<script` of `index.html`), `mock.js` (fake `window.__TAURI__`, 150 ms answers),
 `fixtures.js` (one invented answer per command). A command without a fixture logs `preview: no fixture for <cmd>` and resolves `null`.
