@@ -268,6 +268,8 @@ fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     println!("identity: {name} <{email}>");
     if !paths.is_empty() {
         let (groups, rest) = vs::group_paths(&paths, &submodule_paths(vault));
+        // the vault's own paths are checked before any submodule is committed, so a bad one stops the ship whole
+        addable(vault, &rest.iter().map(String::as_str).collect::<Vec<_>>());
         for (s, inner) in &groups {
             println!("submodule {s}:");
             ship_repo(vault, Some(s), msg, inner.clone(), &name, &email, false);
@@ -280,6 +282,17 @@ fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     ship_repo(vault, None, msg, paths, &name, &email, true);
 }
 
+/// The paths `git add` can take. One that is gone from disk and from the index but still in the last commit is a
+/// deletion someone already staged (`git rm`): it is ready, and `git add` would stop on it with "did not match any
+/// files". A path git has never seen anywhere still stops the ship, with git's own words.
+fn addable<'a>(root: &Path, paths: &[&'a str]) -> Vec<&'a str> {
+    paths.iter().copied().filter(|p| {
+        if root.join(p).exists() || run(root, &["git", "ls-files", "--error-unmatch", "--", p]).code == 0 { return true }
+        if run(root, &["git", "cat-file", "-e", &format!("HEAD:{p}")]).code == 0 { return false }
+        die(&format!("fatal: pathspec '{p}' did not match any files"))
+    }).collect()
+}
+
 fn ship_repo(vault: &Path, sub: Option<&str>, msg: &str, paths: Vec<String>, name: &str, email: &str, required: bool) {
     let root = &sub.map_or(vault.to_path_buf(), |s| vault.join(s));
     let p: Vec<&str> = paths.iter().map(String::as_str).collect();
@@ -290,7 +303,10 @@ fn ship_repo(vault: &Path, sub: Option<&str>, msg: &str, paths: Vec<String>, nam
         let head = if head.is_empty() { "origin/main".to_string() } else { head };
         branch = head.split_once('/').map(|(_, b)| b.to_string()).unwrap_or_else(|| die(&format!("✗ no branch in {head}")));
     }
-    if p.is_empty() { sh(root, &["git", "add", "-u"], true); } else { sh(root, &[&["git", "add", "--"][..], &p].concat(), true); }
+    if p.is_empty() { sh(root, &["git", "add", "-u"], true); } else {
+        let p = addable(root, &p);
+        if !p.is_empty() { sh(root, &[&["git", "add", "--"][..], &p].concat(), true); }
+    }
     // a deletion may go (that is how a secret leaves the repo); adding or changing one may not
     let leaks = vs::leaks(&lines(&sh(root, &["git", "diff", "--cached", "--name-status"], true)), &lines(&sh(root, &["git", "ls-files", "-s"], true)));
     if !leaks.is_empty() {
