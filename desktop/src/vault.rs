@@ -9,8 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::Emitter;
 
-/// What an on-demand repo (Papers) always checks out; the PDFs stay on GitHub until opened.
-const ALWAYS: [&str; 8] = ["/_manifest.json", "*.md", "*.jpg", "*.jpeg", "*.png", "*.svg", "*.enl", "*.canvas"];
+use exo_core::exo_repos::ALWAYS;
+
+/// Written in a folder whose repo this account can no longer read: its notes are frozen at the last update.
+pub const FROZEN: &str = ".exo-frozen";
 
 /// git that signs in through this app, never prompts, and reads git@github.com remotes over HTTPS (no SSH key needed to read).
 /// `extra` adds config, e.g. the tests' protocol.file.allow.
@@ -34,7 +36,7 @@ fn run(dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> Result<String, Stri
 }
 
 /// Submodule (name, path) pairs from the book's .gitmodules.
-fn submodules(tree: &Path) -> Vec<(String, String)> {
+pub(crate) fn submodules(tree: &Path) -> Vec<(String, String)> {
     run(tree, &["config", "-f", ".gitmodules", "--get-regexp", r"submodule\..*\.path"], &[]).unwrap_or_default()
         .lines().filter_map(|l| {
             let (key, path) = l.split_once(' ')?;
@@ -66,32 +68,76 @@ fn fetch_on_demand(tree: &Path, name: &str, path: &str, extra: &[(&str, &str)]) 
 /// Reports progress: fraction of the whole job done (0..1) and what is happening now.
 pub type Progress<'a> = &'a dyn Fn(f32, &str);
 
-/// Brings every readable submodule in; (fetched, skipped) folder paths. `remote` moves each to the tip of its main.
-/// Progress runs from `from` to 1 across the submodules.
-fn update_each(tree: &Path, remote: bool, extra: &[(&str, &str)], from: f32, progress: Progress) -> (Vec<String>, Vec<String>) {
+/// How one submodule fared.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Got { Ok, Lazy, Skipped }
+
+/// One line per submodule, as scripts/exo_repos.py prints them.
+pub fn row(path: &str, got: Got) -> String {
+    match got {
+        Got::Ok => format!("ok      {path}"),
+        Got::Lazy => format!("ok      {path}  (on demand: PDFs not downloaded)"),
+        Got::Skipped => format!("skipped {path}  (no access or unreachable)"),
+    }
+}
+
+/// Git's answer when the account may not read a repo (not when the network is down).
+fn no_access(err: &str) -> bool {
+    let e = err.to_lowercase();
+    ["not found", "authentication", "could not read", "403", "permission denied", "does not appear to be a git repository"].iter().any(|k| e.contains(k))
+}
+
+/// A folder this computer had but can no longer update because access was taken away keeps its files and gets
+/// FROZEN (date, reason), kept out of git by the repo's info/exclude; the marker goes once the update works again.
+fn mark_frozen(tree: &Path, path: &str, err: Option<&str>) {
+    let marker = tree.join(path).join(FROZEN);
+    match err {
+        None => { let _ = std::fs::remove_file(&marker); }
+        Some(e) if no_access(e) && !marker.exists() => {
+            let day = run(tree, &["-c", "user.name=x", "-c", "user.email=x", "var", "GIT_COMMITTER_IDENT"], &[]).ok()
+                .and_then(|i| exo_core::vault_ship::local_date(&i)).map_or("unknown".into(), |(y, m, d)| format!("{y:04}-{m:02}-{d:02}"));
+            let reason = e.lines().last().unwrap_or_default();
+            let _ = std::fs::write(&marker, format!("frozen: {day}\nreason: {reason}\nThese notes stopped updating on that day; they are not the current version.\n"));
+            if let Ok(x) = run(&tree.join(path), &["rev-parse", "--git-path", "info/exclude"], &[]) {
+                let x = tree.join(path).join(x);
+                let had = std::fs::read_to_string(&x).unwrap_or_default();
+                if !had.lines().any(|l| l == FROZEN) {
+                    let _ = std::fs::create_dir_all(x.parent().unwrap());
+                    let _ = std::fs::write(&x, format!("{had}{}{FROZEN}\n", if had.is_empty() || had.ends_with('\n') { "" } else { "\n" }));
+                }
+            }
+        }
+        Some(_) => {}
+    }
+}
+
+/// Brings every readable submodule in, one at a time so an unreadable one only skips itself. `remote` moves each to
+/// the tip of its main and marks a folder the account lost access to as frozen. Progress runs from `from` to 1.
+fn update_each(tree: &Path, remote: bool, extra: &[(&str, &str)], from: f32, progress: Progress) -> Vec<(String, Got)> {
     let lazy = on_demand(tree);
-    let (mut ok, mut skipped) = (vec![], vec![]);
+    let mut rows = vec![];
     let all = submodules(tree);
     for (i, (name, path)) in all.iter().cloned().enumerate() {
         progress(from + (1.0 - from) * i as f32 / all.len() as f32, &format!("Bringing in {path} ({} of {})", i + 1, all.len()));
         let first = !tree.join(&path).join(".git").exists();
-        let done = if lazy.contains(&name) && first {
-            fetch_on_demand(tree, &name, &path, extra).is_ok()
+        let got = if lazy.contains(&name) && first {
+            if fetch_on_demand(tree, &name, &path, extra).is_ok() { Got::Lazy } else { Got::Skipped }
         } else {
             let mut args = vec!["submodule", "update", "--init", "--recursive"];
             if remote { args.extend(["--remote", "--merge"]) }
             args.extend(["--", &path]);
-            run(tree, &args, extra).is_ok()
+            let r = run(tree, &args, extra);
+            if remote && !first { mark_frozen(tree, &path, r.as_ref().err().map(String::as_str)) }
+            if r.is_ok() { Got::Ok } else { Got::Skipped }   // an unreadable folder stays an empty directory
         };
-        if done { ok.push(path) } else {
-            // an unreadable folder stays an empty directory
-            skipped.push(path)
-        }
+        rows.push((path, got));
     }
-    (ok, skipped)
+    rows
 }
 
-fn summary(what: &str, ok: &[String], skipped: &[String]) -> String {
+fn summary(what: &str, rows: &[(String, Got)]) -> String {
+    let ok: Vec<&str> = rows.iter().filter(|r| r.1 != Got::Skipped).map(|r| r.0.as_str()).collect();
+    let skipped: Vec<&str> = rows.iter().filter(|r| r.1 == Got::Skipped).map(|r| r.0.as_str()).collect();
     match (ok.len(), skipped.len()) {
         (0, 0) => what.to_string(),
         (n, 0) => format!("{what} with {n} folders"),
@@ -100,7 +146,7 @@ fn summary(what: &str, ok: &[String], skipped: &[String]) -> String {
 }
 
 /// Clones `url` into `dest`: the book is the first half of the progress, its folders the second.
-pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress) -> Result<String, String> {
+pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress) -> Result<Vec<(String, Got)>, String> {
     progress(0.0, "Connecting to GitHub");
     let parent = dest.parent().ok_or("bad folder")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -125,22 +171,19 @@ pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress)
             format!("Download failed: {}", tail.trim().lines().last().unwrap_or("unknown error"))
         });
     }
-    let (ok, skipped) = update_each(dest, false, extra, 0.5, progress);
+    let rows = update_each(dest, false, extra, 0.5, progress);
     progress(1.0, "Done");
-    Ok(summary("Downloaded", &ok, &skipped))
+    Ok(rows)
 }
 
-pub fn pull(tree: &Path, extra: &[(&str, &str)], progress: Progress) -> Result<String, String> {
+/// Pulls the book (fast-forward only), then brings each readable submodule to the tip of its main, even when the
+/// book could not be pulled. The book's result carries git's own message.
+pub fn pull(tree: &Path, extra: &[(&str, &str)], progress: Progress) -> (Result<(), String>, Vec<(String, Got)>) {
     progress(0.0, "Getting the latest shared notes");
-    match run(tree, &["pull", "--ff-only"], extra) {
-        Err(e) if e.contains("local changes") || e.contains("diverg") || e.contains("would be overwritten") =>
-            return Err("Could not update: your copy has changes that are not on GitHub yet".into()),
-        Err(e) => return Err(format!("Could not update: {}", e.lines().last().unwrap_or_default())),
-        Ok(_) => {}
-    }
-    let (ok, skipped) = update_each(tree, true, extra, 0.2, progress);
+    let book = run(tree, &["pull", "-q", "--ff-only"], extra).map(|_| ());
+    let rows = update_each(tree, true, extra, 0.2, progress);
     progress(1.0, "Done");
-    Ok(summary("Up to date", &ok, &skipped))
+    (book, rows)
 }
 
 // ---------------------------------------------------------------- Obsidian
@@ -278,7 +321,7 @@ pub fn vault_download(app: tauri::AppHandle, repo: String, dest: Option<String>)
         return Err(format!("{} already has files in it; move them away first", dest.display()));
     }
     let report = |f: f32, text: &str| { let _ = app.emit("vault-progress", (&repo, f, text)); };
-    let msg = clone(&format!("https://github.com/{repo}.git"), &dest, &[], &report)?;
+    let msg = summary("Downloaded", &clone(&format!("https://github.com/{repo}.git"), &dest, &[], &report)?);
     register(&dest);
     remember(&repo, &dest);
     Ok(msg)
@@ -286,7 +329,15 @@ pub fn vault_download(app: tauri::AppHandle, repo: String, dest: Option<String>)
 
 #[tauri::command(async)]
 pub fn vault_update(app: tauri::AppHandle, repo: String, path: String) -> Result<String, String> {
-    pull(Path::new(&path), &[], &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); })
+    let (book, rows) = pull(Path::new(&path), &[], &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); });
+    // the folders were still brought up to date; say so after the book's problem
+    let folders = if rows.is_empty() { String::new() } else { format!(". {}", summary("Folders updated", &rows)) };
+    match book {
+        Err(e) if e.contains("local changes") || e.contains("diverg") || e.contains("would be overwritten") =>
+            Err(format!("Could not update: your copy has changes that are not on GitHub yet{folders}")),
+        Err(e) => Err(format!("Could not update: {}{folders}", e.lines().last().unwrap_or_default())),
+        Ok(()) => Ok(summary("Up to date", &rows)),
+    }
 }
 
 #[tauri::command(async)]
@@ -371,12 +422,24 @@ mod tests {
         std::fs::remove_dir_all(root.join("exo-l2.git")).unwrap();
 
         let dest = root.join("clone");
-        let msg = clone(&format!("file://{}", book.display()), &dest, &FILE, &|_, _| {}).unwrap();
+        let msg = summary("Downloaded", &clone(&format!("file://{}", book.display()), &dest, &FILE, &|_, _| {}).unwrap());
         assert!(msg.contains("2 folders") && msg.contains("L2_Platform"), "{msg}");
         assert_eq!(std::fs::read_to_string(dest.join("L1_Sensing/note.md")).unwrap(), "l1");
         assert!(dest.join("Papers/a.md").exists() && !dest.join("Papers/a.pdf").exists(), "papers arrive without PDFs");
         assert!(std::fs::read_dir(dest.join("L2_Platform")).map(|mut d| d.next().is_none()).unwrap_or(true));
-        assert!(pull(&dest, &FILE, &|_, _| {}).unwrap().starts_with("Up to date"));
+        let (book, rows) = pull(&dest, &FILE, &|_, _| {});
+        assert!(book.is_ok() && rows.iter().all(|r| r.1 != Got::Skipped || r.0 == "L2_Platform"), "{rows:?}");
+        // access to L1 is taken away: its notes stay, marked frozen and kept out of git; back again, the mark goes
+        std::fs::rename(root.join("exo-l1.git"), root.join("exo-l1.hidden")).unwrap();
+        let (_, rows) = pull(&dest, &FILE, &|_, _| {});
+        assert!(rows.contains(&("L1_Sensing".into(), Got::Skipped)));
+        assert!(dest.join("L1_Sensing/note.md").exists());
+        assert!(std::fs::read_to_string(dest.join("L1_Sensing").join(FROZEN)).unwrap().starts_with("frozen: "));
+        assert_eq!(run(&dest.join("L1_Sensing"), &["status", "--porcelain"], &[]).unwrap(), "", "the marker is not a change");
+        assert!(!dest.join("L2_Platform").join(FROZEN).exists(), "a folder never had is not frozen, just empty");
+        std::fs::rename(root.join("exo-l1.hidden"), root.join("exo-l1.git")).unwrap();
+        pull(&dest, &FILE, &|_, _| {});
+        assert!(!dest.join("L1_Sensing").join(FROZEN).exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

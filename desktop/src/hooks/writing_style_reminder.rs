@@ -300,7 +300,7 @@ fn detect_type(rules: Option<&Value>, path: &str, text: &str) -> R<(Option<Strin
 }
 
 /// Port of the plugin's engine.ts isSystemDoc(): registered guides and templates carry no type suffix by design.
-fn is_system_doc(rules: Option<&Value>, rel: &str) -> R<bool> {
+pub(crate) fn is_system_doc(rules: Option<&Value>, rel: &str) -> R<bool> {
     let Some(r) = rules else { return Ok(false) };
     let mut reg: Vec<&str> = vec!["CLAUDE.md", "llms.txt", RULES_PATH];
     if let Some(g) = r.get("guides") { for g in as_arr(g)? { reg.push(as_str(at(g, "path")?)?) } }

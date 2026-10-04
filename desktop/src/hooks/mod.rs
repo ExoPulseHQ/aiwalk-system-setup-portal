@@ -12,7 +12,7 @@
 
 #![allow(dead_code)]   // the helpers below are for the hooks, which land one file at a time
 
-mod writing_style_reminder;
+pub(crate) mod writing_style_reminder;
 mod git_discipline_reminder;
 mod new_repo_worktree_check;
 mod primary_log_reminder;

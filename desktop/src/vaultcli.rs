@@ -32,6 +32,19 @@ The commit is made first and then rebased onto origin/main. A conflict aborts th
 on this computer unpushed, and lists the files; merge them (an agent is good at markdown merges) and push.
 Nothing here rewrites published history or forces a push.
 "#;
+/// The repo-split commands (scripts/exo_repos.py), printed when one is given the wrong arguments. Kept apart from
+/// USAGE, which stays vault_ship.py's docstring for an unknown command.
+const REPOS_USAGE: &str = r#"The repo split (scripts/exo_repos.py), also run in the vault's folder:
+    owner <path>...                        which repo owns each path
+    plan [<vault>]                         split the tracked files by owner; exit 1 if any file has none
+    assemble <dest>                        build the split vault at <dest>, each restricted folder a submodule; never pushes
+    manifest                               write Papers/_manifest.json (path, bytes, blob sha, notes that link each PDF)
+    clone <url> <dest>                     the app's Download: the book, then each readable submodule on its own;
+                                           on-demand repos arrive without PDFs
+    pull [<tree>]                          the app's Get latest: the book, then each readable submodule to its tip;
+                                           a folder whose access was taken away is marked .exo-frozen
+    push <tree>                            push every submodule, then the book
+"#;
 const INDEX: &str = "System/vault_index.json";
 
 /// sys.exit("message"): the message on stderr, exit code 1.
@@ -347,6 +360,184 @@ fn check_author(vault: &Path) {
     if (an.as_str(), ae.as_str()) != (name.as_str(), email.as_str()) { die(&vs::author_message(&an, &ae, &name, &email)) }
 }
 
+// ---------------------------------------------------------------- scripts/exo_repos.py
+
+use exo_core::exo_repos as er;
+
+/// The Python's LOCAL: lets file:// submodules work (tests, local remotes); harmless for GitHub.
+const LOCAL: [(&str, &str); 1] = [("protocol.file.allow", "always")];
+
+/// System/vault_rules.json, whole; exits 1 as the Python's load() would raise.
+fn rules(vault: &Path) -> Value {
+    let path = vault.join("System/vault_rules.json");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
+    let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
+    if !v["repos"].is_object() { die(&format!("{}: no \"repos\" section", path.display())) }
+    v
+}
+
+/// The hook's is_system_doc(), the one copy of the plugin's isSystemDoc().
+fn system_doc(rules: &Value, rel: &str) -> bool {
+    crate::hooks::writing_style_reminder::is_system_doc(Some(rules), rel).unwrap_or_else(|e| die(&e))
+}
+
+/// `git ls-files -s` with names as they are; exits 1 if git fails.
+fn ls_files(dir: &Path) -> String {
+    let r = run(dir, &["git", "-c", "core.quotepath=off", "ls-files", "-s"]);
+    if r.code != 0 { die(&format!("✗ git ls-files in {}\n{}", dir.display(), vs::py_strip(&r.err))) }
+    r.out
+}
+
+/// tracked(): the paths git tracks, gitlinks left out.
+fn tracked(dir: &Path) -> Vec<String> {
+    lines(&ls_files(dir)).iter().filter(|l| !l.starts_with("160000")).filter_map(|l| l.split_once('\t')).map(|(_, p)| p.to_string()).collect()
+}
+
+/// git as the Python's git(): with LOCAL, output captured.
+fn git_local(dir: &Path, args: &[&str]) -> Out { run(dir, &[&["git", "-c", "protocol.file.allow=always"][..], args].concat()) }
+
+/// git_local that exits 1 on failure, as check=True would raise.
+fn git_check(dir: &Path, args: &[&str]) {
+    let r = git_local(dir, args);
+    if r.code != 0 { die(&format!("✗ git {}\n{}", args.join(" "), vs::py_strip(if r.err.is_empty() { &r.out } else { &r.err }))) }
+}
+
+/// The last n characters of git's stderr, stripped, as `r.stderr.strip()[-n:]`.
+fn tail(s: &str, n: usize) -> String {
+    let c: Vec<char> = vs::py_strip(s).chars().collect();
+    c[c.len().saturating_sub(n)..].iter().collect()
+}
+
+/// `vault manifest`: Papers/_manifest.json. In a split vault the files of each checked-out repo submodule count as
+/// the vault's own (the Python sees only the book there and writes an empty list).
+fn manifest(vault: &Path) {
+    let rules = rules(vault);
+    let cfg = &rules["repos"];
+    let repos: HashSet<&str> = cfg["routes"].as_array().into_iter().flatten().filter_map(|r| r["repo"].as_str()).filter(|r| Some(*r) != cfg["book"].as_str()).collect();
+    let mut ls = ls_files(vault);
+    for (name, path) in crate::vault::submodules(vault) {
+        if !repos.contains(name.as_str()) || !vault.join(&path).join(".git").exists() { continue }
+        let dir = vault.join(&path);
+        if path == er::PAPERS && sh(&dir, &["git", "config", "--bool", "core.sparseCheckout"], false) == "true" {
+            die(&format!("✗ {path} is a sparse checkout: most PDFs are not on this computer, so the list would lose them. Write it where {path} is fully checked out."))
+        }
+        for l in lines(&ls_files(&dir)) {
+            if let Some((head, p)) = l.split_once('\t') { ls += &format!("{head}\t{path}/{p}\n") }
+        }
+    }
+    let file = |p: &str| std::fs::metadata(vault.join(p)).ok().filter(|m| m.is_file());
+    let (json, line) = er::manifest(&ls, &|p| file(p).map(|m| m.len()), &|p| file(p).and_then(|_| std::fs::read(vault.join(p)).ok()), cfg!(windows));
+    let out = vault.join(er::PAPERS).join("_manifest.json");
+    write_text(&out, &json).unwrap_or_else(|e| die(&format!("{}: {e}", out.display())));
+    println!("{line}");
+}
+
+fn owner_cli(vault: &Path, paths: &[String]) {
+    let rules = rules(vault);
+    let cfg = &rules["repos"];
+    for p in paths {
+        let o = er::owner(cfg, p, system_doc(&rules, p));
+        println!("{} {p} -> {}", o.as_deref().unwrap_or("NONE"), er::placed(cfg, p));
+    }
+}
+
+fn plan(vault: &Path) -> i32 {
+    let rules = rules(vault);
+    let (out, code) = er::plan(&rules["repos"], &tracked(vault), &|rel| system_doc(&rules, rel)).unwrap_or_else(|e| die(&e));
+    print!("{out}");
+    code
+}
+
+/// `vault assemble <dest>`: the split vault built from this one, each restricted folder its own repo mounted as a
+/// submodule of the book. Nothing is pushed.
+fn assemble(src: &Path, dest: &Path) {
+    let rules = rules(src);
+    let cfg = &rules["repos"];
+    if dest.exists() { die(&format!("{} exists; pick an empty path", dest.display())) }
+    let homes = er::folders(cfg).unwrap_or_else(|e| die(&e));
+    let book = cfg["book"].as_str().unwrap_or("");
+    let ident: Vec<String> = ["name", "email"].iter().map(|k| sh(src, &["git", "config", &format!("user.{k}")], false)).collect();
+    let own = |rel: &str| er::owner(cfg, rel, system_doc(&rules, rel));
+    let (mut count, mut orphans) = (HashMap::<String, usize>::new(), vec![]);
+    for rel in tracked(src) {
+        if rel == ".gitmodules" || !src.join(&rel).is_file() { continue }   // .gitmodules is rebuilt; deleted files stay out
+        let Some(o) = own(&rel) else { orphans.push(rel); continue };
+        let to = dest.join(er::placed(cfg, &rel));
+        std::fs::create_dir_all(to.parent().unwrap()).and_then(|_| std::fs::copy(src.join(&rel), &to))
+            .unwrap_or_else(|e| die(&format!("{rel}: {e}")));
+        *count.entry(o).or_default() += 1;
+    }
+    for rel in &orphans { println!("not copied, no owner: {rel}") }
+    let remote = |repo: &str| format!("{}/{repo}.git", std::env::var("EXO_REMOTE_BASE").ok().filter(|b| !b.is_empty())
+        .unwrap_or_else(|| format!("git@github.com:{}", cfg["org"].as_str().unwrap_or(""))));
+    let init = |path: &Path, repo: &str| {
+        std::fs::create_dir_all(path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
+        git_check(path, &["init", "-q", "-b", "main"]);
+        git_check(path, &["config", "user.name", &ident[0]]);
+        git_check(path, &["config", "user.email", &ident[1]]);
+        git_check(path, &["remote", "add", "origin", &remote(repo)]);
+    };
+    let commit_all = |path: &Path| { git_local(path, &["add", "-A", "-f"]); git_check(path, &["commit", "-q", "-m", "Initial import from ExoPulse_docs"]) };
+    // each upstream repo is a submodule of whichever repo owns its folder
+    let nested: Vec<(Option<String>, &str, &str)> = cfg["nested"].as_array().into_iter().flatten()
+        .map(|n| { let p = n["path"].as_str().unwrap_or(""); (own(&format!("{p}/")), p, n["url"].as_str().unwrap_or("")) }).collect();
+    let add_nested = |top: &Path, base: &str, repo: &str| {
+        for (_, p, url) in nested.iter().filter(|n| n.0.as_deref() == Some(repo)) {
+            let r = git_local(top, &["submodule", "add", "-q", url, &p[base.len().min(p.len())..]]);
+            if r.code == 0 { println!("nested  {p}") } else { println!("FAILED  {p}  {}", tail(&r.err, 120)) }
+        }
+    };
+    for (repo, folder) in &homes {
+        let path = dest.join(folder);
+        if !path.is_dir() { continue }   // nothing to put there yet
+        init(&path, repo);
+        add_nested(&path, &format!("{folder}/"), repo);
+        commit_all(&path);
+        println!("{:6}  {repo}  ->  {folder}/", count.get(repo).unwrap_or(&0));
+    }
+    init(dest, book);
+    for (repo, folder) in &homes {
+        if dest.join(folder).join(".git").exists() {
+            git_check(dest, &["submodule", "add", "-q", "--name", repo, &format!("../{repo}.git"), folder]);
+            git_check(dest, &["config", "-f", ".gitmodules", &format!("submodule.{repo}.branch"), "main"]);
+        }
+    }
+    add_nested(dest, "", book);
+    commit_all(dest);
+    println!("{:6}  {book}  ->  (root)", count.get(book).unwrap_or(&0));
+}
+
+/// `vault push <tree>`: every submodule whose origin is on the remote base, then the book, so the book's gitlinks
+/// point at commits the remotes already have.
+fn push(tree: &Path) {
+    let base = std::env::var("EXO_REMOTE_BASE").ok().filter(|b| !b.is_empty()).unwrap_or_else(|| "git@github.com:".into());
+    for (_, s) in crate::vault::submodules(tree) {
+        let p = tree.join(&s);
+        if p.join(".git").exists() && git_local(&p, &["remote", "get-url", "origin"]).out.starts_with(&base) {
+            let r = git_local(&p, &["push", "-q", "-u", "origin", "main"]);
+            if r.code == 0 { println!("pushed  {s}") } else { println!("FAILED  {s}  {}", tail(&r.err, 120)) }
+        }
+    }
+    let r = git_local(tree, &["push", "-q", "-u", "origin", "main"]);
+    if r.code == 0 { println!("pushed  (book)") } else { println!("FAILED  (book)  {}", tail(&r.err, 120)) }
+}
+
+/// `vault clone <url> <dest>` and `vault pull [<tree>]`: the app's own Download and Get latest (vault.rs), with the
+/// Python's lines.
+fn clone_cli(url: &str, dest: &Path) {
+    let rows = crate::vault::clone(url, dest, &LOCAL, &|_, _| {}).unwrap_or_else(|e| die(&e));
+    for (p, got) in rows { println!("{}", crate::vault::row(&p, got)) }
+}
+
+fn pull_cli(tree: &Path) {
+    let (book, rows) = crate::vault::pull(tree, &LOCAL, &|_, _| {});
+    match book { Ok(()) => println!("ok      (book)"), Err(e) => println!("FAILED  (book)  {}", tail(&e, 120)) }
+    for (p, got) in rows { println!("{}", crate::vault::row(&p, got)) }
+}
+
+/// A path argument as os.path.abspath makes it.
+fn abs(p: &str) -> PathBuf { std::path::absolute(p).unwrap_or_else(|e| die(&format!("✗ {p}: {e}"))) }
+
 /// `aiwalk-setup vault <args>`, as `python3 scripts/vault_ship.py <args>`.
 pub fn main(a: &[String]) {
     let vault = std::env::current_dir().unwrap_or_else(|e| die(&format!("✗ {e}")));
@@ -356,11 +547,19 @@ pub fn main(a: &[String]) {
         Some("index") => println!("{}", if update_index(&vault) { "updated" } else { "unchanged" }),
         Some("check-author") => check_author(&vault),
         Some("sync-ownership") => std::process::exit(sync_cli(&vault, &a[1..])),
+        Some("manifest") => manifest(&vault),
+        Some("owner") => owner_cli(&vault, &a[1..]),
+        Some("plan") => std::process::exit(plan(&a.get(1).map_or(vault.clone(), |p| abs(p)))),
+        Some("assemble") if a.len() == 2 => assemble(&vault, &abs(&a[1])),
+        Some("push") if a.len() == 2 => push(&abs(&a[1])),
+        Some("clone") if a.len() == 3 => clone_cli(&a[1], &abs(&a[2])),
+        Some("pull") => pull_cli(&a.get(1).map_or(vault.clone(), |p| abs(p))),
         Some("ship") if a.iter().any(|x| x == "-m") => {
             let i = a.iter().position(|x| x == "-m").unwrap();
             let Some(msg) = a.get(i + 1) else { die("✗ -m needs a message") };
             ship(&vault, msg, a[1..i].iter().chain(&a[i + 2..]).cloned().collect())
         }
+        Some("assemble" | "push" | "clone") => die(REPOS_USAGE),
         _ => die(USAGE),   // sys.exit(__doc__): the docstring and a newline
     }
 }
