@@ -403,3 +403,6 @@ dialog .buttons { gap: var(--s2); }
 .nx-glyph:not(.edit) > .nx-i { width: 15px; height: 15px; }
 .tag.nx-glyph:not(.edit), .method.nx-glyph:not(.edit) { color: var(--muted); }
 .tag.nx-worded { gap: 4px; box-shadow: none; padding: 0; color: var(--muted); }
+/* a row's own remove mark is quiet until its row is pointed at or focused: the column stops repeating a frame per row */
+.item button.nx-row-act:not(:hover):not(:focus-visible) { box-shadow: none; background: transparent; color: var(--muted); }
+.item:is(:hover, :focus-within) button.nx-row-act { box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); }

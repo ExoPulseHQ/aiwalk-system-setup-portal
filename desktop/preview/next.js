@@ -157,6 +157,11 @@
       if (b.classList.contains("working") || b.classList.contains("nx-info") || b.closest(".lang, .segmented, .nx-who")) return;
       const t = b.textContent.trim();
       mark(b, BUTTON[t] || null);
+      // a column of Remove marks names whom each one removes, for the tooltip and for a screen reader's list of buttons
+      if (t === "Remove" && !b.dataset.tip) {
+        const r = b.closest(".item"), who = r && (r.querySelector(".text .nx-chip") || r.querySelector(".text > .title"));
+        if (who) { b.dataset.tip = `Remove ${who.textContent.trim()}`; b.classList.add("nx-row-act"); }
+      }
       if (iconOnly(b, t)) {
         b.classList.add("nx-icon-only");
         if (!b.dataset.tip) b.dataset.tip = t;
