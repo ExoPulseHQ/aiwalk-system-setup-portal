@@ -14,7 +14,7 @@ for 5 seconds, so a page polling every 15 seconds costs a few /proc reads and on
 import json, os, shutil, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "1"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "2"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 PORT = 9101
 CACHE_SECONDS = 5
 CLUSTER = None          # ssh alias of a cluster this machine reaches, from --cluster
@@ -56,6 +56,13 @@ def gpus(csv):
             num = lambda x: float(x) if x.replace(".", "", 1).isdigit() else None
             out.append({"name": f[0], "mem_total_mb": num(f[1]), "mem_used_mb": num(f[2]), "util": num(f[3]), "temp_c": num(f[4])})
     return out
+
+
+def rdp(ss_out, user):
+    """The machine's RDP screen sharing (xrdp, GNOME Remote Desktop), when something listens on 3389, as one more
+    desktop: {kind: "rdp", port: 3389}. Display :89 only gives the portal a number for its local port (15989)."""
+    listening = any(l.split()[3].rsplit(":", 1)[-1] == "3389" for l in ss_out.splitlines() if len(l.split()) > 3)
+    return [{"user": user, "display": ":89", "port": 3389, "socket": None, "geometry": "", "kind": "rdp"}] if listening else []
 
 
 def desktops(ps_out):
@@ -157,6 +164,10 @@ def answer():
         disk = shutil.disk_usage("/")
         users = subprocess.run(["who"], capture_output=True, text=True).stdout.split()
         ps = subprocess.run(["ps", "-eo", "user=,args="], capture_output=True, text=True).stdout
+        try:
+            ss = subprocess.run(["ss", "-ltnH"], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            ss = ""
         ans = {**static(), "time": int(now), "cpu_pct": cpu_pct,
                "load": [round(x, 2) for x in os.getloadavg()],
                "mem_used_gb": round((m.get("MemTotal", 0) - m.get("MemAvailable", 0)) / 1048576, 1),
@@ -164,7 +175,7 @@ def answer():
                "disk_gb": round(disk.total / 1e9), "disk_free_gb": round(disk.free / 1e9),
                "uptime_h": round(float(read("/proc/uptime").split()[0] or 0) / 3600, 1),
                "users": len(set(users[::5])) if users else 0,
-               "desktops": desktops(ps), "cluster": cluster(), "tools": tools()}
+               "desktops": desktops(ps) + rdp(ss, os.environ.get("USER") or os.environ.get("LOGNAME") or "ntk"), "cluster": cluster(), "tools": tools()}
         _last.update(t=now, answer=ans, cpu=(busy, total))
         return ans
 
@@ -189,6 +200,9 @@ def selftest():
                  "ntk bash -c grep Xtigervnc :9\nroot /usr/bin/Xvnc :7\n")
     assert d == [{"user": "ntk", "display": ":2", "port": 5902, "socket": None, "geometry": "1920x1080"},
                  {"user": "root", "display": ":7", "port": 5907, "socket": None, "geometry": ""}], d
+    assert rdp("LISTEN 0 2 *:3389 *:*\nLISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n", "lab") == [
+        {"user": "lab", "display": ":89", "port": 3389, "socket": None, "geometry": "", "kind": "rdp"}]
+    assert rdp("LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\nLISTEN 0 5 127.0.0.1:33890 0.0.0.0:*\n", "lab") == []
     s6 = desktops("ntk /usr/bin/Xtigervnc :6 -rfbport -1 -rfbunixpath /home/ntk/.vnc/desk-6.sock -geometry 1920x1080\n")
     assert s6 == [{"user": "ntk", "display": ":6", "port": None, "socket": "/home/ntk/.vnc/desk-6.sock", "geometry": "1920x1080"}], s6
     c = cluster_parse('[{"cpu_total":224,"cpu_used":96,"gpu_total":8,"gpu_used":8,"name":"DGX-CN01","reason":"","state":["ALLOCATED"]}]\n'

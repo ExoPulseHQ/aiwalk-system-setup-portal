@@ -188,9 +188,15 @@ pub fn close_all() {
     for (_, (mut child, _)) in std::mem::take(&mut *FORWARDS.lock().unwrap()) { let _ = child.kill(); }
 }
 
-/// Hands vnc://127.0.0.1:<port> to whatever VNC viewer this computer has (Screen Sharing on a Mac).
+/// Hands the forwarded desktop to a viewer this computer has. VNC: vnc://127.0.0.1:<port> (Screen Sharing on a
+/// Mac). RDP: Windows' own Remote Desktop; elsewhere whatever opens rdp:// (Windows App on a Mac, Remmina on Linux).
 #[tauri::command]
-pub fn open_viewer(port: u16) { crate::open_url(&format!("vnc://127.0.0.1:{port}")); }
+pub fn open_viewer(port: u16, kind: Option<String>) {
+    if kind.as_deref() != Some("rdp") { return crate::open_url(&format!("vnc://127.0.0.1:{port}")) }
+    if cfg!(windows) { let _ = crate::cmd("mstsc").arg(format!("/v:127.0.0.1:{port}")).spawn(); }
+    else if cfg!(target_os = "macos") { crate::open_url(&format!("rdp://full%20address=s:127.0.0.1:{port}")) }
+    else { crate::open_url(&format!("rdp://127.0.0.1:{port}")) }
+}
 
 /// Starts or stops a desktop with hosts/exo-desktop on the machine, over the same SSH through Cloudflare.
 /// action is "start" (display 0 = the lowest free one) or "stop"; returns what exo-desktop printed.

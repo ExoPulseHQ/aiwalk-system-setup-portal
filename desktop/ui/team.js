@@ -440,7 +440,9 @@ function machinesSection(machines, org, user) {
     box.append(head);
     desktops.forEach(d => {
       const r = el("div", "desk"), msg = el("span", "sub"), num = +d.display.slice(1);
-      const name = `${d.display}  ${d.geometry || ""}  (${d.user})${d.socket ? "" : "  password"}`;
+      // the machine's own screen sharing over RDP is one more row: nothing to start or close, its sign-in is the machine's
+      const rdp = d.kind === "rdp";
+      const name = rdp ? "Screen sharing (RDP)" : `${d.display}  ${d.geometry || ""}  (${d.user})${d.socket ? "" : "  password"}`;
       const show = port => {
         r.replaceChildren(el("span", null, name));
         // closing ends the desktop for everyone on it, since desktops are shared by the account
@@ -462,15 +464,15 @@ function machinesSection(machines, org, user) {
             try { show(await working(b, "Connecting", () => invoke("open_forward", { host: m.host, tunnel: m.tunnel, user: d.user, display: num, socket: d.socket || null, port: d.port || null }))); }
             catch (err) { msg.textContent = err; r.append(msg); }
           };
-          r.append(b, close);
+          r.append(b, ...(rdp ? [] : [close]));
           return;
         }
         const addr = `127.0.0.1:${port}`;
         const copy = el("button", "small ghost", "Copy"), view = el("button", "small ghost", "Open viewer"), stop = el("button", "small ghost", "Disconnect");
         copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(addr).then(() => toast(`Copied ${addr}`), () => toast(addr)); };
-        view.onclick = e => { e.stopPropagation(); invoke("open_viewer", { port }); };
+        view.onclick = e => { e.stopPropagation(); invoke("open_viewer", { port, kind: d.kind || "vnc" }); };
         stop.onclick = async e => { e.stopPropagation(); await invoke("close_forward", { host: m.host, display: num }); show(null); };
-        r.append(el("span", "sub", "VNC at"), el("strong", "cmd", addr), copy, view, stop, close);
+        r.append(el("span", "sub", rdp ? "RDP at" : "VNC at"), el("strong", "cmd", addr), copy, view, stop, ...(rdp ? [] : [close]));
       };
       show(open[`${m.host}:${num}`]);
       box.append(r);
