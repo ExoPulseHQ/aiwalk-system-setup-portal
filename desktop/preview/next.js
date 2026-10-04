@@ -37,7 +37,7 @@
         t.dataset.nx = 1; t.replaceChildren(chip(m[1]), m[2]);
       }
     });
-    // a request is a person asking: "dee-park asks for read on lab-l4"
+    // a request is a person asking: "dee-park asks for read on docs-l4"
     $(root, ".item .title").forEach(t => {
       const m = /^([\w-]+)( asks for .*)$/.exec(t.textContent);
       if (m && !t.dataset.nx && people[m[1]]) { t.dataset.nx = 1; t.replaceChildren(chip(m[1]), m[2]); }
