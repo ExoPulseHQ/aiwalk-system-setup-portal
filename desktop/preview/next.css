@@ -80,9 +80,11 @@ code, .cmd, .place .path, .desk > span:first-of-type { font-family: var(--mono);
 /* ---------------------------------------------------------------- sidebar: same structure, quieter */
 nav { width: 208px; padding: var(--s6) var(--s3); gap: 2px; box-shadow: inset -1px 0 0 var(--rail-edge); }
 nav .app { font: var(--d-weight) var(--d-mark)/28px var(--display); letter-spacing: var(--d-track); padding: 0 var(--s3) var(--s6); }
-/* Bricolage draws I and l as the same bar: the wordmark's capital I keeps Plex's serifed I there (next.js wraps it) */
 nav .app .nx-cap-i { display: inline; font: inherit; letter-spacing: inherit; color: inherit; opacity: 1; margin: 0; }
-:root[data-display="c"] nav .app .nx-cap-i { font-family: var(--font); font-weight: 600; }
+/* every display face draws I and l alike at this size (the wordmark read "alwalk"), so the capital I is always Plex's
+   serifed I, a little smaller so its cap height sits with the display face's */
+nav .app .nx-cap-i { font-family: var(--font); font-weight: 400; font-size: .86em; }
+:root:is([data-display="b"], [data-display="c"]) nav .app .nx-cap-i { font-weight: 600; }
 nav .app span:not(.nx-cap-i) { font: 400 var(--fs-s)/var(--lh) var(--font); letter-spacing: 0; margin-top: 2px; color: var(--rail-muted); opacity: 1; }
 nav button { height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-size: var(--fs-m); box-sizing: border-box;
   justify-content: flex-start; gap: var(--s3); }
