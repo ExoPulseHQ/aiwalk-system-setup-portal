@@ -23,7 +23,7 @@ PEERS=$(for ip in $MACHINES; do case " $SELF " in *" $ip "*) ;; *) echo -n "$ip 
 open_rules() {
   ufw status numbered | awk -F'[][]' '/ALLOW IN/ && /Anywhere/ && !/ from / {
     split($3, f, " "); to = f[1]
-    if (to ~ /^(22|80|443|59[0-9][0-9](:59[0-9][0-9])?)(\/tcp|\/udp)?$/ || to == "OpenSSH" || to ~ /^Nginx/) print $2 + 0 }'
+    if (to ~ /^(22|80|443|3389|59[0-9][0-9](:59[0-9][0-9])?)(\/tcp|\/udp)?$/ || to == "OpenSSH" || to ~ /^Nginx/) print $2 + 0 }'
 }
 
 echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered | sed '1,4d'
@@ -34,7 +34,7 @@ echo " 2. The boot-time desktops :1-:5 are started by exo-desktop: Unix socket o
 echo "    (a systemd override for $VNC_SERVICE; the original files stay). They restart once, so anyone on them"
 echo "    is disconnected; afterwards they open from the portal's Open desktop."
 echo " 3. SSH (22) is allowed only from: $PEERS"
-echo "    Rules that open 22, 80, 443 or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
+echo "    Rules that open 22, 80, 443, 3389 (RDP) or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
 read -rp "Apply? [y/N] " answer
 [ "$answer" = y ] || { echo "Nothing changed."; exit 0; }
@@ -79,5 +79,6 @@ echo "== Check"
 echo "cloudflared service file: $(stat -c %A /etc/systemd/system/cloudflared.service) (want -rw-------)"
 echo "Desktops: $(sudo -u "$VNC_USER" /home/$VNC_USER/.local/bin/exo-desktop list | paste -sd' ')"
 echo "Sockets:"; ls -l /home/$VNC_USER/.vnc/desk-*.sock 2>/dev/null | awk '{print "  " $1, $NF}'
+ss -ltnH | awk '$4 ~ /:3389$/ && $4 !~ /^(127\.0\.0\.1|\[::1\]):/' | grep -q . && echo "  WARNING: RDP (3389) still listens beyond this machine itself; the firewall now refuses it from outside, stop xrdp or bind it to 127.0.0.1"
 ss -ltnH | awk '$4 ~ /:59[0-9][0-9]$/' | grep -q . && echo "  WARNING: something still listens on a 59xx TCP port" || echo "  (no VNC TCP port open)"
 echo "Firewall: $(ufw status | head -1)"; ufw status numbered | sed '1,4d'
