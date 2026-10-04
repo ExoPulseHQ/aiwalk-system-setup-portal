@@ -406,3 +406,13 @@ dialog .buttons { gap: var(--s2); }
 /* a row's own remove mark is quiet until its row is pointed at or focused: the column stops repeating a frame per row */
 .item button.nx-row-act:not(:hover):not(:focus-visible) { box-shadow: none; background: transparent; color: var(--muted); }
 .item:is(:hover, :focus-within) button.nx-row-act { box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); }
+
+/* below 700px the sidebar is its icons (the shipped page already narrows it there); the words move to the tooltip */
+@media (max-width: 700px) {
+  nav { width: 56px; padding: var(--s4) var(--s2); }
+  nav .app { font-size: 15px; line-height: 20px; padding: 0 0 var(--s4); text-align: center; }
+  nav button, nav button.update { font-size: 0; justify-content: center; padding: 0; gap: 0; }
+  nav button .nx-i { width: 20px; height: 20px; }
+  nav #ver { display: none; }
+  .page { padding: var(--s6) var(--s4) var(--s10) calc(var(--s4) + 30px); }
+}
