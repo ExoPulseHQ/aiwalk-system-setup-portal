@@ -91,6 +91,7 @@ dependencies = [
  "exo-core",
  "fancy-regex",
  "keyring",
+ "libc",
  "portable-pty",
  "ring",
  "secret-service",
@@ -101,6 +102,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tungstenite",
  "ureq",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

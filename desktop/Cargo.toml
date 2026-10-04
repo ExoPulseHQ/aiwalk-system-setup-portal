@@ -28,3 +28,11 @@ keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
+
+# session keeper (sessioncli.rs): setsid, kill and getuid on Unix; named pipes with a private DACL on Windows.
+# Both are already in the dependency tree through other crates.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }

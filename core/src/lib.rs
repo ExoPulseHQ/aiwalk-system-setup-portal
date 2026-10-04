@@ -3,6 +3,7 @@
 
 pub mod exo_repos;
 pub mod root_guard;
+pub mod session;
 pub mod vault_ship;
 
 use serde::Serialize;

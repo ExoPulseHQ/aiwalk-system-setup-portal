@@ -20,14 +20,8 @@ fn size(cols: u16, rows: u16) -> PtySize { PtySize { rows, cols, pixel_width: 0,
 pub fn main(args: &[String]) -> i32 {
     let cmd: Vec<&String> = args.iter().skip_while(|a| *a != "--").skip(1).collect();
     let Some(program) = cmd.first() else { eprintln!("usage: aiwalk-setup pty -- <command> [args...]"); return 2 };
-    // fd 3 is the caller's resize channel only if it is open now, before anything here opens a file: the
-    // pseudo-terminal itself would otherwise land on 3 and be mistaken for it, and its output read away
     #[cfg(unix)]
-    let ctl = {
-        use std::os::fd::BorrowedFd;
-        // SAFETY: fd 3 is only duplicated; nothing is read or closed through the borrowed handle
-        unsafe { BorrowedFd::borrow_raw(3) }.try_clone_to_owned().ok().map(std::fs::File::from)
-    };
+    let ctl = take_fd3();
     let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u16>().ok()).filter(|n| *n > 0);
     let pair = match native_pty_system().openpty(size(env("PTY_COLS").unwrap_or(80), env("PTY_ROWS").unwrap_or(24))) {
         Ok(p) => p,
@@ -74,21 +68,33 @@ pub fn main(args: &[String]) -> i32 {
             }
         });
     }
-    // fd 3, when the caller opened one: "resize COLS ROWS" per line
     #[cfg(unix)]
-    if let Some(ctl) = ctl {
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            for line in std::io::BufReader::new(ctl).lines().map_while(Result::ok) {
-                let p: Vec<&str> = line.split_whitespace().collect();
-                if let ["resize", cols, rows] = p[..] { if let (Ok(c), Ok(r)) = (cols.parse(), rows.parse()) { resize(c, r) } }
-            }
-        });
-    }
+    if let Some(ctl) = ctl { watch_fd3(ctl, resize) }
     let code = child.wait().map(|s| s.exit_code() as i32).unwrap_or(1);
     // the command is gone: let its last output through. On Unix the read ends by itself; on Windows it ends only
     // when the terminal is closed, which other threads still hold, so the wait is bounded and the caller exits.
     drop(master);
     let _ = done.recv_timeout(std::time::Duration::from_millis(1500));
     code
+}
+
+/// fd 3, the caller's resize channel, if it is open. Call it before anything here opens a file: the pseudo-terminal
+/// or a socket would otherwise land on 3 and be mistaken for it, and its bytes read away.
+#[cfg(unix)]
+pub fn take_fd3() -> Option<std::fs::File> {
+    use std::os::fd::BorrowedFd;
+    // SAFETY: fd 3 is only duplicated; nothing is read or closed through the borrowed handle
+    unsafe { BorrowedFd::borrow_raw(3) }.try_clone_to_owned().ok().map(std::fs::File::from)
+}
+
+/// Calls `resize` for each "resize COLS ROWS" line on the caller's fd 3, on a thread of its own.
+#[cfg(unix)]
+pub fn watch_fd3(ctl: std::fs::File, resize: impl Fn(u16, u16) + Send + 'static) {
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(ctl).lines().map_while(Result::ok) {
+            let p: Vec<&str> = line.split_whitespace().collect();
+            if let ["resize", cols, rows] = p[..] { if let (Ok(c), Ok(r)) = (cols.parse(), rows.parse()) { resize(c, r) } }
+        }
+    });
 }
