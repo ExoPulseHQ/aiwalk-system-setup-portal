@@ -243,6 +243,7 @@
     [/^For owners\. The machines sit behind/, headingBefore],
     [/ on GitHub\. Owners can open every repo/, headingBefore],
     [/; they have single repos only\.$/, headingBefore],
+    [/^On GitHub's Free plan anyone with write can still merge/, headingBefore],
     [/^(Added to the desktop and the app menu|Applied while Windows is off)$/, headingBefore]];
   // `extra` follows the sentence's own words; `instead` replaces them
   function info(sentence, host, extra, instead) {
