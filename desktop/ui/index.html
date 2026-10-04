@@ -27,6 +27,7 @@
   nav .app span { display: block; font-weight: 400; font-size: 13px; opacity: .65; }
   nav button { all: unset; font-family: inherit; cursor: pointer; padding: 9px 12px; border-radius: 8px; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
   nav button:hover { background: rgba(255,255,255,.06); }
+  nav button[hidden] { display: none; }
   nav button.on { background: var(--purple); color: #fff; font-weight: 700; }
   nav .os { font-size: 11px; opacity: .55; }
   nav .gap { flex: 1; }
@@ -260,6 +261,7 @@
   <div class="app">aIwalk<span>System Setup</span></div>
   <button data-page="team">Team access</button>
   <button data-page="machines">Machines</button>
+  <button data-page="people" hidden>People</button>
   <button data-page="android" class="linux">Android phone <span class="os">Linux</span></button>
   <button data-page="vm" class="linux">Windows VM <span class="os">Linux</span></button>
   <div class="gap"></div>
@@ -272,6 +274,7 @@
   <div class="page" id="vm" hidden></div>
   <div class="page" id="team" hidden></div>
   <div class="page" id="machines" hidden></div>
+  <div class="page" id="people" hidden></div>
   <div class="page" id="terms" hidden></div>
 </main>
 <div id="toast"></div>
@@ -356,7 +359,7 @@ function switchBox(on, onchange) {
   return s;
 }
 
-const pages = { team: () => loadTeam(), machines: () => loadMachines(), terms: () => loadTerms(), android: () => refreshPhones(true), vm: () => refreshVm() };
+const pages = { team: () => loadTeam(), machines: () => loadMachines(), people: () => loadPeople(), terms: () => loadTerms(), android: () => refreshPhones(true), vm: () => refreshVm() };
 let current;
 function go(name) {
   current = name;

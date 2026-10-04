@@ -979,21 +979,53 @@ async function loadTeam(viewAs) {
   await refreshLocal();
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
   const parts = [el("h1", null, "Team access"),
-    el("p", "lede", owner ? "You are an owner: you can see everyone's access and approve requests."
+    el("p", "lede", owner ? "What your GitHub account reaches. As an owner you manage everyone else's on the People page."
                           : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
     badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
+  // owners get a page of their own for the organisation; its entry in the sidebar carries the count of open requests
+  const peopleNav = document.querySelector('nav [data-page="people"]');
+  peopleNav.hidden = !(owner && org);
+  if (owner && org) peopleNav.replaceChildren("People", ...(org.requests.length ? [el("span", "os", String(org.requests.length))] : []));
   // an owner signed in without the permission to manage the organisation: the tools below would be refused
   if (owner && org && !(s.scopes || []).includes("admin:org")) {
     const b = el("button", "small", "Unlock");
     b.onclick = () => page.replaceChildren(signInView(null, "owner"));
     parts.push(item("Owner tools are locked", "Inviting people and changing access need one more approval on GitHub.", null, b));
   }
-  if (owner && org) { progress.set(1, "Reading the organisation's people"); parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree)); }
-  if (org) parts.push(prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
+  // a member sees their own merge rights here; an owner sets everyone's on the People page
+  if (org && !owner) parts.push(prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
   const orgs = new Set(s.vaults.filter(v => v.access).map(v => v.access.org));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs, orgs)));
   page.replaceChildren(...parts);
+  if (current === "people") loadPeople();   // a change made there reloads access through here
+}
+
+// People, the owners' page: requests waiting, everyone in the organisation with what they reach, and who may merge.
+// It draws from Team access's last read, so every change made here reloads that and comes back.
+async function loadPeople() {
+  const page = document.getElementById("people");
+  const title = el("h1", null, "People");
+  if (!lastTeam) {
+    page.replaceChildren(title, stage("Reading your access from GitHub"));
+    await loadTeam();
+    if (lastTeam) return;   // loadTeam drew this page on its way out
+  }
+  const s = lastTeam, org = s && s.user ? (s.vaults.find(v => v.access) || {}).access : null;
+  const toTeam = el("button", null, "Go to Team access"); toTeam.onclick = () => go("team");
+  if (!org || (org.people[s.user] || {}).grants !== null) {
+    return page.replaceChildren(title, el("p", "sub", s && s.user ? "Only the organisation's owners manage people." : "Sign in on Team access first."), toTeam);
+  }
+  const parts = [title, el("p", "lede", "Everyone in the organisation: who is asking for access, what each person reaches, and who may merge.")];
+  if (!(s.scopes || []).includes("admin:org")) {
+    toTeam.className = "small"; toTeam.textContent = "Unlock on Team access";
+    parts.push(item("Owner tools are locked", "Inviting people and changing access need one more approval on GitHub.", null, toTeam));
+  }
+  const first = !page.querySelector(".section");
+  if (first) page.replaceChildren(...parts, stage("Reading the organisation's people"));
+  parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree),
+    prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
+  if (current === "people") page.replaceChildren(...parts);
 }
 
 // Machines, its own page on every OS: which lab machines this computer can reach, their load, and their desktops.
