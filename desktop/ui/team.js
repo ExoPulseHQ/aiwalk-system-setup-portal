@@ -743,6 +743,22 @@ async function peopleSection(org, user, teams, tree) {
   let p;
   try { p = await invoke("org_people", { org }); } catch (e) { sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
   internsNow = p.interns || [];
+  if (!p.can_edit) {
+    // read-only: names, logins and roles, and whom to ask; GitHub shows invitations and interns to owners only
+    inviteBtn.remove();
+    lede.textContent = `Everyone in ${org} on GitHub.`;
+    const rows = el("div", "list");
+    p.members.slice().sort((x, y) => (y.owner - x.owner) || x.name.localeCompare(y.name)).forEach(m =>
+      rows.append(item(m.name === m.login ? m.login : m.name, m.name === m.login ? null : m.login, null, el("span", "sub", m.owner ? "Owner" : "Member"))));
+    sec.append(rows);
+    const owners = p.members.filter(m => m.owner);
+    if (owners.length) {
+      const note = el("p", "sub", "Owners make changes here. Ask ");
+      owners.forEach((m, i) => { if (i) note.append(i === owners.length - 1 ? " or " : ", "); note.append(el("span", "tag", m.name)); });
+      sec.append(note);
+    }
+    return sec;
+  }
   const msg = el("p", "sub");
   const act = (fn, done, button, label) => async () => {
     msg.textContent = "";
@@ -962,7 +978,7 @@ async function loadTeam(viewAs) {
   const org = (s.vaults.find(v => v.access) || {}).access;
   // owners get a page of their own for the organisation; its entry in the sidebar carries the count of open requests
   const peopleNav = document.querySelector('nav [data-page="people"]');
-  peopleNav.hidden = !(owner && org);
+  peopleNav.hidden = !org;   // everyone in the organisation sees People; only owners get the count of open requests
   if (owner && org) peopleNav.replaceChildren("People", ...(org.requests.length ? [el("span", "os", String(org.requests.length))] : []));
   // an owner signed in without the permission to manage the organisation: the tools below would be refused
   if (owner && org && !(s.scopes || []).includes("admin:org")) {
@@ -990,8 +1006,21 @@ async function loadPeople() {
   }
   const s = lastTeam, org = s && s.user ? (s.vaults.find(v => v.access) || {}).access : null;
   const toTeam = el("button", null, "Go to Team access"); toTeam.onclick = () => go("team");
-  if (!org || (org.people[s.user] || {}).grants !== null) {
-    return page.replaceChildren(title, el("p", "sub", s && s.user ? "Only the organisation's owners manage people." : "Sign in on Team access first."), toTeam);
+  if (!org) return page.replaceChildren(title, el("p", "sub", "Sign in on Team access first."), toTeam);
+  if ((org.people[s.user] || {}).grants !== null) {
+    // a member: the same page without edits; the requests listed are their own (the backend sends no one else's)
+    const mine = org.requests.length ? (() => {
+      const sec = el("div", "section"), list = el("div", "list");
+      const h = el("header"); h.append(el("h2", null, "Your requests"));
+      sec.append(h, list);
+      org.requests.forEach(r => list.append(item(`${r.level} on ${r.repo}`, "Waiting for an owner")));
+      return sec;
+    })() : el("p", "quiet", "You have no open access requests.");
+    const first = !page.querySelector(".section");
+    if (first) page.replaceChildren(title, stage("Reading the organisation's people"));
+    const members = await peopleSection(org.org, s.user, [], null);
+    return current === "people" && page.replaceChildren(title, el("p", "lede", "Everyone in the organisation and what you can ask for."), mine, members,
+      prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
   }
   const parts = [title, el("p", "lede", "Everyone in the organisation: who is asking for access, what each person reaches, and who may merge.")];
   if (!(s.scopes || []).includes("admin:org")) {

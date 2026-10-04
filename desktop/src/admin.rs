@@ -3,7 +3,7 @@
 //! `pr_permissions` is the one read here that everyone gets.
 
 use crate::github;
-use exo_core::{interns, merge_rights, org_access, org_query, permissions_rank, plan_access, Intern};
+use exo_core::{can_edit_people, interns, merge_rights, org_access, org_query, permissions_rank, plan_access, Intern};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -13,24 +13,34 @@ pub struct Member { login: String, name: String, owner: bool }
 pub struct Invite { id: u64, login: String, owner: bool, created: String }
 
 #[derive(Serialize)]
-pub struct People { members: Vec<Member>, invites: Vec<Invite>, interns: Vec<Intern> }
+pub struct People {
+    members: Vec<Member>, invites: Vec<Invite>, interns: Vec<Intern>,
+    /// True only for an owner whose token can change the organisation; the page then shows its edit controls.
+    can_edit: bool,
+}
 
 /// What an intern gets on invitation, all read: the app's repo (to download it), the requests repo (to read the
 /// terms, record acceptance and ask for more), the shared notes and the papers. Owners raise single repos later.
 const INTERN_REPOS: [&str; 4] = ["aiwalk-system-setup-portal", crate::REQUESTS, "exo-book", "exo-papers"];
 
+/// Everyone in the organisation, for any member. Invitations and interns need an owner, so they are read only when
+/// the caller may edit (a refusal there leaves them empty, it does not fail the page).
 #[tauri::command(async)]
 pub fn org_people(org: String) -> Result<People, String> {
     let a = org_access(&github::graphql(&org_query(&org))?);
-    let interns = org_interns(&org, &a.people.keys().cloned().collect())?;
+    let me = github::get("user")?["login"].as_str().unwrap_or_default().to_string();
+    let can_edit = can_edit_people(a.people.get(&me).is_some_and(|p| p.grants.is_none()), &github::scopes());
+    let (interns, invites) = if can_edit {
+        let invites = github::all(&format!("orgs/{org}/invitations")).unwrap_or_default().iter().map(|i| Invite {
+            id: i["id"].as_u64().unwrap_or(0),
+            login: i["login"].as_str().or(i["email"].as_str()).unwrap_or("?").into(),
+            owner: i["role"] == "admin",
+            created: i["created_at"].as_str().unwrap_or("").chars().take(10).collect(),
+        }).collect();
+        (org_interns(&org, &a.people.keys().cloned().collect()).unwrap_or_default(), invites)
+    } else { (vec![], vec![]) };
     let members = a.people.into_iter().map(|(login, p)| Member { name: p.name, owner: p.grants.is_none(), login }).collect();
-    let invites = github::all(&format!("orgs/{org}/invitations"))?.iter().map(|i| Invite {
-        id: i["id"].as_u64().unwrap_or(0),
-        login: i["login"].as_str().or(i["email"].as_str()).unwrap_or("?").into(),
-        owner: i["role"] == "admin",
-        created: i["created_at"].as_str().unwrap_or("").chars().take(10).collect(),
-    }).collect();
-    Ok(People { members, invites, interns })
+    Ok(People { members, invites, interns, can_edit })
 }
 
 /// Interns are not in the organisation, so only their repos know them: the org's outside collaborators, and every

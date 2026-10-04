@@ -98,8 +98,11 @@ window.__fixtures = (scenario, os) => {
 
   // ---- people and Cloudflare (owners)
   const members = Object.entries(PEOPLE).map(([login, p]) => ({ login, name: p.name, owner: p.grants === none }));
-  const people = { members, invites: [{ id: 7001, login: "hal-fox", owner: false, created: day(3) }],
-    interns: [{ login: "ivy-tam", repos: [{ repo: "docs-papers", level: "read", invite: none }, { repo: "docs-notes", level: "read", invite: none }, { repo: "docs-l1", level: "read", invite: 8102 }] }] };
+  // GitHub shows a member the list, and neither invitations nor outside collaborators
+  const people = owner
+    ? { members, can_edit: true, invites: [{ id: 7001, login: "hal-fox", owner: false, created: day(3) }],
+        interns: [{ login: "ivy-tam", repos: [{ repo: "docs-papers", level: "read", invite: none }, { repo: "docs-notes", level: "read", invite: none }, { repo: "docs-l1", level: "read", invite: 8102 }] }] }
+    : { members, can_edit: false, invites: [], interns: [] };
   const prRows = owner
     ? CODE.map(r => ({ repo: r, mine: 4, listed: true, merge: ["amy-chen", "bo-lin", ...(r === "MoCap" ? ["cy-wu"] : [])], write: Object.keys(PEOPLE).filter(l => PEOPLE[l].grants && PEOPLE[l].grants[r] === 2), extra: r === "MoCap" ? ["cy-wu"] : [] }))
     : [{ repo: "MoCap", mine: 3, listed: true, merge: ["amy-chen", "bo-lin", "cy-wu"], write: ["fay-ng"], extra: ["cy-wu"] }, { repo: "simulator", mine: 1, listed: false, merge: [], write: [], extra: [] }];

@@ -456,6 +456,12 @@ pub fn visible_to(mut people: BTreeMap<String, Person>, user: &str) -> BTreeMap<
     people.remove(user).map(|p| BTreeMap::from([(user.to_string(), p)])).unwrap_or_default()
 }
 
+/// Whether the People page may offer edits: an org owner whose token also carries `admin:org`, the permission
+/// GitHub asks for before it lets anyone change the organisation. Everyone else gets the page read-only.
+pub fn can_edit_people(owner: bool, scopes: &[String]) -> bool {
+    owner && scopes.iter().any(|s| s == "admin:org")
+}
+
 /// The version a terms text declares in its first lines: `<!-- terms version: N -->`.
 pub fn terms_version(text: &str) -> Option<u32> {
     text.lines().take(5).find_map(|l| l.trim().strip_prefix("<!-- terms version:")?.trim().strip_suffix("-->")?.trim().parse().ok())
@@ -870,6 +876,14 @@ mod tests {
     }
 
     #[test]
+fn people_edit_needs_owner_and_admin_org() {
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert!(can_edit_people(true, &s(&["repo", "admin:org"])));
+    assert!(!can_edit_people(true, &s(&["repo", "read:org"])));
+    assert!(!can_edit_people(false, &s(&["admin:org"])));
+}
+
+#[test]
     fn tree_groups_by_team() {
         let tree = build_tree(&vault_repos(RULES).unwrap(), &org_access(ORG).repo_teams);
         let groups: Vec<_> = tree.children.iter()
