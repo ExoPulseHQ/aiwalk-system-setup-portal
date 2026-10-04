@@ -128,7 +128,8 @@
   // a desktop row (the Cloudflare panel's Disconnect has no confirmation, and Close on the invite drawer is a word).
   // Kept as words: each page's one primary action, Open viewer and Open desktop (what a desktop row is for), and actions
   // that act at once without asking (Decline, Cancel invitation, the Cloudflare panel).
-  const ICON_ONLY = new Set(["Copy", "Add a GitHub account", "Sign out of GitHub", "Change folder", "Get latest", "Check again",
+  // Get latest keeps its word: its arrow alone reads as the Download beside an absent vault, and it is the daily action.
+  const ICON_ONLY = new Set(["Copy", "Add a GitHub account", "Sign out of GitHub", "Change folder", "Check again",
     "Update host tools", "New desktop", "Remove", "Change password", "Look again"]);
   const iconOnly = (b, t) => ICON_ONLY.has(t) || (/^(Disconnect|Close)$/.test(t) && !!b.closest(".desk"));
   function icons(page) {
