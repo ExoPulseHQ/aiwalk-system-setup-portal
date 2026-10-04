@@ -5,20 +5,26 @@
 mod imp {
     use secret_service::{blocking::SecretService, EncryptionType};
     use std::collections::HashMap;
+    /// The blocking Secret Service client starts its own runtime, which panics on a thread that already drives one
+    /// (every Tauri command does), so each call runs on a thread of its own.
+    fn apart<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> { std::thread::scope(|s| s.spawn(f).join().ok()) }
+    pub fn load(key: &str) -> Option<String> { apart(|| load_here(key)).flatten() }
+    pub fn save(key: &str, secret: &str) -> Result<(), String> { apart(|| save_here(key, secret)).unwrap_or_else(|| Err("the keyring did not answer".into())) }
+    pub fn forget(key: &str) { apart(|| forget_here(key)); }
     fn attrs(key: &str) -> HashMap<&str, &str> { HashMap::from([("xdg:schema", "com.aiwalk.setup.Secret"), ("key", key)]) }
-    pub fn load(key: &str) -> Option<String> {
+    fn load_here(key: &str) -> Option<String> {
         let ss = SecretService::connect(EncryptionType::Dh).ok()?;
         let found = ss.search_items(attrs(key)).ok()?;
         let item = found.unlocked.into_iter().next().or_else(|| { let i = found.locked.into_iter().next()?; i.unlock().ok()?; Some(i) })?;
         String::from_utf8(item.get_secret().ok()?).ok()
     }
-    pub fn save(key: &str, secret: &str) -> Result<(), String> {
+    fn save_here(key: &str, secret: &str) -> Result<(), String> {
         let ss = SecretService::connect(EncryptionType::Dh).map_err(|e| e.to_string())?;
         let c = ss.get_default_collection().map_err(|e| e.to_string())?;
         if c.is_locked().unwrap_or(false) { c.unlock().map_err(|e| e.to_string())? }
         c.create_item(&format!("aIwalk System Setup: {key}"), attrs(key), secret.as_bytes(), true, "text/plain").map(|_| ()).map_err(|e| e.to_string())
     }
-    pub fn forget(key: &str) {
+    fn forget_here(key: &str) {
         let Ok(ss) = SecretService::connect(EncryptionType::Dh) else { return };
         if let Ok(found) = ss.search_items(attrs(key)) { for i in found.unlocked.into_iter().chain(found.locked) { let _ = i.delete(); } };
     }
