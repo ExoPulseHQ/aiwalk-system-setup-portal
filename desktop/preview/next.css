@@ -12,7 +12,7 @@
 :root {
   /* colour: roles, not hues */
   --paper: #F7F6FA; --surface: #FFFFFF; --ink: #1E1A29; --muted: #6B6578; --line: #E4E0EC;
-  --rail: #1B1724; --rail-ink: #E9E5F0; --rail-muted: #9C95AB;
+  --rail: #1B1724; --rail-ink: #E9E5F0; --rail-muted: #9C95AB; --rail-edge: transparent;
   --purple: #8C54D9; --purple-ink: #7A42C8;          /* -ink: the same purple as small text on paper, AA */
   --amber: #C77A12; --amber-ink: #9A5B0A; --red: #C8402F; --red-ink: #B3361F;
   --orange: var(--amber); --peach: transparent;      /* the old accent tokens fold into the deviation colour */
@@ -39,31 +39,39 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --paper: #15121C; --surface: #1E1A27; --ink: #ECE8F3; --muted: #A49DB3; --line: #312B3D;
-  --rail: #0F0C15; --rail-ink: #E2DCEC; --rail-muted: #8F88A0;
+  --paper: #1E1A27; --surface: #26212F; --ink: #ECE8F3; --muted: #A49DB3; --line: #3A3347;
+  --rail: #0D0B12; --rail-ink: #E2DCEC; --rail-muted: #8F88A0; --rail-edge: #2A2434;
   --purple: #A97CEB; --purple-ink: #B48CF0;
   --amber: #E0A040; --amber-ink: #E0A040; --red: #E8735F; --red-ink: #EF7F6C;
-  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #15121C; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
+  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #0D0B12; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
   color-scheme: dark;
 } }
 :root[data-theme="dark"] {
-  --paper: #15121C; --surface: #1E1A27; --ink: #ECE8F3; --muted: #A49DB3; --line: #312B3D;
-  --rail: #0F0C15; --rail-ink: #E2DCEC; --rail-muted: #8F88A0;
+  --paper: #1E1A27; --surface: #26212F; --ink: #ECE8F3; --muted: #A49DB3; --line: #3A3347;
+  --rail: #0D0B12; --rail-ink: #E2DCEC; --rail-muted: #8F88A0; --rail-edge: #2A2434;
   --purple: #A97CEB; --purple-ink: #B48CF0;
   --amber: #E0A040; --amber-ink: #E0A040; --red: #E8735F; --red-ink: #EF7F6C;
-  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #15121C; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
+  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #0D0B12; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
   color-scheme: dark;
 }
 
 body { font: var(--fs-m)/var(--lh) var(--font); background: var(--paper); -webkit-font-smoothing: antialiased; }
 :focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
-code, .cmd, .place .path, .desk > span:first-child { font-family: var(--mono); font-size: var(--fs-s); }
+
+/* icons (icons.js, Lucide): outline, the colour of the text they sit by; 18px in the sidebar, 16px in rows and
+   headings, 14px in buttons, 12px in chips */
+.nx-i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
+  vertical-align: -3px; overflow: visible; }
+code, .cmd, .place .path, .desk > span:first-of-type { font-family: var(--mono); font-size: var(--fs-s); }
 
 /* ---------------------------------------------------------------- sidebar: same structure, quieter */
-nav { width: 208px; padding: var(--s6) var(--s3); gap: 2px; }
+nav { width: 208px; padding: var(--s6) var(--s3); gap: 2px; box-shadow: inset -1px 0 0 var(--rail-edge); }
 nav .app { font-size: var(--fs-l); font-weight: 600; padding: 0 var(--s3) var(--s6); letter-spacing: 0; }
 nav .app span { font-size: var(--fs-s); color: var(--rail-muted); opacity: 1; font-weight: 400; }
-nav button { height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-size: var(--fs-m); box-sizing: border-box; }
+nav button { height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-size: var(--fs-m); box-sizing: border-box;
+  justify-content: flex-start; gap: var(--s3); }
+nav button .nx-i { width: 18px; height: 18px; stroke-width: 1.6; }
+nav button .os { margin-left: auto; }
 nav button:hover { background: rgba(255, 255, 255, .05); }
 nav button.on { background: var(--purple); color: var(--on-purple); font-weight: 500; }
 nav .os { font-size: var(--fs-xs); color: var(--rail-muted); opacity: 1; font-variant-numeric: tabular-nums; }
@@ -88,16 +96,19 @@ strong { font-weight: 600; }
 .nx-summary { margin: 0 0 var(--s3); }
 .nx-state { font-size: var(--fs-xxl); line-height: var(--lh-tight); font-weight: 500; letter-spacing: -.012em; margin: 0;
   position: relative; font-variant-numeric: tabular-nums; }
-/* the state mark hangs in the margin, so the sentence keeps the page's left edge */
-.nx-state::before { content: ""; position: absolute; left: -22px; top: .5em; width: 10px; height: 10px; border-radius: 50%; background: var(--purple); }
-.nx-state[data-tone="warn"]::before { background: var(--amber); }
-.nx-state[data-tone="bad"]::before { background: var(--red); }
-.nx-state[data-tone="wait"]::before { background: var(--line); }
+/* the state mark hangs in the margin, so the sentence keeps the page's left edge; its shape says the state too */
+.nx-state > .nx-i { position: absolute; left: -30px; top: calc((1.25em - 20px) / 2); width: 20px; height: 20px; color: var(--purple); }
+.nx-state[data-tone="warn"] > .nx-i { color: var(--amber); }
+.nx-state[data-tone="bad"] > .nx-i { color: var(--red); }
+.nx-state[data-tone="wait"] > .nx-i { color: var(--muted); }
 .nx-detail { margin: var(--s2) 0 0; color: var(--muted); font-size: var(--fs-m); font-variant-numeric: tabular-nums; }
 .nx-detail .nx-dev { color: var(--amber-ink); }
 .nx-detail .nx-dev.bad { color: var(--red-ink); }
 .nx-summary + .lede, .nx-summary + .badge { margin-top: var(--s6); }
 .nx-summary + .lede { font-size: var(--fs-s); color: var(--muted); }
+/* Team access and People: the old lede says what the sentence now says */
+#team .nx-summary + .lede, #people .nx-summary + .lede { display: none; }
+#team .nx-summary + .lede + .badge { margin-top: var(--s6); }
 
 /* ---------------------------------------------------------------- controls */
 button { font-weight: 500; font-size: var(--fs-s); height: 32px; padding: 0 var(--s4); border-radius: var(--r-control);
@@ -107,9 +118,12 @@ button.small { height: 28px; padding: 0 var(--s3); font-size: var(--fs-s); }
 button.ghost { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
 button.ghost:hover { background: var(--hover); }
 /* the one primary action of the page, chosen in next.js */
-button.nx-primary { background: var(--purple); color: var(--on-purple); box-shadow: none; }
+button.nx-primary { background: var(--purple); color: var(--on-purple); box-shadow: none; transition: none; }
 button.nx-primary:hover { background: color-mix(in srgb, #000 8%, var(--purple)); }
 button.working { gap: var(--s2); }
+button:has(> .nx-i) { display: inline-flex; align-items: center; gap: 6px; }
+button > .nx-i { width: 14px; height: 14px; }
+button.nx-icon-only { font-size: 0; width: 28px; padding: 0; justify-content: center; gap: 0; }
 select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radius: var(--r-control); border-color: var(--line); padding: 0 var(--s2); }
 .switch { height: 20px; width: 34px; border-radius: 10px; }
 .switch::after { top: 3px; left: 3px; width: 14px; height: 14px; box-shadow: none; }
@@ -127,6 +141,8 @@ select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radi
   background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); min-width: 0; background-image: none;
 }
 .nx-chip { font-family: var(--mono); font-weight: 500; background: var(--surface); letter-spacing: -.01em; }
+.perm > .nx-i, .method > .nx-i { width: 12px; height: 12px; stroke-width: 2; margin-right: 4px; }
+.warn { display: flex; align-items: center; gap: 6px; }
 .item .title.nx-chip { font-size: var(--fs-s); height: 24px; padding: 0 8px; }
 .tag { color: var(--muted); }
 /* access levels: neutral, the word carries the meaning */
@@ -156,18 +172,26 @@ select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radi
 .badge .who > .dim { font-size: var(--fs-s); }
 .claude-line { gap: var(--s2); margin-top: 0; min-height: var(--row); padding: var(--s2) 0; border-top: 1px solid var(--line); }
 .badge .methods { margin-top: var(--s3); }
-.claude-line .label { width: 112px; font-size: var(--fs-s); }
+.claude-line .label { width: 112px; font-size: var(--fs-s); display: inline-flex; align-items: center; gap: var(--s2); }
+.badge .who .name.nx-chip { font-size: var(--fs-m); height: 28px; padding: 0 var(--s2); }
 .claude-line .sub { font-size: var(--fs-s); }
 .badge .actions { margin: 0; padding: var(--s3) 0 0; gap: var(--s2); }
 
 /* ---------------------------------------------------------------- sections and lists: hairline rows */
-.section { border-top: 1px solid var(--line); margin-top: var(--s8); padding: 0 0 var(--s2); }
+.section { border-top: 1px solid var(--line); margin-top: var(--s8); padding: 0; }
+.section + .section { margin-top: var(--s6); }
+.section > .list:last-child { margin-bottom: 0; }
+.section.pr > header > h2 { display: inline-flex; align-items: center; gap: var(--s2); }
+.section.pr > header > h2 > .nx-i, details.vault > summary h2 > .nx-i { color: var(--muted); }
 .section > header { padding-top: var(--s6); gap: var(--s3); }
 .section > .sub, .section > p.sub { margin: var(--s2) 0 var(--s3); }
 .list { margin: var(--s3) 0; }
 .item { min-height: var(--row); padding: var(--s2) 0; gap: var(--s3); }
-.item .title { font-weight: 500; }
-.item .sub { margin-top: 2px; }
+.item .title { font-weight: 500; line-height: 24px; }
+.item .text > .sub { margin-top: 2px; line-height: 20px; }
+.item .text > .sub:has(> .nx-chip) { display: flex; align-items: center; height: 20px; white-space: pre; }
+/* what a row is: an icon in a column of its own, level with the first line */
+.item.nx-row-i > .nx-i { align-self: flex-start; margin-top: 4px; color: var(--muted); }
 .item.click { border-radius: 0; }
 .item.click:hover { background: var(--hover); }
 .item.busy .title { color: var(--ink); }
@@ -179,7 +203,8 @@ select, input { font: inherit; font-size: var(--fs-s); height: 32px; border-radi
 
 /* vault fold */
 details.vault > summary header { padding-top: var(--s6); gap: var(--s3); }
-details.vault > summary h2::before { width: 6px; height: 6px; border-width: 0 1.5px 1.5px 0; margin: 0 var(--s3) 3px 2px; }
+details.vault > summary h2 { display: inline-flex; align-items: center; gap: var(--s2); }
+details.vault > summary h2::before, details.vault[open] > summary h2::before { width: 6px; height: 6px; border-width: 0 1.5px 1.5px 0; margin: 0 var(--s1) 0 2px; }
 .view-as { margin-bottom: var(--s2); }
 
 /* the access tree: 1px connectors, 40px rows */
@@ -199,7 +224,7 @@ details.vault > summary h2::before { width: 6px; height: 6px; border-width: 0 1.
 .meter-mini .track { width: 64px; height: 4px; border-radius: 2px; background: var(--line); }
 .meter-mini i { background: var(--muted); }
 .meter-mini i.hot { background: var(--amber); }
-.specs { padding: var(--s2) 0 var(--s4) var(--s4); gap: var(--s1); }
+.specs { padding: var(--s2) 0 var(--s4) 28px; gap: var(--s1); }   /* level with the row's text, past its icon */
 .spec > .nx-chip { justify-self: start; }
 .spec > span:last-child:not(.nx-chip) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
 .pr .tag, .who-connect .tag, .pr .spec .nx-chip { margin: 0; }
@@ -208,6 +233,13 @@ details.vault > summary h2::before { width: 6px; height: 6px; border-width: 0 1.
 .pr .spec { grid-template-columns: 112px 1fr; }
 .desktops { margin-top: var(--s3); gap: var(--s2); }
 .desktops > .k, .desk { font-size: var(--fs-s); }
+/* one line at 720px: the copy button is its icon, the buttons hold together and wrap as one group below that */
+.desk { gap: 6px; }
+.desk > span:first-of-type { min-width: 0; font-size: var(--fs-xs); }
+.desk > .nx-i { color: var(--muted); }
+.nx-acts { display: inline-flex; gap: 6px; flex-wrap: nowrap; }
+.nx-acts button.small { padding: 0 10px; }
+.nx-acts button.nx-icon-only { padding: 0; }
 .who-connect { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--line); }
 .who-connect .spec { margin: var(--s1) 0; align-items: center; }
 .who-connect select { margin-top: var(--s2); }
@@ -232,15 +264,14 @@ details.vault > summary h2::before { width: 6px; height: 6px; border-width: 0 1.
 .tile-title { font-weight: 500; font-size: var(--fs-m); }
 .tile-sub { font-size: var(--fs-xs); font-family: var(--mono); }
 
-/* terms: the same faces as the rest of the app */
+/* terms: the text keeps the shipped app's faces on purpose (Times New Roman, 標楷體 for Chinese, and each language
+   label in its copy's face); only the chrome around it is Plex */
 .terms { max-width: 720px; }
-.terms .item .text { all: unset; flex: 1; min-width: 0; }
+.terms .item .text { all: unset; display: block; flex: 1; min-width: 0; }   /* "Who accepted" rows are rows, not the text box */
 .terms .nx-summary + .lede { display: none; }   /* says what the sentence already says */
-.terms > .text { font-family: var(--font); font-size: var(--fs-m); border-radius: var(--r-panel); padding: var(--s2) var(--s6) var(--s4); }
-.terms > .text h2 { font-size: var(--fs-l); margin: var(--s6) 0 var(--s2); }
-.terms > .text li { margin: var(--s1) 0; line-height: var(--lh); }
+.terms > .text { border-radius: var(--r-panel); padding: var(--s2) var(--s6) var(--s4); }
 .terms .lang { border-radius: var(--r-control); padding: 2px; }
-.terms .lang button, .terms .lang button.zh, .terms .lang button.en { font-family: var(--font); font-size: var(--fs-s); padding: 4px var(--s4); border-radius: 3px; height: auto; box-shadow: none; }
+.terms .lang button { padding: 4px var(--s4); border-radius: 3px; height: auto; box-shadow: none; }
 .terms .lang button.on { box-shadow: none; }
 .terms .agree { gap: var(--s3); }
 

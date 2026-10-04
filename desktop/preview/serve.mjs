@@ -24,7 +24,7 @@ http.createServer(async (req, res) => {
       let html = body.toString().replace("<script", '<script src="/__preview/mock.js"></script>\n<script');
       // ?design=next: the proposed restyle, after the page's own CSS and scripts (see next.css)
       if (url.searchParams.get("design") === "next")
-        html = html.replace("</head>", '<link rel="stylesheet" href="/__preview/next.css">\n</head>').replace("</body>", '<script src="/__preview/next.js"></script>\n</body>');
+        html = html.replace("</head>", '<link rel="stylesheet" href="/__preview/next.css">\n</head>').replace("</body>", '<script src="/__preview/icons.js"></script>\n<script src="/__preview/next.js"></script>\n</body>');
       body = Buffer.from(html);
     }
     res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream", "cache-control": "no-store" }).end(body);
