@@ -108,14 +108,38 @@ pub struct Phones {
     waiting: bool,
 }
 
+/// Connects every phone that offers wireless debugging on this network (they advertise themselves; adb accepts only
+/// the ones paired with this computer), else the last address a phone was seen at. How many connected.
+fn reconnect() -> usize {
+    let (_, out) = adb(None, &["mdns", "services"], 20);
+    let mut targets: Vec<String> = out.lines().filter(|l| l.contains("_adb-tls-connect"))
+        .filter_map(|l| l.split_whitespace().last().map(String::from)).collect();
+    if targets.is_empty() {
+        // only reaches a phone still in `adb tcpip` mode, which a restart of the phone ends
+        if let Ok(ip) = std::fs::read_to_string(ipfile()) { targets.push(format!("{}:5555", ip.trim())) }
+    }
+    targets.iter().filter(|t| adb(None, &["connect", t], 20).1.contains("connected")).count()
+}
+
+/// When the list last tried to reconnect by itself: the page asks every few seconds, a look-up takes about one.
+static TRIED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
 #[tauri::command(async)]
 pub fn phones() -> Phones {
-    let (_, out) = adb(None, &["devices"], 20);
+    let devices = || adb(None, &["devices"], 20).1;
+    let mut out = devices();
+    // a phone that restarted comes back on another port (and maybe another address) and nothing reconnects it:
+    // with no phone on Wi-Fi in the list, look for one, at most twice a minute
+    let wireless = |out: &str| out.lines().skip(1).any(|l| l.contains("\tdevice") && (l.contains(':') || l.contains("_adb-tls-connect")));
+    if !wireless(&out) {
+        let due = { let mut t = TRIED.lock().unwrap(); let due = t.is_none_or(|at| at.elapsed() > Duration::from_secs(30)); if due { *t = Some(std::time::Instant::now()) } due };
+        if due && reconnect() > 0 { out = devices() }
+    }
     let rows: Vec<Vec<&str>> = out.lines().skip(1).filter(|l| l.contains('\t')).map(|l| l.split('\t').collect()).collect();
     let waiting = rows.iter().any(|r| r[1] == "unauthorized");
     let bundled = bundled_hash();
     let probe = PROBE.replace("{P_FIRST}", P_FIRST).replace("{PD}", PHONEDESK);
-    let phones = rows.iter().filter(|r| r[1] == "device").map(|r| {
+    let phones: Vec<Phone> = rows.iter().filter(|r| r[1] == "device").map(|r| {
         let serial = r[0];
         let (_, out) = adb(Some(serial), &["shell", &probe], 8);
         // root is asked once per serial
@@ -123,6 +147,13 @@ pub fn phones() -> Phones {
             .or_insert_with(|| adb(Some(serial), &["shell", "su -c true"], 5).0 == 0);
         parse_probe(serial, &out, root, &bundled)
     }).collect();
+    // where a phone is now, for the day mDNS does not answer
+    if let Some(ip) = phones.iter().map(|p| p.ip.trim()).find(|ip| !ip.is_empty()) {
+        if std::fs::read_to_string(ipfile()).map(|s| s.trim() != ip).unwrap_or(true) {
+            let _ = std::fs::create_dir_all(ipfile().parent().unwrap());
+            let _ = std::fs::write(ipfile(), ip);
+        }
+    }
     Phones { phones, waiting }
 }
 
@@ -223,14 +254,7 @@ pub fn phone_action(app: tauri::AppHandle, action: String, phone: Option<Phone>,
         "disconnect" => { adb(None, &["disconnect", &p.serial], 20); "Wi-Fi disconnected".into() }
         "reconnect" => {
             step("Looking for phones on this Wi-Fi");
-            // wireless-debugging phones advertise themselves; fall back to the last saved IP
-            let (_, out) = adb(None, &["mdns", "services"], 20);
-            let mut targets: Vec<String> = out.lines().filter(|l| l.contains("_adb-tls-connect"))
-                .filter_map(|l| l.split_whitespace().last().map(String::from)).collect();
-            if targets.is_empty() {
-                if let Ok(ip) = std::fs::read_to_string(ipfile()) { targets.push(format!("{}:5555", ip.trim())) }
-            }
-            let n = targets.iter().filter(|t| adb(None, &["connect", t], 20).1.contains("connected")).count();
+            let n = reconnect();
             if n > 0 { format!("Connected {n} phone(s)") } else { "No phone found on Wi-Fi".into() }
         }
         _ => format!("Unknown action {action}"),
