@@ -1618,6 +1618,9 @@ async function machineGuests(org, hosts) {
 async function askGuestEmail(login, host) {
   const input = el("input"); input.type = "email"; input.style.width = "100%";
   input.setAttribute("aria-label", `Email ${login} signs in to GitHub with`);
+  // let in to another machine from this computer before: the same address, without asking for it again
+  const before = Object.entries(guestLogins()).find(([, l]) => String(l).toLowerCase() === login.toLowerCase());
+  if (before) return before[0];
   input.value = await invoke("public_email", { login }).catch(() => null) || "";
   const go = await ask(`Let ${login} connect to ${host}`, `${host} recognises ${login} by this email address. It must be the primary email of their GitHub account.`,
     [["cancel", "Cancel"], ["add", "Let them connect", true]], input);
