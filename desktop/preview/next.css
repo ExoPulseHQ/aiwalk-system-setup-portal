@@ -59,6 +59,8 @@
   --d-weight: 400; --d-state: 28px; --d-name: 22px; --d-mark: 21px; --d-track: -.02em; --d-lh: 1.2; }
 :root[data-display="c"] { --display: "Bricolage Grotesque", "IBM Plex Sans TC", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
   --d-weight: 600; --d-state: 30px; --d-name: 22px; --d-mark: 22px; --d-track: -.03em; --d-lh: 1.15; }
+:root[data-display="plex"] { --display: var(--font);
+  --d-weight: 600; --d-state: 32px; --d-name: 26px; --d-mark: 22px; --d-track: -.025em; --d-lh: 1.1; }
 :root[data-theme="dark"] {
   --paper: #1E1A27; --surface: #26212F; --ink: #ECE8F3; --muted: #A49DB3; --line: #3A3347;
   --rail: #0D0B12; --rail-ink: #E2DCEC; --rail-muted: #8F88A0; --rail-edge: #2A2434;
@@ -80,12 +82,14 @@ code, .cmd, .place .path, .desk > span:first-of-type { font-family: var(--mono);
 /* ---------------------------------------------------------------- sidebar: same structure, quieter */
 nav { width: 208px; padding: var(--s6) var(--s3); gap: 2px; box-shadow: inset -1px 0 0 var(--rail-edge); }
 nav .app { font: var(--d-weight) var(--d-mark)/28px var(--display); letter-spacing: var(--d-track); padding: 0 var(--s3) var(--s6); }
-nav .app .nx-cap-i { display: inline; font: inherit; letter-spacing: inherit; color: inherit; opacity: 1; margin: 0; }
+nav .app :is(.nx-word, .nx-cap-i) { display: inline; font: inherit; letter-spacing: inherit; color: inherit; opacity: 1; margin: 0; }
 /* every display face draws I and l alike at this size (the wordmark read "alwalk"), so the capital I is always Plex's
    serifed I, a little smaller so its cap height sits with the display face's */
 nav .app .nx-cap-i { font-family: var(--font); font-weight: 400; font-size: .86em; }
 :root:is([data-display="b"], [data-display="c"]) nav .app .nx-cap-i { font-weight: 600; }
-nav .app span:not(.nx-cap-i) { font: 400 var(--fs-s)/var(--lh) var(--font); letter-spacing: 0; margin-top: 2px; color: var(--rail-muted); opacity: 1; }
+/* plex: the face is Plex already, whose capital I has serifs, so it needs no size or weight correction */
+:root[data-display="plex"] nav .app .nx-cap-i { font-size: 1em; font-weight: inherit; }
+nav .app span:not(.nx-cap-i, .nx-word) { font: 400 var(--fs-s)/var(--lh) var(--font); letter-spacing: 0; margin-top: 2px; color: var(--rail-muted); opacity: 1; }
 nav button { height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-size: var(--fs-m); box-sizing: border-box;
   justify-content: flex-start; gap: var(--s3); }
 nav button .nx-i { width: 18px; height: 18px; stroke-width: 1.6; }
@@ -417,4 +421,84 @@ dialog .buttons { gap: var(--s2); }
   nav button .nx-i { width: 20px; height: 20px; }
   nav #ver { display: none; }
   .page { padding: var(--s6) var(--s4) var(--s10) calc(var(--s4) + 30px); }
+}
+
+/* ---------------------------------------------------------------- rendering (?fx=, next.js sets data-fx)
+   Only these words are rendered: the wordmark, the opening strip's figures and state mark, and the person's name. The
+   rest of the page stays flat. The sidebar is dark in both themes, so the wordmark always takes the dark recipe.
+   Light source above in every recipe; shadows are violet, not black; zero-blur edges where the effect must stay crisp. */
+:root {
+  --fx-depth: 0 1px 1px rgb(52 36 88 / .20), 0 3px 9px rgb(88 58 148 / .14);
+  --fx-depth-mark: drop-shadow(0 1px 1px rgb(52 36 88 / .20)) drop-shadow(0 3px 6px rgb(88 58 148 / .14));
+  /* the dark edge is the glyph's own hue, darkened: a grey edge read as dirt on the purple and amber figures */
+  --fx-engr: 0 1px 0 rgb(255 255 255 / .95), 0 -1px 0 color-mix(in srgb, currentColor 45%, rgb(0 0 0 / .15));
+  --fx-engr-mark: drop-shadow(0 1px 0 rgb(255 255 255 / .95)) drop-shadow(0 -1px 0 color-mix(in srgb, currentColor 30%, rgb(0 0 0 / .10)));
+  /* ink: every stop is at least 4.5:1 on its own surface, though these sizes only need 3:1 */
+  --fx-ink: linear-gradient(180deg, #8A52D6 15%, #7A42C8 55%, #6236AD 95%);
+  --fx-ink-amber: linear-gradient(180deg, #A0600B 15%, #8A4F07 95%);
+  --fx-ink-red: linear-gradient(180deg, #C2402B 15%, #9E2E1C 95%);
+  --fx-ink-name: linear-gradient(180deg, #2C2240 15%, #1E1A29 95%);
+  --fx-glow: none;
+}
+:root, :root[data-theme="dark"] {
+  --fx-depth-rail: 0 -1px 0 rgb(255 255 255 / .10), 0 2px 5px rgb(0 0 0 / .45);
+  --fx-engr-rail: 0 -1px 0 rgb(255 255 255 / .16), 0 1px 0 rgb(0 0 0 / .9);
+  --fx-ink-rail: linear-gradient(180deg, #D9C4F8 15%, #B48CF0 55%, #9A6AE3 95%);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --fx-depth: 0 -1px 0 rgb(255 255 255 / .09), 0 2px 6px rgb(0 0 0 / .40);
+  --fx-depth-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .09)) drop-shadow(0 2px 4px rgb(0 0 0 / .40));
+  --fx-engr: 0 -1px 0 rgb(255 255 255 / .13), 0 1px 0 rgb(0 0 0 / .85);
+  --fx-engr-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .13)) drop-shadow(0 1px 0 rgb(0 0 0 / .85));
+  --fx-ink: linear-gradient(180deg, #CDB0F6 15%, #A97CEB 55%, #9D6CE4 95%);
+  --fx-ink-amber: linear-gradient(180deg, #F0BC6A 15%, #E0A040 55%, #D08E2C 95%);
+  --fx-ink-red: linear-gradient(180deg, #F29683 15%, #E8735F 55%, #DB5F4A 95%);
+  --fx-ink-name: linear-gradient(180deg, #F6F2FB 15%, #DCD3EA 95%);
+  --fx-glow: drop-shadow(0 0 4px rgb(169 124 235 / .22));
+} }
+:root[data-theme="dark"] {
+  --fx-depth: 0 -1px 0 rgb(255 255 255 / .09), 0 2px 6px rgb(0 0 0 / .40);
+  --fx-depth-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .09)) drop-shadow(0 2px 4px rgb(0 0 0 / .40));
+  --fx-engr: 0 -1px 0 rgb(255 255 255 / .13), 0 1px 0 rgb(0 0 0 / .85);
+  --fx-engr-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .13)) drop-shadow(0 1px 0 rgb(0 0 0 / .85));
+  --fx-ink: linear-gradient(180deg, #CDB0F6 15%, #A97CEB 55%, #9D6CE4 95%);
+  --fx-ink-amber: linear-gradient(180deg, #F0BC6A 15%, #E0A040 55%, #D08E2C 95%);
+  --fx-ink-red: linear-gradient(180deg, #F29683 15%, #E8735F 55%, #DB5F4A 95%);
+  --fx-ink-name: linear-gradient(180deg, #F6F2FB 15%, #DCD3EA 95%);
+  --fx-glow: drop-shadow(0 0 4px rgb(169 124 235 / .22));
+}
+
+/* depth: the words sit a little above the surface */
+:root[data-fx="depth"] :is(.nx-num, .badge .who .name:not(.nx-chip)) { text-shadow: var(--fx-depth); }
+:root[data-fx="depth"] nav .app .nx-word { text-shadow: var(--fx-depth-rail); }
+:root[data-fx="depth"] .nx-mark > .nx-i { filter: var(--fx-depth-mark); }
+
+/* engraved: a 1px light and a 1px dark edge; cut into the light panel, raised from the dark one */
+:root[data-fx="engraved"] :is(.nx-num, .badge .who .name:not(.nx-chip)) { text-shadow: var(--fx-engr); }
+:root[data-fx="engraved"] nav .app .nx-word { text-shadow: var(--fx-engr-rail); }
+:root[data-fx="engraved"] .nx-mark > .nx-i { filter: var(--fx-engr-mark); }
+
+/* ink: a narrow same-hue fill. Healthy figures and the wordmark in brand purple, deviations in their own hue, quiet
+   figures stay flat; the glow (dark only) through filter, since a text-shadow would show through the clear fill */
+:root[data-fx="ink"] :is(nav .app .nx-word, .nx-it:not(.calm, .warn, .bad) > .nx-num, .nx-it.warn > .nx-num, .nx-it.bad > .nx-num, .badge .who .name:not(.nx-chip)) {
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+:root[data-fx="ink"] nav .app .nx-word { background-image: var(--fx-ink-rail); filter: var(--fx-glow); }
+:root[data-fx="ink"] .nx-it:not(.calm, .warn, .bad) > .nx-num { background-image: var(--fx-ink); filter: var(--fx-glow); }
+:root[data-fx="ink"] .nx-it.warn > .nx-num { background-image: var(--fx-ink-amber); }
+:root[data-fx="ink"] .nx-it.bad > .nx-num { background-image: var(--fx-ink-red); }
+:root[data-fx="ink"] .badge .who .name:not(.nx-chip) { background-image: var(--fx-ink-name); }
+:root[data-fx="ink"] .nx-strip[data-tone="ok"] > .nx-mark > .nx-i { filter: var(--fx-glow); }
+
+/* the same language on two surfaces that are objects: the selected sidebar item and the page's one primary button get
+   a lit top edge and a hairline of contact, as a real key would; nothing else gains a shadow */
+:root:not([data-fx="none"]) :is(nav button.on, button.nx-primary) {
+  background-image: linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / 0) 50%, rgb(0 0 0 / .05));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .22), inset 0 -1px 0 rgb(0 0 0 / .10), 0 1px 1px rgb(20 12 40 / .30); }
+
+/* asked for more contrast, or a forced palette: everything flat again */
+@media (prefers-contrast: more), (forced-colors: active) {
+  :root[data-fx] :is(nav .app .nx-word, .nx-num, .badge .who .name, .nx-mark > .nx-i, nav button.on, button.nx-primary) {
+    text-shadow: none !important; filter: none !important; background-image: none !important;
+    -webkit-text-fill-color: currentColor !important; }
+  :root[data-fx] :is(nav button.on, button.nx-primary) { box-shadow: none !important; }
 }

@@ -6,12 +6,18 @@
 (() => {
   const q = new URLSearchParams(location.search);
   if (q.get("theme") === "dark") document.documentElement.dataset.theme = "dark";
-  // the display face for the name, the sentence and the wordmark: three candidates, a by default (next.css)
-  document.documentElement.dataset.display = /^[abc]$/.test(q.get("display")) ? q.get("display") : "a";
+  // the display face for the name, the figures and the wordmark: plex (Plex Sans, heavier) by default; a, b, c are the
+  // earlier serif and grotesque candidates, kept for comparison (next.css)
+  document.documentElement.dataset.display = /^(a|b|c|plex)$/.test(q.get("display")) ? q.get("display") : "plex";
+  // how those same words are rendered: none, depth, ink or engraved (next.css, "rendering")
+  document.documentElement.dataset.fx = /^(none|depth|ink|engraved)$/.test(q.get("fx")) ? q.get("fx") : "engraved";
   const mark0 = document.querySelector("nav .app");
   if (mark0 && mark0.firstChild && mark0.firstChild.nodeType === 3 && mark0.firstChild.textContent === "aIwalk") {
+    // one inline box for the word, so a gradient or shadow covers the word and not the line under it
+    const w = document.createElement("span"); w.className = "nx-word";
     const i = document.createElement("span"); i.className = "nx-cap-i"; i.textContent = "I";
-    mark0.firstChild.replaceWith("a", i, "walk");
+    w.append("a", i, "walk");
+    mark0.firstChild.replaceWith(w);
   }
   const $ = (root, sel) => [...root.querySelectorAll(sel)];
   const n = (k, one, many = one + "s") => `${k} ${k === 1 ? one : many}`;
