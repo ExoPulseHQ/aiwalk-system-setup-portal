@@ -24,11 +24,13 @@ systemctl is-active --quiet cloudflared || { echo "cloudflared is not running. A
 SELF=$(hostname -I)
 PEERS=$(for ip in $MACHINES; do case " $SELF " in *" $ip "*) ;; *) echo -n "$ip ";; esac; done)
 
-# rules that open SSH, HTTP(S) or VNC to everyone (the web goes out through the tunnel, nothing needs 80/443 open): "[ n] 22/tcp   ALLOW IN   Anywhere" and their v6 twins
+# every rule that opens a port to everyone: "[ n] 2222/tcp   ALLOW IN   Anywhere" and their v6 twins. A list of
+# known ports left the unknown ones open (2222 on goat, 8080 on monkey); behind the tunnel nothing needs to be.
 open_rules() {
-  ufw status numbered | awk -F'[][]' '/ALLOW IN/ && /Anywhere/ && !/ from / {
-    split($3, f, " "); to = f[1]
-    if (to ~ /^(22|80|443|3389|59[0-9][0-9](:59[0-9][0-9])?)(\/tcp|\/udp)?$/ || to == "OpenSSH" || to ~ /^Nginx/) print $2 + 0 }'
+  ufw status numbered | awk -F'[][]' '/ALLOW IN/ && /Anywhere/ && !/ from / { print $2 + 0 }'
+}
+open_names() {
+  ufw status numbered | awk -F'[][]' '/ALLOW IN/ && /Anywhere/ && !/ from / { split($3, f, " "); print f[1] }' | sort -u | paste -sd' '
 }
 
 echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered | sed '1,4d'
@@ -47,10 +49,10 @@ echo " 2. This machine has no boot-time VNC desktops ($VNC_SERVICE): nothing to 
 fi
 echo " 3. SSH (22) is allowed only from: $PEERS"
 if ufw status | grep -q '^Status: active'; then
-echo "    Rules that open 22, 80, 443, 3389 (RDP) or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
+echo "    Every rule that opens a port to everyone is removed: $(open_names)"
 else
-echo "    The firewall is off now, so its stored rules cannot be listed yet; it is switched on and any rule that opens"
-echo "    22, 80, 443, 3389 (RDP) or 59xx to everyone is then removed."
+echo "    The firewall is off now, so its stored rules cannot be listed yet; it is switched on and every rule that"
+echo "    opens a port to everyone is then removed (they are printed as they go)."
 fi
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
 read -rp "Apply? [y/N] " answer
@@ -86,6 +88,7 @@ for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'regi
 # switching it on afterwards brought them to life (monkey kept a 5901 opened long ago)
 ufw --force enable >/dev/null
 # --force answers ufw's own question; piping "yes" into it ends with SIGPIPE, which pipefail turned into an abort
+echo "Removing rules open to everyone: $(open_names)"
 for n in $(open_rules | sort -rn); do ufw --force delete "$n" >/dev/null; done
 
 systemctl daemon-reload
