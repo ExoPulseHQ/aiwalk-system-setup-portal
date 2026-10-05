@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""exo-term: terminal sessions on a machine that outlive the connection showing them.
+
+    exo-term attach NAME     the session NAME, started if it is not running; needs a terminal (ssh -t)
+    exo-term list            one JSON object per line: name, pid, started, viewers
+    exo-term end NAME        ends the session and everything running in it
+
+A session is a shell on a pseudo-terminal held by a small keeper process of this account. Closing the laptop, a
+dropped connection or Ctrl-] only takes the viewer away; the shell and what runs in it go on, and attaching again
+from any computer shows it where it is. Several viewers may watch and type in one session at once.
+
+Nothing here needs tmux or screen (four of the seven machines have no tmux) or sudo: Python 3.8 and a home folder.
+The keeper listens on a socket in ~/.local/state/exo-term (mode 700), so only this account reaches a session.
+A viewer talks to it in small frames: I + bytes typed, R + rows and columns, the first frame T + the terminal's name.
+The keeper answers with the session's output as it is. On attach it sends the last output again and then nudges the
+window size, so a full-screen program (vim, htop) repaints itself.
+"""
+import errno, fcntl, json, os, pty, re, select, signal, socket, struct, sys, termios, time, tty
+
+VERSION = "1"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "exo-term")
+KEEP = 256 * 1024          # bytes of output kept for the next viewer
+DETACH = b"\x1d"           # Ctrl-]
+
+
+def path(name, ext):
+    return os.path.join(STATE, f"{name}.{ext}")
+
+
+def valid(name):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", name or "") or name.startswith("."):
+        sys.exit("A session's name is 1 to 32 letters, digits, dot, dash or underscore.")
+    return name
+
+
+def frame(kind, data=b""):
+    return kind + struct.pack(">H", len(data)) + data
+
+
+def connect(name):
+    """A connection to the keeper of NAME, or None when no keeper answers (a leftover socket is cleared)."""
+    s = socket.socket(socket.AF_UNIX)
+    try:
+        s.connect(path(name, "sock"))
+        return s
+    except OSError:
+        s.close()
+        for ext in ("sock", "json"):
+            try: os.unlink(path(name, ext))
+            except OSError: pass
+        return None
+
+
+# ---------------------------------------------------------------- the keeper
+
+def set_size(fd, rows, cols):
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", max(rows, 1), max(cols, 1), 0, 0))
+
+
+def keeper(name, term, rows, cols):
+    """Runs detached: the shell on its pty, the socket, and whoever is watching."""
+    pid, master = pty.fork()
+    if pid == 0:
+        os.chdir(os.path.expanduser("~"))
+        env = dict(os.environ, TERM=term or "xterm-256color", EXO_TERM=name)
+        shell = os.environ.get("SHELL") or "/bin/bash"
+        os.execvpe(shell, ["-" + os.path.basename(shell)], env)   # a leading dash: a login shell, as ssh gives
+    set_size(master, rows, cols)
+    srv = socket.socket(socket.AF_UNIX)
+    old = os.umask(0o177)
+    srv.bind(path(name, "sock"))
+    os.umask(old)
+    srv.listen(8)
+    with open(path(name, "json"), "w") as f:
+        json.dump({"name": name, "pid": os.getpid(), "shell": pid, "started": int(time.time())}, f)
+    kept, viewers, pending, size = bytearray(), [], {}, [rows, cols]
+
+    def drop(v):
+        viewers.remove(v); pending.pop(v, None)
+        try: v.close()
+        except OSError: pass
+
+    try:
+        while True:
+            ready, _, _ = select.select([master, srv] + viewers, [], [], 30)
+            if master in ready:
+                try: data = os.read(master, 65536)
+                except OSError: data = b""
+                if not data: break                       # the shell ended
+                kept += data
+                if len(kept) > KEEP: del kept[:len(kept) - KEEP]
+                for v in viewers[:]:
+                    try: v.sendall(data)
+                    except OSError: drop(v)
+            if srv in ready:
+                v, _ = srv.accept()
+                viewers.append(v); pending[v] = bytearray()
+                try: v.sendall(bytes(kept))
+                except OSError: drop(v)
+            for v in [x for x in ready if x in viewers]:
+                try: got = v.recv(65536)
+                except OSError: got = b""
+                if not got: drop(v); continue
+                buf = pending[v]; buf += got
+                while len(buf) >= 3:
+                    n = struct.unpack(">H", bytes(buf[1:3]))[0]
+                    if len(buf) < 3 + n: break
+                    kind, body = bytes(buf[:1]), bytes(buf[3:3 + n]); del buf[:3 + n]
+                    if kind == b"I": os.write(master, body)
+                    elif kind == b"R" and len(body) == 4:
+                        r, c = struct.unpack(">HH", body)
+                        # one row less and back: the size changes even when it is the same as before, so whatever
+                        # fills the screen is told to draw itself again for this viewer
+                        set_size(master, max(r - 1, 1), c); set_size(master, r, c); size[:] = [r, c]
+                    elif kind == b"X": return   # ended on request: the cleaning up below hangs up the shell
+    finally:
+        for v in viewers[:]: drop(v)
+        for ext in ("sock", "json"):
+            try: os.unlink(path(name, ext))
+            except OSError: pass
+        # the shell is hung up as a closed terminal would do it, with everything in its foreground; what does not
+        # leave within two seconds is killed
+        try: os.close(master)
+        except OSError: pass
+        for sig, wait in ((signal.SIGHUP, 20), (signal.SIGKILL, 10)):
+            try: os.killpg(pid, sig)
+            except OSError: break
+            for _ in range(wait):
+                try:
+                    if os.waitpid(pid, os.WNOHANG)[0]: break
+                except OSError: break
+                time.sleep(0.1)
+            else: continue
+            break
+
+
+def start(name, term, rows, cols):
+    """Starts the keeper as a process of its own (no terminal, its own session), and waits for its socket."""
+    if os.fork() == 0:
+        os.setsid()
+        if os.fork() != 0: os._exit(0)
+        null = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2): os.dup2(null, fd)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        try: keeper(name, term, rows, cols)
+        except BaseException:   # nowhere to say it: kept beside the session for whoever looks into it
+            import traceback
+            with open(path(name, "err"), "w") as f: traceback.print_exc(file=f)
+        finally: os._exit(0)
+    os.wait()
+    for _ in range(50):
+        if os.path.exists(path(name, "sock")): return
+        time.sleep(0.1)
+    sys.exit(f"The session {name} did not start.")
+
+
+# ---------------------------------------------------------------- a viewer
+
+def attach(name):
+    if not sys.stdin.isatty():
+        sys.exit("exo-term attach needs a terminal: ssh -t <machine> exo-term attach NAME")
+    fd = sys.stdin.fileno()
+    def size():
+        r, c, _, _ = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+        return r or 24, c or 80
+    s = connect(name)
+    if s is None:
+        start(name, os.environ.get("TERM"), *size())
+        s = connect(name)
+        if s is None: sys.exit(f"The session {name} did not start.")
+    sys.stdout.write(f"\r\n[session {name} on {socket.gethostname()}: Ctrl-] leaves it running]\r\n"); sys.stdout.flush()
+    saved = termios.tcgetattr(fd)
+    resized = [True]
+    signal.signal(signal.SIGWINCH, lambda *_: resized.__setitem__(0, True))
+    tty.setraw(fd)
+    why = "the session ended"
+    try:
+        while True:
+            if resized[0]:
+                resized[0] = False
+                s.sendall(frame(b"R", struct.pack(">HH", *size())))
+            try: ready, _, _ = select.select([fd, s], [], [], 1)
+            except OSError as e:
+                if e.errno == errno.EINTR: continue      # the window was resized
+                raise
+            if s in ready:
+                data = s.recv(65536)
+                if not data: break
+                os.write(sys.stdout.fileno(), data)
+            if fd in ready:
+                data = os.read(fd, 4096)
+                if not data: why = "left running"; break  # the connection went away
+                if DETACH in data:
+                    before = data.split(DETACH)[0]
+                    if before: s.sendall(frame(b"I", before))
+                    why = "left running"; break
+                s.sendall(frame(b"I", data))
+    except OSError:
+        why = "left running"
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        s.close()
+    sys.stdout.write(f"\r\n[session {name}: {why}]\r\n")
+
+
+def sessions():
+    out = []
+    try: names = sorted(f[:-5] for f in os.listdir(STATE) if f.endswith(".json"))
+    except OSError: names = []
+    for name in names:
+        s = connect(name)
+        if s is None: continue
+        s.close()
+        try:
+            with open(path(name, "json")) as f: out.append(json.load(f))
+        except (OSError, ValueError): pass
+    return out
+
+
+def main(argv):
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    os.chmod(STATE, 0o700)
+    cmd = argv[0] if argv else ""
+    if cmd == "list":
+        for s in sessions(): print(json.dumps(s))
+    elif cmd == "attach" and len(argv) == 2:
+        attach(valid(argv[1]))
+    elif cmd == "end" and len(argv) == 2:
+        s = connect(valid(argv[1]))
+        if s is None: sys.exit(f"The session {argv[1]} is not running.")
+        # the keeper is waited for: it greets every newcomer with the kept output first, and a caller that had gone
+        # by then was dropped before its request was read
+        s.sendall(frame(b"X")); s.settimeout(6)
+        try:
+            while s.recv(65536): pass
+        except OSError: pass
+        s.close()
+        for _ in range(40):
+            if not os.path.exists(path(argv[1], "sock")): break
+            time.sleep(0.1)
+        else: sys.exit(f"The session {argv[1]} did not end.")
+        print(f"ended {argv[1]}")
+    else:
+        sys.exit("exo-term attach NAME | list | end NAME")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

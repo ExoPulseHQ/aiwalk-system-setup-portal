@@ -755,7 +755,23 @@ pub fn ssh_args(args: &[String]) -> Result<(Vec<String>, String, Vec<String>), S
 /// What the SSH button runs in a terminal: this app's own `ssh` subcommand, so the certificate is fetched in there
 /// and the same line works again later.
 pub fn ssh_argv(app: &str, user: &str, tunnel: &str) -> Vec<String> {
-    vec![app.into(), "ssh".into(), format!("{user}@{tunnel}")]
+    // --session: the button opens the person's lasting session on the machine, not a shell that dies with the window
+    vec![app.into(), "ssh".into(), "--session".into(), format!("{user}@{tunnel}")]
+}
+
+/// A session's name on a machine (hosts/exo-term): 1 to 32 of letters, digits, dot, dash, underscore, not starting
+/// with a dot. Anything else is refused, since the name becomes part of a command line on the machine.
+pub fn session_name(name: &str) -> Result<String, String> {
+    let ok = (1..=32).contains(&name.len()) && !name.starts_with('.') && name.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c));
+    if ok { Ok(name.to_string()) } else { Err("A session's name is 1 to 32 letters, digits, dot, dash or underscore.".into()) }
+}
+
+/// What ssh runs on the machine for `--session NAME`: the session tool when the machine has it, else a plain login
+/// shell with a line saying so, so the same command works on a machine not updated yet.
+pub fn session_command(name: &str) -> String {
+    format!("sh -c 'if [ -x ~/.local/bin/exo-term ]; then exec ~/.local/bin/exo-term attach {name}; fi; \
+             echo \"This machine has no session tool yet (an owner updates the host tools): a plain shell, which ends with this window.\"; \
+             exec \"${{SHELL:-/bin/sh}}\" -l'")
 }
 
 /// Linux terminal programs in the order tried, each with the arguments that go before the command it runs (one
@@ -890,7 +906,7 @@ mod tests {
         let argv = super::ssh_argv("/Applications/aIwalk System Setup.app/Contents/MacOS/it's 100% «好»", "ntk", "ssh-otter.example.org");
         let f = super::command_file(&argv);
         assert_eq!(f, "#!/bin/sh\nrm -f \"$0\"; rmdir \"$(dirname \"$0\")\" 2>/dev/null\n\
-                       exec '/Applications/aIwalk System Setup.app/Contents/MacOS/it'\\''s 100% «好»' 'ssh' 'ntk@ssh-otter.example.org'\n");
+                       exec '/Applications/aIwalk System Setup.app/Contents/MacOS/it'\\''s 100% «好»' 'ssh' '--session' 'ntk@ssh-otter.example.org'\n");
         // sh itself reads the words back exactly
         if std::path::Path::new("/bin/sh").exists() {
             let words = argv.iter().map(|a| super::sh_quote(a)).collect::<Vec<_>>().join(" ");
@@ -903,9 +919,18 @@ mod tests {
     fn the_windows_batch_file_doubles_percent_and_refuses_quotes() {
         let argv = super::ssh_argv(r"C:\Users\Jo Ann\AppData\Local\aIwalk (x86) & 100%\好\aiwalk-setup.exe", "ntk", "ssh-otter.example.org");
         assert_eq!(super::batch_file(&argv).unwrap(),
-            "@chcp 65001 >nul\r\n@echo off\r\n\"C:\\Users\\Jo Ann\\AppData\\Local\\aIwalk (x86) & 100%%\\好\\aiwalk-setup.exe\" \"ssh\" \"ntk@ssh-otter.example.org\"\r\n\
+            "@chcp 65001 >nul\r\n@echo off\r\n\"C:\\Users\\Jo Ann\\AppData\\Local\\aIwalk (x86) & 100%%\\好\\aiwalk-setup.exe\" \"ssh\" \"--session\" \"ntk@ssh-otter.example.org\"\r\n\
              if errorlevel 1 pause\r\n(goto) 2>nul & del \"%~f0\" & cd /d \"%~dp0..\" & rmdir \"%~dp0\"\r\n");
         assert!(super::batch_file(&super::ssh_argv(r#"C:\a"b.exe"#, "ntk", "x")).is_err());
+    }
+
+    #[test]
+    fn a_session_name_cannot_carry_a_command() {
+        assert_eq!(super::session_name("eddLai-2").unwrap(), "eddLai-2");
+        for bad in ["", ".x", "a b", "a;b", "a'b", "$(x)", "../x", &"x".repeat(33)] { assert!(super::session_name(bad).is_err(), "{bad}") }
+        let c = super::session_command("eddLai");
+        assert!(c.contains("exo-term attach eddLai;") && c.starts_with("sh -c '") && c.ends_with("-l'"));
+        assert_eq!(super::ssh_argv("/app", "ntk", "ssh-otter.example.org"), ["/app", "ssh", "--session", "ntk@ssh-otter.example.org"]);
         assert!(super::cmd_quote("a\nb").is_err());
         assert_eq!(super::cmd_quote("%PATH%").unwrap(), "\"%%PATH%%\"");
     }

@@ -212,7 +212,23 @@ pub fn setup_cli(vault: &std::path::Path, check: bool) -> i32 {
 /// Unix: becomes ssh, so signals and the exit code are ssh's. Windows: waits for ssh and returns its exit code.
 pub fn ssh_main(args: &[String]) -> i32 {
     let fail = |e: String| { eprintln!("aiwalk-setup ssh: {e}"); 2 };
+    // --session or --session=NAME, first: a lasting session on the machine (hosts/exo-term) instead of a shell that
+    // ends with this window. Without a name it is the person's own, by their GitHub login, so people sharing the
+    // machine's account do not land in each other's.
+    let (session, args) = match args.first().map(String::as_str) {
+        Some("--session") => (Some(None), &args[1..]),
+        Some(a) if a.starts_with("--session=") => (Some(Some(a["--session=".len()..].to_string())), &args[1..]),
+        _ => (None, args),
+    };
+    let session = match session {
+        None => None,
+        Some(name) => {
+            let name = name.or_else(|| crate::login::accounts().into_iter().find(|a| a.active).map(|a| a.login)).unwrap_or_else(|| "main".into());
+            match exo_core::session_name(&name) { Ok(n) => Some(n), Err(e) => return fail(e) }
+        }
+    };
     let (opts, dest, command) = match exo_core::ssh_args(args) { Ok(x) => x, Err(e) => return fail(e) };
+    if session.is_some() && !command.is_empty() { return fail("--session opens a shell; it takes no command to run".into()) }
     let (user, tunnel) = match exo_core::ssh_destination(&dest, crate::access::ZONE) { Ok(x) => x, Err(e) => return fail(e) };
     let user = user.unwrap_or_else(|| exo_core::default_account(std::fs::read_to_string("System/vault_rules.json").ok().as_deref(), &tunnel));
     if crate::access::token(&tunnel).is_err() {
@@ -231,8 +247,10 @@ pub fn ssh_main(args: &[String]) -> i32 {
     // not crate::cmd: on Windows that hides the console ssh needs. `--` ends ssh's options, so a remote command that
     // starts with "-" stays the command
     let mut c = std::process::Command::new("ssh");
-    c.args(via).args(["-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new"]).args(&opts)
-        .arg("--").arg(format!("{user}@{tunnel}")).args(&command);
+    c.args(via).args(["-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new"]).args(&opts);
+    if session.is_some() { c.arg("-t"); }
+    c.arg("--").arg(format!("{user}@{tunnel}")).args(&command);
+    if let Some(name) = &session { c.arg(exo_core::session_command(name)); }
     #[cfg(unix)]
     { use std::os::unix::process::CommandExt; let e = c.exec(); eprintln!("aiwalk-setup ssh: could not start ssh: {e}"); 127 }
     #[cfg(not(unix))]
@@ -428,8 +446,9 @@ pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Res
 // exo, exo-status.py and exo-desktop live in the login account's ~/.local/bin on each machine. The app carries the
 // copies from hosts/ it was built with, so the Machines page can tell a machine still running an older one.
 
-const HOST_TOOLS: [(&str, &str); 3] = [("exo-status.py", include_str!("../../hosts/exo-status.py")),
-    ("exo", include_str!("../../hosts/exo")), ("exo-desktop", include_str!("../../hosts/exo-desktop"))];
+const HOST_TOOLS: [(&str, &str); 4] = [("exo-status.py", include_str!("../../hosts/exo-status.py")),
+    ("exo", include_str!("../../hosts/exo")), ("exo-desktop", include_str!("../../hosts/exo-desktop")),
+    ("exo-term", include_str!("../../hosts/exo-term"))];
 const END: &str = "EXO_HOST_TOOL_END";   // heredoc delimiter; a test checks no tool contains it
 
 fn shipped() -> Vec<(&'static str, u32)> { HOST_TOOLS.iter().map(|&(n, t)| (n, exo_core::host_tool_version(t).unwrap_or(0))).collect() }

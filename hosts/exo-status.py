@@ -14,7 +14,7 @@ for 5 seconds, so a page polling every 15 seconds costs a few /proc reads and on
 import json, os, shutil, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "3"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 PORT = 9101
 CACHE_SECONDS = 5
 CLUSTER = None          # ssh alias of a cluster this machine reaches, from --cluster
@@ -105,7 +105,7 @@ def version_of(text):
 def tools(bindir=os.path.expanduser("~/.local/bin")):
     """{name: version} of the host tools installed in ~/.local/bin; None for one that is missing."""
     return {n: version_of(read(os.path.join(bindir, n))) if os.path.isfile(os.path.join(bindir, n)) else None
-            for n in ("exo-status.py", "exo", "exo-desktop")}
+            for n in ("exo-status.py", "exo", "exo-desktop", "exo-term")}
 
 
 _last = {"t": 0.0, "answer": None, "cpu": None}
@@ -215,7 +215,7 @@ def selftest():
     with tempfile.TemporaryDirectory() as t:
         open(os.path.join(t, "exo"), "w").write('VERSION = "2"\n')
         open(os.path.join(t, "exo-desktop"), "w").write("#!/bin/bash\n")
-        assert tools(t) == {"exo-status.py": None, "exo": 2, "exo-desktop": 0}, tools(t)
+        assert tools(t) == {"exo-status.py": None, "exo": 2, "exo-desktop": 0, "exo-term": None}, tools(t)
     here = os.path.dirname(os.path.abspath(__file__))
     assert tools(here)["exo-status.py"] == int(VERSION), "this file's own VERSION line parses"
     a = answer(); assert "tools" in a and {"cpu", "threads", "mem_gb", "cpu_pct", "gpus", "disk_free_gb"} <= set(a) and 0 <= a["cpu_pct"] <= 100
