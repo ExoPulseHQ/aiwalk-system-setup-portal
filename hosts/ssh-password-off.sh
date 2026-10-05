@@ -24,7 +24,10 @@ if [ "${1:-}" = --undo ]; then
 fi
 
 echo "sshd now: $(now 'passwordauthentication|kbdinteractiveauthentication|challengeresponseauthentication|trustedusercakeys')"
-sshd -T 2>/dev/null | grep -qiE '^trustedusercakeys +/.+' || { echo "This sshd trusts no certificate authority yet (run ssh-cert.sh first). Nothing changed."; exit 1; }
+# sshd's answer is kept, then searched: with pipefail, `sshd -T | grep -q` fails when grep finds its line and leaves
+# while sshd is still writing, which read a trusted authority as none
+T=$(sshd -T 2>/dev/null) || true
+grep -qiE '^trustedusercakeys +/.+' <<<"$T" || { echo "This sshd trusts no certificate authority yet (run ssh-cert.sh first). Nothing changed."; exit 1; }
 grep -qE '^\s*Include\s+/etc/ssh/sshd_config\.d/' /etc/ssh/sshd_config || { echo "/etc/ssh/sshd_config does not include sshd_config.d, so a file there would do nothing. Nothing changed."; exit 1; }
 
 # the keyboard-interactive switch changed its name in OpenSSH 8.7; an older sshd rejects the new word
@@ -34,7 +37,8 @@ if ! sshd -t 2>/dev/null; then write ChallengeResponseAuthentication; fi
 if ! sshd -t; then rm -f "$FILE"; echo "sshd rejected the file; it is removed. Nothing changed."; exit 1; fi
 # a Match block or an earlier file can still say yes: ask sshd what it would do for the accounts people use
 for u in $(awk -F: '$3 >= 1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd); do
-  if sshd -T -C "user=$u,host=localhost,addr=127.0.0.1" 2>/dev/null | grep -qi '^passwordauthentication yes'; then
+  T=$(sshd -T -C "user=$u,host=localhost,addr=127.0.0.1" 2>/dev/null) || true
+  if grep -qi '^passwordauthentication yes' <<<"$T"; then
     rm -f "$FILE"; echo "Passwords would still be accepted for $u (another setting wins); the file is removed. Nothing changed."; exit 1
   fi
 done
