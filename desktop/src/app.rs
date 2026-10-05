@@ -71,6 +71,18 @@ pub fn own_appimage() -> Option<PathBuf> {
     exo_core::own_appimage(var("APPIMAGE").as_deref(), var("APPDIR").as_deref(), &exe.to_string_lossy()).map(PathBuf::from)
 }
 
+/// The path git and ssh are told to find this app at: where it runs from, except on a Mac running it out of a
+/// temporary folder, where it is the copy in Applications. None there when no such copy exists.
+pub fn lasting_exe() -> Option<PathBuf> {
+    let exe = own_appimage().or_else(|| std::env::current_exe().ok())?;
+    exo_core::lasting_app_path(&exe.to_string_lossy(), &home().to_string_lossy(), |p| std::path::Path::new(p).is_file()).map(PathBuf::from)
+}
+
+/// Whether this copy runs from a place that will not be there later (see lasting_exe) with no copy in Applications:
+/// the page then asks for the app to be moved before anything is set up around it.
+#[tauri::command]
+fn misplaced() -> bool { lasting_exe().is_none() }
+
 /// A bundled tool next to the app, else the one on PATH.
 pub fn find_tool(bundled: &str, name: &str) -> String {
     let p = here().join(bundled);
@@ -471,7 +483,7 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
+    tauri::generate_handler![platform, start_page, misplaced, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
@@ -480,7 +492,7 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 /// starts a program (ssh, git, a terminal, a viewer), downloads a vault or updates the app.
 #[cfg(target_os = "android")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, terms_state, terms_accept, terms_everyone, team_access, machines::reachable, machines::machine_status, machines::forwards, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::find_machine, machines::my_machines, machines::publish_machines,
+    tauri::generate_handler![platform, start_page, misplaced, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, terms_state, terms_accept, terms_everyone, team_access, machines::reachable, machines::machine_status, machines::forwards, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::find_machine, machines::my_machines, machines::publish_machines,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              set_team, request_access, approve_request, decline_request]
 }
@@ -498,7 +510,7 @@ pub fn run() {
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
+    tauri::generate_handler![platform, start_page, misplaced, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
@@ -715,6 +727,7 @@ fn main() {
         eprintln!("aiwalk-setup: unknown command {word}\ncommands: vault, session, pty, ssh, deck, hook, guard, github token, git-credential (see `aiwalk-setup --can`); no argument opens the app\nssh [ssh options] [account@]<machine> [command]: ssh to a team machine through Cloudflare, no ~/.ssh/config needed");
         std::process::exit(2);
     }
+    std::thread::spawn(login::repair_git);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(handlers())

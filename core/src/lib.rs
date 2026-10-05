@@ -613,6 +613,17 @@ impl ResizeScanner {
     }
 }
 
+/// Where other programs should be told to find this app, given where it runs from now. macOS runs an app opened
+/// from Downloads or from the disk image out of a random read-only folder (App Translocation) that is gone when the
+/// app quits; a path like that written into git's or ssh's settings breaks them the moment the app closes (issue
+/// #4). There the copy in Applications is named instead when one exists, and None says there is no place to name
+/// yet: nothing is written, and the page asks for the app to be moved.
+pub fn lasting_app_path(exe: &str, home: &str, exists: impl Fn(&str) -> bool) -> Option<String> {
+    if !(exe.contains("/AppTranslocation/") || exe.starts_with("/Volumes/")) { return Some(exe.to_string()) }
+    let inside = exe.find(".app/").map(|i| &exe[exe[..i].rfind('/').map_or(0, |j| j + 1)..])?;   // "<Name>.app/Contents/MacOS/<bin>"
+    ["/Applications".to_string(), format!("{home}/Applications")].into_iter().map(|d| format!("{d}/{inside}")).find(|p| exists(p))
+}
+
 /// The AppImage this program was started from, when it really is one. APPIMAGE and APPDIR are inherited by every
 /// child of ANY AppImage (Obsidian is one, so the vault plugin's spawns carry Obsidian's), so they count only when
 /// this program's own file lies under APPDIR, the folder the AppImage is mounted at while it runs.
@@ -866,6 +877,19 @@ mod tests {
                                 m("crane", "ssh-c.example.org\n  ProxyCommand evil"), m("ibis\nHost *", "ssh-i.example.org")], "/app");
         assert_eq!(block.matches("Match originalhost").count(), 1, "{block}");
         assert!(block.contains("Match originalhost otter ") && !block.contains("evil") && !block.contains('*'));
+    }
+
+    #[test]
+    fn a_translocated_mac_app_names_its_copy_in_applications() {
+        let t = "/private/var/folders/ab/T/AppTranslocation/1F2E/d/aIwalk System Setup.app/Contents/MacOS/aiwalk-setup";
+        let installed = "/Applications/aIwalk System Setup.app/Contents/MacOS/aiwalk-setup";
+        assert_eq!(super::lasting_app_path(t, "/Users/jo", |p| p == installed).as_deref(), Some(installed));
+        assert_eq!(super::lasting_app_path(t, "/Users/jo", |p| p.starts_with("/Users/jo/Applications/")).as_deref(),
+                   Some("/Users/jo/Applications/aIwalk System Setup.app/Contents/MacOS/aiwalk-setup"));
+        assert_eq!(super::lasting_app_path(t, "/Users/jo", |_| false), None);
+        assert_eq!(super::lasting_app_path("/Volumes/aIwalk System Setup/aIwalk System Setup.app/Contents/MacOS/aiwalk-setup", "/Users/jo", |_| false), None);
+        assert_eq!(super::lasting_app_path(installed, "/Users/jo", |_| false).as_deref(), Some(installed));
+        assert_eq!(super::lasting_app_path("/usr/bin/aiwalk-setup", "/home/jo", |_| false).as_deref(), Some("/usr/bin/aiwalk-setup"));
     }
 
     #[test]

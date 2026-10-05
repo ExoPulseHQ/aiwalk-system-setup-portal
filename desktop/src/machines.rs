@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 /// This program as ssh sees it in a ProxyCommand. None when its path cannot be written there.
 fn app() -> Option<String> {
-    crate::own_appimage().or_else(|| std::env::current_exe().ok()).map(|e| e.to_string_lossy().into_owned()).filter(|e| !e.contains('"'))
+    crate::lasting_exe().map(|e| e.to_string_lossy().into_owned()).filter(|e| !e.contains('"'))
 }
 
 /// ssh options that reach `tunnel` through Cloudflare, carried by this app itself (`--ssh-proxy`, access.rs).
@@ -562,6 +562,7 @@ mod tests {
         let keep = ["aiwalkcorp.cloudflareaccess.com-jwks", "other.example.com-ab12-token", "cert.pem"];
         for f in ours.iter().chain(&keep) { std::fs::write(dir.join(f), "x").unwrap(); }
         std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);   // where Windows looks for the home folder
         super::forget_access();
         for f in ours { assert!(!dir.join(f).exists(), "{f} should be gone") }
         for f in keep { assert!(dir.join(f).exists(), "{f} should stay") }

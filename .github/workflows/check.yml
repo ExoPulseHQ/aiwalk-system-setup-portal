@@ -27,15 +27,17 @@ jobs:
       - name: The folder the bundle expects
         shell: bash
         run: mkdir -p desktop/tools
-      - name: Unit tests
-        run: cargo test --workspace
       - name: Build
         run: cargo build -p aiwalk-setup
       - name: Sessions that outlive their client (what the vault plugin uses in place of tmux)
         shell: bash
         run: python3 desktop/tests/session_check.py target/debug/aiwalk-setup${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Unit tests
+        if: always()
+        run: cargo test --workspace
       - name: The longer session and terminal checks
-        if: runner.os != 'Windows'
+        # bash 4 and FIFOs: macOS ships bash 3.2, where the script's name tables do not exist
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           bash desktop/tests/session_check.sh target/debug/aiwalk-setup

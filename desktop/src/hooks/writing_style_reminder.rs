@@ -332,6 +332,12 @@ fn is_new_doc(fp: &str, cwd: &str, root: Option<&str>) -> bool {
 /// forms (env prefixes, sudo, subshells). Unlike the Python it reads quoted names, skips option values and input
 /// redirections, and takes a lone `&` as the end of a command.
 fn bash_targets(cmd: &str, cwd: &str) -> Vec<String> {
+    // always with forward slashes: on Windows joining a folder and a name gives a backslash, and everything that
+    // judges these paths afterwards (which folder, which kind of file) reads them the way the command wrote them
+    bash_targets_os(cmd, cwd).into_iter().map(|p| p.replace('\\', "/")).collect()
+}
+
+fn bash_targets_os(cmd: &str, cwd: &str) -> Vec<String> {
     // a remote command creates files on the other machine; its heredoc is not ours to gate
     if re(r"^\s*(?:\w+=\S+\s+)*ssh\s").is_match(cmd).unwrap_or(false) { return vec![] }
     let mut out: Vec<String> = re(r#"open\(\s*['"]([^'"]+)['"]\s*,\s*['"][wax]"#).captures_iter(cmd).flatten().map(|c| g(&c, 1).to_string()).collect();

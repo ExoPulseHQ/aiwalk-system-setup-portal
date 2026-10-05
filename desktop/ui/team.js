@@ -1316,6 +1316,12 @@ async function loadTeam(viewAs) {
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
   teamTodo.clear();
   const parts = [el("h1", null, "Team access"), badge(s), obsidianNotice()];
+  // a Mac running the app from Downloads or the disk image: macOS runs it out of a temporary folder, and anything
+  // told where the app is (git, ssh, the vault plugin) cannot find it once it quits
+  if (await invoke("misplaced").catch(() => false)) {
+    const w = el("p", "warn"); w.append(icon("circle-alert"), "Move aIwalk System Setup into the Applications folder and open it from there. Opened from Downloads or from the disk image, macOS runs it from a temporary place, and git and the vault plugin cannot find it again once it closes.");
+    parts.splice(1, 0, w);
+  }
   const org = (s.vaults.find(v => v.access) || {}).access;
   // owners get a page of their own for the organisation; its entry in the sidebar carries the count of open requests
   const peopleNav = document.querySelector('nav [data-page="people"]');

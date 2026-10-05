@@ -69,14 +69,26 @@ pub fn tell_gh(token: &str) {
 /// Makes this program the one git asks for a github.com password, in the user's own git config. The empty first
 /// value drops any helper set before it (gh's, the system's), as `gh auth setup-git` does.
 fn setup_git() {
+    // nowhere lasting to point git at (a Mac running the app from Downloads or the disk image): nothing is written
+    // rather than a path that is gone when the app quits; repair_git writes it at the first start from Applications
+    if crate::lasting_exe().is_none() { return }
     let key = "credential.https://github.com.helper";
     let _ = crate::cmd("git").args(["config", "--global", "--replace-all", key, ""]).output();
     let _ = crate::cmd("git").args(["config", "--global", "--add", key, &helper()]).output();
 }
 
+/// At every start with someone signed in: when git's settings do not name this app as it would be named now (an
+/// earlier run from a temporary folder, the app moved or reinstalled elsewhere), they are written again.
+pub fn repair_git() {
+    if kept().accounts.is_empty() || crate::lasting_exe().is_none() { return }
+    let now = crate::cmd("git").args(["config", "--global", "--get-all", "credential.https://github.com.helper"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    if now.lines().last().map(str::trim) != Some(helper().as_str()) { setup_git() }
+}
+
 /// This program as a git credential helper, the way git config writes one.
 pub fn helper() -> String {
-    let exe = crate::own_appimage().or_else(|| std::env::current_exe().ok()).unwrap_or_default();
+    let exe = crate::lasting_exe().or_else(|| std::env::current_exe().ok()).unwrap_or_default();
     format!("!'{}' git-credential", exe.to_string_lossy().replace('\\', "/"))
 }
 
