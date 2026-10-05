@@ -16,13 +16,24 @@ pub const FROZEN: &str = ".exo-frozen";
 
 /// git that signs in through this app, never prompts, and reads git@github.com remotes over HTTPS (no SSH key needed to read).
 /// `extra` adds config, e.g. the tests' protocol.file.allow.
+/// The last 400 bytes of `s`, starting on a character: a cut inside a three-byte character panics, which ended the
+/// download's reader with git still running and the page waiting forever (issue #2).
+fn last_400(s: &str) -> &str {
+    let mut cut = s.len().saturating_sub(400);
+    while !s.is_char_boundary(cut) { cut += 1 }
+    &s[cut..]
+}
+
 fn git(dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> Command {
     let mut c = crate::cmd("git");
     let helper = crate::login::helper();
     let mut cfg = vec![("credential.helper", ""), ("credential.helper", helper.as_str()),
                        ("url.https://github.com/.insteadOf", "git@github.com:")];
     cfg.extend_from_slice(extra);
-    c.current_dir(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").env("GIT_CONFIG_COUNT", cfg.len().to_string());
+    // git answers in English whatever the computer's language: its progress and its refusals are read by their words
+    // ("Receiving objects:", "local changes", "diverg"), which a Chinese locale prints in Chinese (issue #2)
+    c.current_dir(dir).args(args).env("LC_ALL", "C.UTF-8").env("LANGUAGE", "en")
+        .env("GIT_TERMINAL_PROMPT", "0").env("GIT_CONFIG_COUNT", cfg.len().to_string());
     for (i, (k, v)) in cfg.iter().enumerate() {
         c.env(format!("GIT_CONFIG_KEY_{i}"), k).env(format!("GIT_CONFIG_VALUE_{i}"), v);
     }
@@ -158,7 +169,7 @@ pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress)
     while let Ok(n) = err.read(&mut buf) {
         if n == 0 { break }
         tail.push_str(&String::from_utf8_lossy(&buf[..n]));
-        if tail.len() > 400 { tail = tail[tail.len() - 400..].to_string() }
+        tail = last_400(&tail).to_string();
         if let Some(pct) = tail.rsplit("Receiving objects:").next().and_then(|t| t.trim().split('%').next()?.trim().parse::<f32>().ok()) {
             progress(pct / 200.0, &format!("Downloading the shared notes ({pct:.0}%)"));
         }
@@ -361,6 +372,13 @@ pub fn obsidian_install() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_tail_is_cut_on_a_character() {
+        let s = "接收物件中".repeat(100);   // 1500 bytes of three-byte characters: 1100 is not a boundary
+        assert_eq!(super::last_400(&s).len(), 399);   // 133 whole characters, not 400 bytes with a broken first one
+        assert_eq!(super::last_400("short"), "short");
+    }
+
     #[test]
     fn linking_finds_the_copy_inside_the_picked_folder() {
         let parent = std::env::temp_dir().join(format!("vault-link-{}", std::process::id()));
