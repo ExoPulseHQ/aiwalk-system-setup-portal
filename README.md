@@ -37,3 +37,33 @@ one, check who changed it last: `git log -p hosts/`.
 - `core/`: logic with tests, no UI (`cargo test -p exo-core`).
 - `hosts/`: what runs on the lab machines: status page, VNC desktops, first setup, lockdown.
 - `aiwalk-setup`, `android/`, `windows/`, `lib/`: the earlier Python app and its phone and VM parts.
+
+## Android build (first version)
+
+The phone app is the same crate built as a library: `desktop/src/app.rs` holds the app, `main.rs` (computers) and
+`lib.rs` (Android, `run()`) both include it. It signs in with GitHub and Cloudflare, shows the Machines page (status,
+hardware numbers, who can connect, the ssh command to copy) and the owners' HTTPS tools. No vault downloads, terminals,
+desktops or updates. The Android project is `desktop/gen/android` (made by `cargo tauri android init`, then edited:
+backups off, the app's icon). Sign-ins are files in the app's private folder (see `secrets.rs`).
+
+One-time setup (Android SDK command-line tools, platform 36/37, build-tools 36, NDK 29, JDK 21, tauri-cli 2.12):
+
+```
+export ANDROID_HOME=/media/eddlai/DATA/android-sdk
+export NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865
+export JAVA_HOME=/media/eddlai/DATA/jdk/jdk-21.0.12.1+1
+export CARGO_TARGET_DIR=/media/eddlai/DATA/tmp-target-android
+export PATH=$ANDROID_HOME/cargo-tools/bin:$ANDROID_HOME/platform-tools:$JAVA_HOME/bin:$PATH
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+cargo install tauri-cli --version "^2" --locked --root $ANDROID_HOME/cargo-tools
+```
+
+Build a debug APK (64-bit ARM phones) from `desktop/`, with `desktop/tools/` present (`mkdir -p desktop/tools`):
+
+```
+cargo tauri android build --debug --apk --target aarch64
+# desktop/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+adb install -r <that file>
+```
+
+The browser preview shows the phone page with `?os=android`; it refuses every command the phone build does not have.

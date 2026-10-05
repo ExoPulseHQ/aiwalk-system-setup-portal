@@ -1,5 +1,7 @@
 dist/
 __pycache__/
 target/
-desktop/gen/
+# gen/schemas is rebuilt by every build; gen/android is the phone project (`cargo tauri android init`, then edited)
+desktop/gen/*
+!desktop/gen/android/
 desktop/tools/

@@ -197,7 +197,7 @@ pub fn ssh_proxy(host: &str) -> Result<(), String> {
 // ---------------------------------------------------------------- c. a short-lived SSH certificate
 
 /// Writes `data` readable by the owner only, whatever mode the file had before.
-fn write_private(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+pub(crate) fn write_private(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create(true).truncate(true);
     #[cfg(unix)]

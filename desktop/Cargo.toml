@@ -4,6 +4,11 @@ version = "0.3.9"
 edition = "2021"
 description = "aIwalk System Setup, Tauri edition (desktop)"
 
+# the Android app is this crate as a library (src/lib.rs, empty on a computer); computers run src/main.rs
+[lib]
+name = "aiwalk_setup_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -18,10 +23,16 @@ ureq = "3"
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 ring = "0.17"
 base64 = "0.22"
-portable-pty = "0.9"
 age = { version = "0.11", features = ["armor"] }
 crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20"] }
 fancy-regex = "0.19.2"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+portable-pty = "0.9"
+
+# Android opens web addresses (the two sign-ins) in the phone's browser through this plugin
+[target.'cfg(target_os = "android")'.dependencies]
+tauri-plugin-opener = "2"
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
