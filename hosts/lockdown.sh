@@ -17,6 +17,8 @@ VNC_LAUNCHER=/usr/local/bin/gpu-free-vnc   # starts the boot-time desktops; its 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
 id "$VNC_USER" >/dev/null 2>&1 || { echo "There is no account called $VNC_USER here: sudo bash lockdown.sh <account>. Nothing was changed."; exit 1; }
 # a machine without the boot-time VNC desktops (a laptop that shares its screen another way) has only the firewall to close
+# desktops that are not running now are not started: a capture PC whose desktops are off stays that way
+VNC_RUNNING=no; systemctl is-active --quiet "$VNC_SERVICE" 2>/dev/null && VNC_RUNNING=yes
 HAS_VNC=no; { [ -f "/etc/systemd/system/$VNC_SERVICE" ] || [ -f "/lib/systemd/system/$VNC_SERVICE" ] || [ -f "$VNC_LAUNCHER" ]; } && HAS_VNC=yes
 systemctl is-active --quiet cloudflared || { echo "cloudflared is not running. After this the tunnel is the way in, so nothing was changed."; exit 1; }
 SELF=$(hostname -I)
@@ -33,10 +35,13 @@ echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered 
 echo
 echo "== Plan"
 echo " 1. The tunnel token in the cloudflared service file becomes readable by root only."
-if [ $HAS_VNC = yes ]; then
+if [ $HAS_VNC = yes ] && [ $VNC_RUNNING = yes ]; then
 echo " 2. The boot-time desktops :1-:5 are started by exo-desktop: Unix socket only, no TCP port, no VNC password"
 echo "    (a systemd override for $VNC_SERVICE; the original files stay). They restart once, so anyone on them"
 echo "    is disconnected; afterwards they open from the portal's Open desktop."
+elif [ $HAS_VNC = yes ]; then
+echo " 2. $VNC_SERVICE is not running, and stays stopped. It gets the override all the same, so whenever it is"
+echo "    started its desktops are Unix sockets only: no TCP port, no VNC password. Nobody is disconnected."
 else
 echo " 2. This machine has no boot-time VNC desktops ($VNC_SERVICE): nothing to change there."
 fi
@@ -83,8 +88,8 @@ ufw --force enable >/dev/null
 # --force answers ufw's own question; piping "yes" into it ends with SIGPIPE, which pipefail turned into an abort
 for n in $(open_rules | sort -rn); do ufw --force delete "$n" >/dev/null; done
 
-if [ $HAS_VNC = yes ]; then
 systemctl daemon-reload
+if [ $HAS_VNC = yes ] && [ $VNC_RUNNING = yes ]; then
 systemctl stop "$VNC_SERVICE" || true
 for i in 1 2 3 4 5 6 7 8; do sudo -u "$VNC_USER" vncserver -kill ":$i" >/dev/null 2>&1 || true; done   # the old TCP ones
 systemctl start "$VNC_SERVICE" || echo "WARNING: $VNC_SERVICE did not start; open desktops from the portal instead (New desktop)"
