@@ -357,7 +357,7 @@ function machinesSection(machines, org, user, guest) {
   // owners: the people let in by email (interns), read once for all machines
   const guests = org && (org.people[user] || {}).grants === null ? machineGuests(org.org, hosts.map(m => m.host)) : null;
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
-  const list = el("div", "list"), pills = {}, meters = {}, specs = {}, signIns = {};
+  const list = el("div", "list"), pills = {}, meters = {}, specs = {}, signIns = {}, blocks = {};
   // ssh per machine: the heading's button (only where this computer can start a terminal), the copyable line in the
   // opened card, the account, and why the last button press failed
   const sshBtns = {}, sshRows = {}, sshAcct = {}, sshFail = {};
@@ -417,7 +417,18 @@ function machinesSection(machines, org, user, guest) {
     row.onclick = fold;
     row.onkeydown = e => { if (e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); fold(); } };
     list.append(row, detail);
+    blocks[m.host] = [row, detail];
   });
+  // Machines this person can use come first, then the ones that need something from them, then the rest; within a
+  // group the vault's own order stays. Only when the order really changes, and never under someone typing or picking.
+  const RANK = { up: 0, "sign-in": 1, checking: 1, down: 2, "no-tunnel": 2, refused: 3, none: 3 };
+  const sortByReach = () => {
+    const now = [...list.children].filter(c => c.classList.contains("machine")).map(c => Object.keys(blocks).find(h => blocks[h][0] === c));
+    const want = hosts.map(m => m.host).filter((h, i, a) => a.indexOf(h) === i && blocks[h])
+      .map((h, i) => [h, RANK[look[h]] ?? 2, i]).sort((a, b) => a[1] - b[1] || a[2] - b[2]).map(x => x[0]);
+    if (want.join() === now.join() || (list.contains(document.activeElement) && /^(SELECT|INPUT)$/.test(document.activeElement.tagName))) return;
+    want.forEach(h => list.append(...blocks[h]));
+  };
   // a state chip: a glyph when all is as it should be, words where it deviates
   const LOOK = { up: ["s-ok", "check", "Can connect"], down: ["p0 s-bad", "x", "Can't connect"], "no-tunnel": ["p0 s-bad", "x", "Tunnel not set up"],
                  "sign-in": ["s-warn", "circle-alert", guest ? "Not signed in" : "Finish sign-in on Team access"], none: ["p0", "lock", "No access"],
@@ -511,6 +522,7 @@ function machinesSection(machines, org, user, guest) {
     lastState = state;
     // for someone who is not a member, a machine with no sign-in after signing in is one that does not let them in
     hosts.forEach(m => setLook(m.host, ruledOut(org, way(m).host, machines, user) || (outsider(org, user) && state[way(m).host] === "sign-in") ? "none" : state[way(m).host]));
+    sortByReach();
     paintOpening();
     await showHelp(state);
   };
