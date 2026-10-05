@@ -434,38 +434,38 @@ dialog .buttons { gap: var(--s2); }
   --fx-engr: 0 1px 0 rgb(255 255 255 / .95), 0 -1px 0 color-mix(in srgb, currentColor 45%, rgb(0 0 0 / .15));
   --fx-engr-mark: drop-shadow(0 1px 0 rgb(255 255 255 / .95)) drop-shadow(0 -1px 0 color-mix(in srgb, currentColor 30%, rgb(0 0 0 / .10)));
   /* ink: every stop is at least 4.5:1 on its own surface, though these sizes only need 3:1 */
-  --fx-ink: linear-gradient(180deg, #8A52D6 15%, #7A42C8 55%, #6236AD 95%);
-  --fx-ink-amber: linear-gradient(180deg, #A0600B 15%, #8A4F07 95%);
-  --fx-ink-red: linear-gradient(180deg, #C2402B 15%, #9E2E1C 95%);
-  --fx-ink-name: linear-gradient(180deg, #2C2240 15%, #1E1A29 95%);
-  --fx-glow: none;
+  --fx-ink: linear-gradient(180deg, #A06BEA 8%, #7A42C8 52%, #4E2795 96%);
+  --fx-ink-amber: linear-gradient(180deg, #C77A12 8%, #9A5A08 52%, #74420A 96%);
+  --fx-ink-red: linear-gradient(180deg, #DB5340 8%, #B5361F 52%, #8A2616 96%);
+  --fx-ink-name: linear-gradient(180deg, #1E1A29 30%, #4A2F86 96%);
+  --fx-glow: drop-shadow(0 2px 5px rgb(122 66 200 / .30));
 }
 :root, :root[data-theme="dark"] {
   --fx-depth-rail: 0 -1px 0 rgb(255 255 255 / .10), 0 2px 5px rgb(0 0 0 / .45);
   --fx-engr-rail: 0 -1px 0 rgb(255 255 255 / .16), 0 1px 0 rgb(0 0 0 / .9);
-  --fx-ink-rail: linear-gradient(180deg, #D9C4F8 15%, #B48CF0 55%, #9A6AE3 95%);
+  --fx-ink-rail: linear-gradient(180deg, #FBF7FF 6%, #C9ABF7 48%, #9A6AE3 96%);
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
   --fx-depth: 0 -1px 0 rgb(255 255 255 / .09), 0 2px 6px rgb(0 0 0 / .40);
   --fx-depth-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .09)) drop-shadow(0 2px 4px rgb(0 0 0 / .40));
   --fx-engr: 0 -1px 0 rgb(255 255 255 / .13), 0 1px 0 rgb(0 0 0 / .85);
   --fx-engr-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .13)) drop-shadow(0 1px 0 rgb(0 0 0 / .85));
-  --fx-ink: linear-gradient(180deg, #CDB0F6 15%, #A97CEB 55%, #9D6CE4 95%);
-  --fx-ink-amber: linear-gradient(180deg, #F0BC6A 15%, #E0A040 55%, #D08E2C 95%);
-  --fx-ink-red: linear-gradient(180deg, #F29683 15%, #E8735F 55%, #DB5F4A 95%);
-  --fx-ink-name: linear-gradient(180deg, #F6F2FB 15%, #DCD3EA 95%);
-  --fx-glow: drop-shadow(0 0 4px rgb(169 124 235 / .22));
+  --fx-ink: linear-gradient(180deg, #F1E6FF 6%, #B892F2 48%, #9764E6 96%);
+  --fx-ink-amber: linear-gradient(180deg, #FFE2B0 6%, #EBAA48 48%, #D08E2C 96%);
+  --fx-ink-red: linear-gradient(180deg, #FFC9BD 6%, #EC7B66 48%, #DB5F4A 96%);
+  --fx-ink-name: linear-gradient(180deg, #FFFFFF 20%, #D5C2F4 96%);
+  --fx-glow: drop-shadow(0 0 5px rgb(169 124 235 / .50)) drop-shadow(0 0 16px rgb(140 84 217 / .32));
 } }
 :root[data-theme="dark"] {
   --fx-depth: 0 -1px 0 rgb(255 255 255 / .09), 0 2px 6px rgb(0 0 0 / .40);
   --fx-depth-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .09)) drop-shadow(0 2px 4px rgb(0 0 0 / .40));
   --fx-engr: 0 -1px 0 rgb(255 255 255 / .13), 0 1px 0 rgb(0 0 0 / .85);
   --fx-engr-mark: drop-shadow(0 -1px 0 rgb(255 255 255 / .13)) drop-shadow(0 1px 0 rgb(0 0 0 / .85));
-  --fx-ink: linear-gradient(180deg, #CDB0F6 15%, #A97CEB 55%, #9D6CE4 95%);
-  --fx-ink-amber: linear-gradient(180deg, #F0BC6A 15%, #E0A040 55%, #D08E2C 95%);
-  --fx-ink-red: linear-gradient(180deg, #F29683 15%, #E8735F 55%, #DB5F4A 95%);
-  --fx-ink-name: linear-gradient(180deg, #F6F2FB 15%, #DCD3EA 95%);
-  --fx-glow: drop-shadow(0 0 4px rgb(169 124 235 / .22));
+  --fx-ink: linear-gradient(180deg, #F1E6FF 6%, #B892F2 48%, #9764E6 96%);
+  --fx-ink-amber: linear-gradient(180deg, #FFE2B0 6%, #EBAA48 48%, #D08E2C 96%);
+  --fx-ink-red: linear-gradient(180deg, #FFC9BD 6%, #EC7B66 48%, #DB5F4A 96%);
+  --fx-ink-name: linear-gradient(180deg, #FFFFFF 20%, #D5C2F4 96%);
+  --fx-glow: drop-shadow(0 0 5px rgb(169 124 235 / .50)) drop-shadow(0 0 16px rgb(140 84 217 / .32));
 }
 
 /* depth: the words sit a little above the surface */
@@ -480,13 +480,14 @@ dialog .buttons { gap: var(--s2); }
 
 /* ink: a narrow same-hue fill. Healthy figures and the wordmark in brand purple, deviations in their own hue, quiet
    figures stay flat; the glow (dark only) through filter, since a text-shadow would show through the clear fill */
-:root[data-fx="ink"] :is(nav .app .nx-word, .nx-it:not(.calm, .warn, .bad) > .nx-num, .nx-it.warn > .nx-num, .nx-it.bad > .nx-num, .badge .who .name:not(.nx-chip)) {
+:root[data-fx="ink"] :is(nav .app .nx-word, .nx-it > .nx-num, .badge .who .name:not(.nx-chip)) {
   -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 :root[data-fx="ink"] nav .app .nx-word { background-image: var(--fx-ink-rail); filter: var(--fx-glow); }
 :root[data-fx="ink"] .nx-it:not(.calm, .warn, .bad) > .nx-num { background-image: var(--fx-ink); filter: var(--fx-glow); }
-:root[data-fx="ink"] .nx-it.warn > .nx-num { background-image: var(--fx-ink-amber); }
+:root[data-fx="ink"] .nx-it.calm > .nx-num { background-image: var(--fx-ink-name); }
+:root[data-fx="ink"] .nx-it.warn > .nx-num { background-image: var(--fx-ink-amber); filter: var(--fx-glow-amber, none); }
 :root[data-fx="ink"] .nx-it.bad > .nx-num { background-image: var(--fx-ink-red); }
-:root[data-fx="ink"] .badge .who .name:not(.nx-chip) { background-image: var(--fx-ink-name); }
+:root[data-fx="ink"] .badge .who .name:not(.nx-chip) { background-image: var(--fx-ink-name); filter: var(--fx-glow-name, none); }
 :root[data-fx="ink"] .nx-strip[data-tone="ok"] > .nx-mark > .nx-i { filter: var(--fx-glow); }
 
 /* the same language on two surfaces that are objects: the selected sidebar item and the page's one primary button get

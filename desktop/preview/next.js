@@ -10,7 +10,7 @@
   // earlier serif and grotesque candidates, kept for comparison (next.css)
   document.documentElement.dataset.display = /^(a|b|c|plex)$/.test(q.get("display")) ? q.get("display") : "plex";
   // how those same words are rendered: none, depth, ink or engraved (next.css, "rendering")
-  document.documentElement.dataset.fx = /^(none|depth|ink|engraved)$/.test(q.get("fx")) ? q.get("fx") : "engraved";
+  document.documentElement.dataset.fx = /^(none|depth|ink|engraved)$/.test(q.get("fx")) ? q.get("fx") : "ink";
   const mark0 = document.querySelector("nav .app");
   if (mark0 && mark0.firstChild && mark0.firstChild.nodeType === 3 && mark0.firstChild.textContent === "aIwalk") {
     // one inline box for the word, so a gradient or shadow covers the word and not the line under it
