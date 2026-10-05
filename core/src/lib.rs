@@ -194,6 +194,9 @@ pub struct Machine {
     pub host: String,
     pub repo: String,
     pub account: String,
+    /// The account people sign in to the machine as (the host's own `account` in the rules, else ntk). Not `account`
+    /// above, which is the repo's name for itself on that machine.
+    pub user: String,
     pub ready: bool,
     /// What the machine is, for people who do not know it by alias.
     pub note: String,
@@ -227,8 +230,9 @@ pub fn machines(rules_json: &str) -> Vec<Machine> {
         let personal = h["personal"].as_bool().unwrap_or(false);
         let tunnel = h["tunnel"].as_str().filter(|t| !t.is_empty()).map(String::from);
         let cert = h["cert"].as_bool().unwrap_or(false);
+        let user = h["account"].as_str().filter(|a| !a.is_empty()).unwrap_or("ntk").to_string();
         h["repos"].as_object().into_iter().flatten().map(move |(repo, acct)| Machine {
-            host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), ready,
+            host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), user: user.clone(), ready,
             note: note.clone(), sometimes, via: via.clone(), personal, tunnel: tunnel.clone(), cert,
             teams: by_repo[repo].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect(),
         })
@@ -703,8 +707,8 @@ pub fn ssh_destination(dest: &str, zone: &str) -> Result<(Option<String>, String
 pub fn default_account(rules_json: Option<&str>, tunnel: &str) -> String {
     let name = tunnel.strip_prefix("ssh-").and_then(|t| t.split('.').next()).unwrap_or(tunnel);
     machines(rules_json.unwrap_or_default()).into_iter()
-        .find(|m| (m.host == name || m.tunnel.as_deref() == Some(tunnel)) && account_ok(&m.account))
-        .map_or_else(|| "ntk".into(), |m| m.account)
+        .find(|m| (m.host == name || m.tunnel.as_deref() == Some(tunnel)) && account_ok(&m.user))
+        .map_or_else(|| "ntk".into(), |m| m.user)
 }
 
 /// `aiwalk-setup ssh`'s arguments as ssh reads them: (options before the destination, the destination, the remote
@@ -822,7 +826,7 @@ mod tests {
 
     #[test]
     fn the_default_account_is_the_vaults_or_ntk() {
-        let rules = r#"{"machines": {"hosts": [{"host": "otter", "repos": {"Otter": "kuo-x"}, "tunnel": "ssh-otter.example.org"},
+        let rules = r#"{"machines": {"hosts": [{"host": "otter", "repos": {"Otter": "otter-repo"}, "account": "kuo-x", "tunnel": "ssh-otter.example.org"},
                                                {"host": "heron", "repos": {"Heron": ""}}]}}"#;
         assert_eq!(super::default_account(Some(rules), "ssh-otter.example.org"), "kuo-x");
         assert_eq!(super::default_account(Some(rules), "ssh-heron.example.org"), "ntk");

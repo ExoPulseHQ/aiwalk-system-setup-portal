@@ -191,7 +191,7 @@ pub fn open_ssh(tunnel: String, user: String) -> Result<String, String> {
     let (_, tunnel) = exo_core::ssh_destination(&format!("{user}@{tunnel}"), crate::access::ZONE)?;
     let app = app().ok_or("This app's own path cannot be used by ssh")?;
     launch(&exo_core::ssh_argv(&app, &user, &tunnel))?;
-    Ok(format!("A terminal opened: ssh {user}@{}", tunnel.trim_start_matches("ssh-").split('.').next().unwrap_or(&tunnel)))
+    Ok(format!("A terminal opened on {}", tunnel.trim_start_matches("ssh-").split('.').next().unwrap_or(&tunnel)))
 }
 
 /// Linux: the first terminal program found (exo_core::linux_terminals), the command as separate arguments.

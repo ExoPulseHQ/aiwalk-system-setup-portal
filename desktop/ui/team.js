@@ -381,7 +381,7 @@ function machinesSection(machines, org, user, guest) {
     // a machine with its own tunnel can be reached by ssh: members as the account the vault's rules name (else ntk),
     // a guest as the account its desktops run as, once known
     if (m.tunnel && !m.via) {
-      sshAcct[m.host] = m.account || (guest ? null : "ntk");
+      sshAcct[m.host] = m.user || (guest ? null : "ntk");
       sshRows[m.host] = el("div", "spec hw"); sshRows[m.host].hidden = true;
       if (canOpenTerminal()) {
         const b = sshBtns[m.host] = iconButton("square-terminal", "", "small ghost", true); b.hidden = true;
@@ -436,15 +436,16 @@ function machinesSection(machines, org, user, guest) {
     r.hidden = !reach;
     if (b) {
       b.hidden = !reach || !acct;
-      if (acct) { const words = `Open a terminal on ${host} as ${acct}`; b.setAttribute("aria-label", words); b.dataset.tip = words; }
+      if (acct) { const words = `Open a terminal on ${host}`; b.setAttribute("aria-label", words); b.dataset.tip = words; }
     }
     if (!reach) return;
     const line = `${sshAliases ? "ssh" : "aiwalk-setup ssh"} ${acct || "ACCOUNT"}@${host}`;
-    const k = el("span", "k"), v = el("div"), copy = iconButton("copy", `Copy ${line}`, "small ghost", true);
+    const k = el("span", "k"), v = el("div"), copy = iconButton("copy", `Copy the ssh command for ${host}`, "small ghost", true);
     k.append(icon("square-terminal"), el("span", "sr", "SSH")); k.dataset.tip = "SSH";
     copy.style.marginLeft = "8px";
-    copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(line).then(() => toast(`Copied ${line}`), () => toast(line)); };
-    v.append(el("span", "cmd", line), copy);
+    copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(line).then(() => toast(`Copied the ssh command for ${host}`), () => toast(line)); };
+    // the account's name is not put on the page (a shared screen, a screenshot); it travels only in what is copied
+    v.append(el("span", "sub", "ssh command"), copy);
     if (!acct) v.append(el("span", "sub", " Replace ACCOUNT with the account the owner named."));
     r.replaceChildren(k, v);
     // the failure sentence spans the row above the line, so the SSH mark stays level with the command
@@ -577,7 +578,7 @@ function machinesSection(machines, org, user, guest) {
       const b = iconButton("wrench", "Update host tools", "small ghost", true);
       b.onclick = async e => {
         e.stopPropagation(); msg.textContent = "";
-        const account = m.account || "ntk";
+        const account = m.user || "ntk";
         if (await ask(`Update host tools on ${m.host}?`, `The app copies exo, exo-status.py and exo-desktop into ~/.local/bin of ${account} and restarts the status page. Desktops and running work are left alone.`,
           [["cancel", "Cancel"], ["ok", "Update host tools", true]]) !== "ok") return;
         try { toast(await working(b, "Updating", () => invoke("update_host_tools", { tunnel: m.tunnel, user: account }))); status(); }
