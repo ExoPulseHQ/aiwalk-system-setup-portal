@@ -186,7 +186,10 @@ pub fn repo_grants(people: &mut BTreeMap<String, Person>, response_json: &str, v
     }
 }
 
-#[derive(Debug, Serialize, serde::Deserialize, PartialEq)]
+/// Fields left out when the page sends one back take their defaults, so a guest's machine (only host, tunnel and
+/// cert known) is still a machine.
+#[derive(Debug, Default, Serialize, serde::Deserialize, PartialEq)]
+#[serde(default)]
 pub struct Machine {
     pub host: String,
     pub repo: String,
@@ -646,8 +649,75 @@ pub fn policy_update(policy: &Value, include: Vec<Value>) -> Value {
     body
 }
 
+// ---------------------------------------------------------------- guests
+// A guest reaches no vault that lists machines, so the app cannot tell them which machines exist: they type the
+// name an owner gave them and the app keeps it on this computer.
+
+/// A machine's name as a guest types it: lower-case letters, digits and hyphens, 1 to 32 of them.
+pub fn machine_name(name: &str) -> Result<String, String> {
+    let n = name.trim();
+    let ok = (1..=32).contains(&n.len()) && n.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-');
+    if ok { Ok(n.to_string()) } else { Err("A machine's name is lower-case letters, digits and hyphens, 1 to 32 of them.".into()) }
+}
+
+/// The SSH hostname a machine's tunnel has: ssh-<name> in the team's zone (`zone` starts with a dot).
+pub fn machine_tunnel(name: &str, zone: &str) -> Result<String, String> {
+    Ok(format!("ssh-{}{zone}", machine_name(name)?))
+}
+
+/// The page where the signed-in account accepts its pending invitation to `repo` ("owner/name"), from GitHub's
+/// user/repository_invitations; None when there is none (or it has expired).
+pub fn pending_invitation(invitations: &[Value], repo: &str) -> Option<String> {
+    invitations.iter().find(|i| i["repository"]["full_name"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo)) && i["expired"] != true)
+        .map(|i| i["html_url"].as_str().map(String::from).unwrap_or_else(|| format!("https://github.com/{repo}/invitations")))
+}
+
+/// A guest: signed in, but no vault this account can read lists a machine (`machines` is each vault's count; 0 for a
+/// vault it cannot read). Such a person reaches only the machines an owner let them in to by email.
+pub fn is_guest(signed_in: bool, machines: &[usize]) -> bool {
+    signed_in && machines.iter().all(|&n| n == 0)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guests_name_machines_and_get_their_tunnel() {
+        assert_eq!(super::machine_name(" otter-2 ").unwrap(), "otter-2");
+        assert_eq!(super::machine_name(&"a".repeat(32)).unwrap().len(), 32);
+        for bad in ["", "Otter", "otter.x", "ot ter", "otter_2", "ssh-otter.aiwalkcorp.com", &"a".repeat(33), "ötter"] {
+            assert!(super::machine_name(bad).is_err(), "{bad} should be refused");
+        }
+        assert_eq!(super::machine_tunnel("otter", ".example.org").unwrap(), "ssh-otter.example.org");
+        assert!(super::machine_tunnel("../x", ".example.org").is_err());
+    }
+
+    #[test]
+    fn a_pending_invitation_names_its_page() {
+        let inv: Vec<serde_json::Value> = serde_json::from_str(r#"[{"id": 1, "expired": false, "html_url": "https://github.com/Other/x/invitations", "repository": {"full_name": "Other/x"}},
+            {"id": 2, "expired": false, "html_url": "https://github.com/ExampleCorp/access-requests/invitations", "repository": {"full_name": "ExampleCorp/access-requests"}}]"#).unwrap();
+        assert_eq!(super::pending_invitation(&inv, "examplecorp/access-requests").as_deref(), Some("https://github.com/ExampleCorp/access-requests/invitations"));
+        assert_eq!(super::pending_invitation(&inv, "ExampleCorp/docs"), None);
+        let mut gone = inv.clone(); gone[1]["expired"] = true.into();
+        assert_eq!(super::pending_invitation(&gone, "ExampleCorp/access-requests"), None);
+    }
+
+    #[test]
+    fn a_guest_is_signed_in_with_no_machines_from_any_vault() {
+        assert!(super::is_guest(true, &[0, 0]));
+        assert!(super::is_guest(true, &[]));
+        assert!(!super::is_guest(true, &[3, 0]));
+        assert!(!super::is_guest(false, &[0, 0]));
+    }
+
+    #[test]
+    fn a_guest_machine_with_only_host_tunnel_and_cert_gets_its_ssh_alias() {
+        let m: super::Machine = serde_json::from_str(r#"{"host": "otter", "tunnel": "ssh-otter.example.org", "cert": true}"#).unwrap();
+        assert_eq!((m.account.as_str(), m.repo.as_str(), m.via.as_deref(), m.teams.len()), ("", "", None, 0));
+        let block = super::ssh_block(&[m], "/opt/aiwalk-setup");
+        assert!(block.contains(r#"Match originalhost otter exec "'/opt/aiwalk-setup' --ssh-cert ssh-otter.example.org --quiet""#)
+            && block.contains("HostName ssh-otter.example.org") && block.contains("IdentityFile ~/.cloudflared/ssh-otter.example.org-cf_key"), "{block}");
+    }
+
     // shaped like a real app-scoped allow policy (GET access/apps), ids and names invented
     fn guest_policy() -> serde_json::Value {
         let gh = |team: &str| serde_json::json!({ "github-organization": { "id": "1001", "identity_provider_id": "idp-0000", "name": "ExampleCorp", "team": team } });

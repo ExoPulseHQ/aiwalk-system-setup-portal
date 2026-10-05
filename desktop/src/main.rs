@@ -223,6 +223,8 @@ struct State {
     vaults: Vec<Vault>,
     /// What the sign-in may do on GitHub ("repo", "read:org", "admin:org", ...); owners' tools need admin:org.
     scopes: Vec<String>,
+    /// Signed in, but no vault this account can read lists a machine: the guest path on Machines.
+    guest: bool,
 }
 
 /// Reads everything Team access shows; GitHub answers slowly, so each step is announced to the page as
@@ -236,7 +238,7 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
     stage(1, 2, "Checking who is signed in");
     let me = match github::get("user") {
         Ok(v) => v,
-        Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![], scopes: vec![] },
+        Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![], scopes: vec![], guest: false },
     };
     let user = me["login"].as_str().unwrap_or_default().to_string();
     let name = me["name"].as_str().filter(|n| !n.is_empty()).map(String::from);
@@ -244,11 +246,12 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
     // a sign-in made before the app kept its own is taken over from gh here, once
     if let Some(t) = github::current_token() { login::adopt(&user, &t) }
     // the vaults are read side by side; each vault asks its questions side by side too
-    let vaults = std::thread::scope(|s| {
+    let vaults: Vec<Vault> = std::thread::scope(|s| {
         let vaults: Vec<_> = VAULTS.iter().map(|&(name, repo, about)| { let user = &user; s.spawn(move || read_vault(name, repo, about, user)) }).collect();
         vaults.into_iter().filter_map(|h| h.join().ok()).collect()
     });
-    State { user: Some(user), name, accounts: login::accounts(), error: None, vaults, scopes: github::scopes() }
+    let guest = exo_core::is_guest(true, &vaults.iter().map(|v: &Vault| v.access.as_ref().map_or(0, |a| a.machines.len())).collect::<Vec<_>>());
+    State { user: Some(user), name, accounts: login::accounts(), error: None, vaults, scopes: github::scopes(), guest }
 }
 
 fn read_vault(name: &'static str, repo: &'static str, about: &'static str, user: &str) -> Vault {
@@ -343,7 +346,8 @@ fn decline_request(org: String, number: u64) -> Result<(), String> {
 const TERMS: &str = "TERMS.md";
 
 /// The terms text, its version, and the newest version this account accepted (with the date). None when the
-/// organisation has no terms file or nobody is signed in, so nothing is asked.
+/// organisation has no terms file or nobody is signed in, so nothing is asked. {org, pending: invitation page} when
+/// this account is invited to the requests repo and has not accepted yet.
 #[tauri::command(async)]
 fn terms_state() -> Option<serde_json::Value> {
     // asked before anything else is read, so the organisation is the first vault's owner, not the vault's rules
@@ -356,7 +360,11 @@ fn terms_state() -> Option<serde_json::Value> {
         let mine = github::all(&format!("repos/{repo}/issues?state=all&creator={login}")).unwrap_or_default();
         (text.join().ok().flatten(), mine)
     });
-    let text = text?;
+    // invited to the requests repo but not accepted yet (a guest or intern): the terms cannot be read until then
+    let Some(text) = text else {
+        let pending = exo_core::pending_invitation(&github::all("user/repository_invitations").unwrap_or_default(), &repo)?;
+        return Some(serde_json::json!({ "org": org, "pending": pending }));
+    };
     let version = terms_version(&text)?;
     let accepted = terms_accepted(&serde_json::Value::Array(mine).to_string()).map(|(v, date)| serde_json::json!({ "version": v, "date": date }));
     Some(serde_json::json!({ "org": org, "version": version, "text": text, "accepted": accepted }))
@@ -414,14 +422,14 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
+    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup,
+    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }

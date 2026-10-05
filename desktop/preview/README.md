@@ -11,7 +11,7 @@ Then open `http://localhost:4173/?as=owner&page=people`.
 
 | Parameter | Values | Effect |
 |---|---|---|
-| `as` | `owner` (default), `member`, `signedout`, `terms` | who is signed in; `terms` = signed in, terms not yet accepted |
+| `as` | `owner` (default), `member`, `signedout`, `terms`, `guest`, `invited` | who is signed in; `terms` = signed in, terms not yet accepted; `guest` = outside the team, no vaults, two machines added by name (otter up, heron turns them away); `invited` = a guest who has not accepted GitHub's invitation |
 | `page` | `team`, `machines`, `people`, `terms`, `android`, `vm` | opens that page after load |
 | `os` | `linux` (default), `windows`, `macos` | what `platform` and `tools` report; non-Linux hides the phone and VM pages |
 | `theme` | `light`, `dark` | forces that theme (sets `data-theme`, which `app.css` honours); without it the page follows `prefers-color-scheme` |

@@ -1,10 +1,12 @@
 // Stands in for the Tauri backend in a browser. Read by index.html before its own scripts.
-// Query: as=owner|member|signedout|terms, page=team|machines|people|terms|android|vm, theme=light|dark, os=linux|windows|macos
+// Query: as=owner|member|signedout|terms|guest|invited, page=team|machines|people|terms|android|vm, theme=light|dark, os=linux|windows|macos
 (() => {
   const q = new URLSearchParams(location.search);
   const scenario = q.get("as") || "owner", os = q.get("os") || "linux";
   if (/^(light|dark)$/.test(q.get("theme"))) document.documentElement.dataset.theme = q.get("theme");   // app.css honours both
   document.write('<script src="/__preview/fixtures.js"><\/script>');   // parsed before any later script runs
+  // a guest's kept machines live in localStorage (team.js keptMachines); every guest page load starts from these two
+  if (scenario === "guest") try { localStorage.setItem("guest-machines:jo-vance", JSON.stringify([["otter", "ssh-otter.example-corp.org"], ["heron", "ssh-heron.example-corp.org"]])); } catch {}
 
   const wait = ms => new Promise(r => setTimeout(r, ms));
   async function invoke(cmd, args) {

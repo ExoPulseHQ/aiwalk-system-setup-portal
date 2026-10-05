@@ -120,3 +120,4 @@ Short and functional: 150ms background and shadow on buttons, rows and tiles; 24
 - 2026-10-05: Dialog buttons stay neutral (the overlay never coloured them); the confirming button is last.
 - 2026-10-05: Logins are chips for members too (the overlay could only chip logins it knew, so a member saw most as plain text).
 - 2026-10-05: The invite field has a visible "Username" label; the first sign-in page keeps the strip and hides the lede, while "Add another GitHub account" and "Unlock the owner tools" keep their explanation and have no strip.
+- 2026-10-05: Guest mode (outside teams on single machines) reuses existing patterns only: guests are interns whose one repo is the requests repo, marked with the `server` glyph beside the intern's cap; a guest's Team access is the badge plus one row to Machines; "Not let in" is a deviation (`s-bad`, words kept); the owner's outside-the-team dialog reuses the invite panel's labelled fields.

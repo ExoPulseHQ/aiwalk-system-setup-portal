@@ -15,6 +15,8 @@ pub struct Invite { id: u64, login: String, owner: bool, created: String }
 #[derive(Serialize)]
 pub struct People {
     members: Vec<Member>, invites: Vec<Invite>, interns: Vec<Intern>,
+    /// The access-requests repo: an intern whose only repo it is, is a machine guest.
+    requests: &'static str,
     /// True only for an owner whose token can change the organisation; the page then shows its edit controls.
     can_edit: bool,
 }
@@ -40,7 +42,7 @@ pub fn org_people(org: String) -> Result<People, String> {
         (org_interns(&org, &a.people.keys().cloned().collect()).unwrap_or_default(), invites)
     } else { (vec![], vec![]) };
     let members = a.people.into_iter().map(|(login, p)| Member { name: p.name, owner: p.grants.is_none(), login }).collect();
-    Ok(People { members, invites, interns, can_edit })
+    Ok(People { members, invites, interns, can_edit, requests: crate::REQUESTS })
 }
 
 /// Interns are not in the organisation, so only their repos know them: the org's outside collaborators, and every
@@ -69,13 +71,16 @@ pub fn invite(org: String, login: String, owner: bool, teams: Vec<String>) -> Re
     Ok(format!("Invited {login}. GitHub emails them; they join once they accept."))
 }
 
-/// Invites someone as an intern: repo invitations to `INTERN_REPOS`, no organisation invitation.
+/// Invites someone as an intern: repo invitations to `INTERN_REPOS`, no organisation invitation. A machine guest
+/// (`guest`) gets read on the requests repo only: the terms and their acceptance, no documents.
 #[tauri::command(async)]
-pub fn invite_intern(org: String, login: String) -> Result<String, String> {
+pub fn invite_intern(org: String, login: String, guest: Option<bool>) -> Result<String, String> {
     let login = login.trim().trim_start_matches('@');
     github::get(&format!("users/{login}")).map_err(|_| format!("There is no GitHub account called {login}"))?;
-    for r in INTERN_REPOS { github::send("PUT", &format!("repos/{org}/{r}/collaborators/{login}"), Some(serde_json::json!({ "permission": "pull" })))?; }
-    Ok(format!("Invited {login} as an intern, read on {}. GitHub emails one invitation per repo. You can then raise single repos for them in the access tree.", INTERN_REPOS.join(", ")))
+    let repos: &[&str] = if guest == Some(true) { &[crate::REQUESTS] } else { &INTERN_REPOS };
+    for r in repos { github::send("PUT", &format!("repos/{org}/{r}/collaborators/{login}"), Some(serde_json::json!({ "permission": "pull" })))?; }
+    if guest == Some(true) { return Ok(format!("Invited {login} as a guest, read on {} for the terms. GitHub emails them the invitation.", crate::REQUESTS)) }
+    Ok(format!("Invited {login} as an intern, read on {}. GitHub emails one invitation per repo. You can then raise single repos for them in the access tree.", repos.join(", ")))
 }
 
 /// Takes an intern off every repo of the organisation and cancels the repo invitations (repo, id) they have not accepted.

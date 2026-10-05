@@ -331,7 +331,8 @@ let labSignInNext = false;
 // Machines, one row each, and whether this computer can connect to it right now. Members only ever
 // connect through Cloudflare (Access for the GitHub sign-in, a tunnel for SSH), never to a machine's address.
 // Which project lives where is the vault plugin's job; here only the machine matters.
-function machinesSection(machines, org, user) {
+// guest: {remove(host)} for a guest's own machines (no vault rules: no who-line, a sign-in per row, a remove mark).
+function machinesSection(machines, org, user, guest) {
   const sec = el("div", "section");
   const head = el("header");
   const again = iconButton("refresh-cw", "Check again", "small ghost", true);
@@ -344,7 +345,7 @@ function machinesSection(machines, org, user) {
   // owners: the people let in by email (interns), read once for all machines
   const guests = org && (org.people[user] || {}).grants === null ? machineGuests(org.org, hosts.map(m => m.host)) : null;
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
-  const list = el("div", "list"), pills = {}, meters = {}, specs = {};
+  const list = el("div", "list"), pills = {}, meters = {}, specs = {}, signIns = {};
   const live = new Set();   // machines whose status page answered: signed in and reachable, whatever an older check said
   let lastState = null;
   const look = {}, diskLow = {};   // per host: what its state chip says, and a disk running out (for the opening strip)
@@ -352,10 +353,24 @@ function machinesSection(machines, org, user) {
     const p = el("span", "perm checking"); p.append(el("span", "spinner"));
     pills[m.host] = p; look[m.host] = "checking";
     const right = [];
+    let rmMark = null;   // a guest's own machine: removed from the list at the row's end
     if (m.sometimes) { const t = el("span", "tag worded"); t.append(icon("moon"), "Often off"); t.dataset.tip = "Often off: this machine is switched off at times"; right.push(t); }
     if (m.via) right.push(el("span", "tag", `Through ${m.via}`));
     meters[m.host] = el("span", "meters");
-    const row = kind(item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p), "server");
+    if (guest) {
+      // signing in to this one machine, from its row: a guest has no team sign-in covering the others
+      const b = signIns[m.host] = el("button", "small", "Sign in"); b.hidden = true;
+      b.onclick = async e => {
+        e.stopPropagation();
+        try { toast(await working(b, "Waiting for the browser", () => invoke("access_login", { tunnels: [m.tunnel] }))); }
+        catch (err) { refusedNote(m.host, true); }
+        window.dispatchEvent(new Event("lab-signed-in"));
+      };
+      rmMark = iconButton("x", `Remove ${m.host} from this list`, "small ghost row-act", true);
+      rmMark.onclick = e => { e.stopPropagation(); guest.remove(m.host); };
+      right.push(b);
+    }
+    const row = kind(item(m.host, [m.note, carries(m.host) && `Carries ${carries(m.host)}`].filter(Boolean).join(". ") || null, null, ...right, p, ...(rmMark ? [rmMark] : [])), "server");
     row.classList.add("machine", "click");
     row.querySelector(".title").classList.add("chip");
     row.querySelector(".text").append(meters[m.host]);   // live numbers sit under the name, the right side keeps the status
@@ -373,7 +388,8 @@ function machinesSection(machines, org, user) {
   });
   // a state chip: a glyph when all is as it should be, words where it deviates
   const LOOK = { up: ["s-ok", "check", "Can connect"], down: ["p0 s-bad", "x", "Can't connect"], "no-tunnel": ["p0 s-bad", "x", "Tunnel not set up"],
-                 "sign-in": ["s-warn", "circle-alert", "Finish sign-in on Team access"], none: ["p0", "lock", "No access"] };
+                 "sign-in": ["s-warn", "circle-alert", guest ? "Not signed in" : "Finish sign-in on Team access"], none: ["p0", "lock", "No access"],
+                 refused: ["p0 s-bad", "lock", "Not let in"] };
   const setLook = (host, key) => {
     const p = pills[host], [cls, name, word] = LOOK[key] || LOOK.down;
     look[host] = LOOK[key] ? key : "down";
@@ -383,6 +399,16 @@ function machinesSection(machines, org, user) {
       p.replaceChildren(icon(name), el("span", "sr", word));
       p.dataset.tip = key === "up" ? `Can connect: this computer reaches ${host} now, through Cloudflare` : LEVEL_SAYS["No access"][1];
     } else { p.removeAttribute("tabindex"); delete p.dataset.tip; p.replaceChildren(icon(name), word); }
+    if (signIns[host]) signIns[host].hidden = key !== "sign-in";
+    if (guest && key === "refused") refusedNote(host, false);
+  };
+  // a guest whom Access turns away: say so on the row, with the email Access knows this account by when it can tell
+  const refusedNote = async (host, signIn) => {
+    const line = el("p", "ask-line");
+    line.append(icon("lock"), `${signIn ? "Sign-in was not finished. If the browser said this account may not come in, an" : "An"} owner has not let this account in to ${host}, or has taken it out again.`);
+    specs[host].replaceChildren(line);
+    const id = await invoke("lab_identity", { tunnels: hosts.map(m => m.tunnel).filter(Boolean) }).catch(() => null);
+    if (id && id.email) line.append(` Access knows this account as ${id.email}: give the owner that address.`);
   };
   // the page's opening strip, from the same states
   const paintOpening = () => {
@@ -390,7 +416,7 @@ function machinesSection(machines, org, user) {
     if (!sec.isConnected) return;
     const of = k => hosts.map(m => m.host).filter(h => look[h] === k);
     // a machine with no tunnel yet is not set up, which is not the same as down: it is said quietly, not in red
-    const up = of("up"), off = of("none"), bad = of("down"), unset = of("no-tunnel");
+    const up = of("up"), off = of("none"), bad = of("down"), unset = of("no-tunnel"), refused = of("refused");
     if (of("checking").length === hosts.length)
       return setOpening(page, ["wait", "Checking the machines.", [], [{ icon: "circle-dashed", text: "Checking", tone: "calm", tip: "Checking the machines" }]]);
     const warns = hosts.map(m => m.host).filter(h => diskLow[h]).map(h => [h, diskLow[h]]);
@@ -399,13 +425,15 @@ function machinesSection(machines, org, user) {
       detail.push(`Within reach: ${up.join(", ")}.`); }
     if (off.length) { const t = `${plural(off.length, "other needs", "others need")} access from an owner`; items.push({ icon: "lock", num: off.length, unit: "no access", tone: "calm", tip: t }); detail.push(` ${t}.`); }
     warns.forEach(([h, w]) => { items.push({ icon: "circle-alert", chips: [h], text: w, tone: "warn", tip: `${h}: ${w}` }); detail.push(` ${h}: ${w}.`); });
+    if (refused.length) { const t = `Not let in: ${refused.join(", ")}`; items.push({ icon: "lock", chips: refused, text: "not let in", tone: "warn", tip: t }); detail.push(` ${t}.`); }
     if (unset.length) { const t = `Not set up yet: ${unset.join(", ")}`; items.push({ icon: "circle-dashed", num: unset.length, unit: "not set up", tone: "calm", tip: t }); detail.push(` ${t}.`); }
     if (bad.length) {
       items.push({ icon: "circle-x", chips: bad, text: "down", tone: "bad", tip: `Cannot be reached: ${bad.join(", ")}` });
       return setOpening(page, ["bad", `${bad.length} of ${plural(hosts.length, "machine")} cannot be reached.`, [...detail, ` Down: ${bad.join(", ")}.`], items]);
     }
     const lead = up.length === 1 ? "1 machine is up." : `${up.length} machines are up.`;
-    setOpening(page, [warns.length ? "warn" : "ok", warns.length ? lead.replace(".", `, ${warns.length} needs a look.`) : lead, detail, items]);
+    const looks = warns.length + refused.length;
+    setOpening(page, [looks ? "warn" : "ok", looks ? lead.replace(".", `, ${looks} ${looks === 1 ? "needs" : "need"} a look.`) : lead, detail, items]);
   };
   queueMicrotask(paintOpening);
   const help = el("div");
@@ -479,6 +507,7 @@ function machinesSection(machines, org, user) {
         r.append(label, el("span", null, v)); return r; }));
       diskLow[host] = s.disk_free_gb != null && s.disk_free_gb < 20 ? `disk almost full, ${gb(s.disk_free_gb)} left` : null;
       if (diskLow[host]) { const w = el("p", "warn"); w.append(icon("circle-alert"), `Disk almost full: ${gb(s.disk_free_gb)} left.`); specs[host].append(w); }
+      if (guest) specs[host].append(sshLine(host, s.desktops || []));
       if (s.host_tools) specs[host].append(hostTools(byHost[host], s.host_tools));
       if ((s.desktops || []).length) specs[host].append(desktopList(byHost[host], s.desktops, open));
       // a cluster reached through this machine (rooster through horse) comes in the same answer
@@ -505,6 +534,21 @@ function machinesSection(machines, org, user) {
       };
       r.append(b, msg);
     }
+    return r;
+  }
+  // A guest's way in by ssh: no vault rules name the machine's account, so it is the one its desktops run as, or a
+  // placeholder to replace with the account the owner named. Works once connections are set up on this computer.
+  function sshLine(host, desktops) {
+    const account = (desktops.find(d => d.kind !== "rdp") || {}).user;
+    const line = `ssh ${account || "ACCOUNT"}@${host}`;
+    const r = el("div", "spec hw"), k = el("span", "k");
+    k.append(icon("square-terminal"), el("span", "sr", "SSH")); k.dataset.tip = "SSH";
+    const v = el("span"), copy = iconButton("copy", `Copy ${line}`, "small ghost", true);
+    copy.style.marginLeft = "8px";
+    copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(line).then(() => toast(`Copied ${line}`), () => toast(line)); };
+    v.append(el("span", "cmd", line), copy);
+    if (!account) v.append(el("span", "sub", " Replace ACCOUNT with the account the owner named."));
+    r.append(k, v);
     return r;
   }
   // A SLURM cluster: totals as meters, then each node and the queues. The reading is at most a minute old.
@@ -867,7 +911,7 @@ function missingTools(t) {
 }
 
 // Owners: the organisation's people, invitations and owner role.
-async function peopleSection(org, user, teams, tree) {
+async function peopleSection(org, user, teams, tree, hosts = []) {
   const sec = el("div", "section");
   const head = el("header");
   // inviting is an occasional act: its form stays folded away until this button opens it, right under the heading
@@ -940,26 +984,74 @@ async function peopleSection(org, user, teams, tree) {
   });
   sec.append(list);
 
-  // interns: outside the organisation, on single repos; one row per person, accepted and pending repos apart
+  // Machines let people in by email (Cloudflare Access): read with the Cloudflare token, then tied to a login by
+  // this computer's record of who was added here, else by the intern's public GitHub email. Never guessed further.
+  const byEmail = {};   // email -> [host]
+  if (hosts.length && (await invoke("cf_state").catch(() => ({}))).connected)
+    Object.entries(await invoke("machine_guests", { hosts }).catch(() => ({}))).forEach(([h, es]) => es.forEach(e => (byEmail[e] = byEmail[e] || []).push(h)));
+  const loginOf = guestLogins(), lower = l => (l || "").toLowerCase();
+  if (Object.keys(byEmail).length) await Promise.all(p.interns.map(async n => {
+    const e = lower(await invoke("public_email", { login: n.login }).catch(() => null));
+    if (e && byEmail[e] && !loginOf[e]) loginOf[e] = n.login;
+  }));
+  const emailsOf = login => Object.keys(byEmail).filter(e => lower(loginOf[e]) === lower(login));
+  const byEmailOnly = Object.keys(byEmail).filter(e => !p.interns.some(n => lower(n.login) === lower(loginOf[e]))).sort();
+  // the machines an email may reach, as chips with their own remove mark
+  const machineLine = (emails, label) => whoLine(emails.flatMap(e => byEmail[e].map(h => ({ login: h, name: emails.length > 1 ? `${h}, as ${e}` : h, why: ["may connect to"],
+    rm: { tip: `Remove ${e}'s access to ${h}`, run: async b => {
+      try { toast(await working(b, "", () => invoke("machine_guest", { host: h, email: e, add: false }))); byEmail[e] = byEmail[e].filter(x => x !== h); b.closest(".chip").remove(); }
+      catch (err) { msg.textContent = `Could not change ${h}: ${err}`; }
+    } } }))), ["may connect to"], null, label);
+  const dropAll = emails => Promise.all(emails.flatMap(e => byEmail[e].map(h => invoke("machine_guest", { host: h, email: e, add: false }))));
+
+  // interns: outside the organisation, on single repos; one row per person, accepted and pending repos apart. A guest
+  // is an intern whose one repo is the requests repo (to read and accept the terms): their machines are the point
+  const isGuest = n => n.repos.every(r => r.repo === p.requests);
+  const guests = p.interns.filter(isGuest).length;
+  sec.counts = { invited: p.invites.length, interns: p.interns.length - guests, guests, byEmail: byEmailOnly.length };
   if (p.interns.length) {
     const ilist = el("div", "list");
     const levels = rs => rs.map(r => `${r.level} on ${r.repo}`).join(", ");
     p.interns.forEach(n => {
-      const has = n.repos.filter(r => r.invite == null), invited = n.repos.filter(r => r.invite != null);
-      const sub = [has.length && `Has ${levels(has)}`, invited.length && `Invited, not accepted yet: ${levels(invited)}`].filter(Boolean).join(". ");
-      const rm = iconButton("user-minus", `Remove ${n.login} from every repo of ${org}`, "small ghost row-act", true);
+      const has = n.repos.filter(r => r.invite == null), invited = n.repos.filter(r => r.invite != null), mine = emailsOf(n.login), guest = isGuest(n);
+      const sub = guest ? (invited.length ? "Invited, not accepted yet" : "Reads the terms; machines only")
+        : [has.length && `Has ${levels(has)}`, invited.length && `Invited, not accepted yet: ${levels(invited)}`].filter(Boolean).join(". ");
+      const rm = iconButton("user-minus", `Remove ${n.login} from every repo of ${org}${mine.length ? " and every machine" : ""}`, "small ghost row-act", true);
       rm.onclick = async () => {
-        if (await ask(`Remove ${n.login} from every repo of ${org}?`, "This removes them from every repo of the organisation and cancels their pending repo invitations. Copies already on their computer stay there.",
+        if (await ask(`Remove ${n.login} from every repo of ${org}?`, `This removes them from every repo of the organisation and cancels their pending repo invitations${mine.length ? ", and lets them in to no machine" : ""}. Copies already on their computer stay there.`,
             [["cancel", "Cancel"], ["rm", "Remove", true]]) === "rm")
-          act(() => invoke("remove_intern", { org, login: n.login, invites: invited.map(r => [r.repo, r.invite]) }), null, rm, "Removing")();
+          act(async () => { const t = await invoke("remove_intern", { org, login: n.login, invites: invited.map(r => [r.repo, r.invite]) }); await dropAll(mine); return t; }, null, rm, "Removing")();
       };
-      const r = kind(item(n.login, sub || "No repos", null, glyph("tag", "graduation-cap", "Intern", "Intern: outside the organisation, single repos only"), rm), "user-round");
+      const mark = guest ? glyph("tag", "server", "Guest", "Guest: outside the organisation, the terms and the machines an owner let them in to")
+        : glyph("tag", "graduation-cap", "Intern", "Intern: outside the organisation, single repos only");
+      const r = kind(item(n.login, sub || "No repos", null, mark, rm), "user-round");
       r.querySelector(".title").classList.add("chip");
+      if (mine.length) r.querySelector(".text").append(machineLine(mine, `Machines ${n.login} may connect to`));
       ilist.append(r);
     });
-    const h = el("h3", null, "Interns");
-    h.append(info(`Not in ${org}; they have single repos only.`));
+    const h = el("h3", null, guests ? "Interns and guests" : "Interns");
+    h.append(info(`Not in ${org}. Interns have single repos; guests only the terms, and the machines an owner let them in to by email.`));
     sec.append(h, ilist);
+  }
+  // addresses a machine lets in that belong to no intern or guest known here: shown so nothing let in is unseen
+  if (byEmailOnly.length) {
+    const elist = el("div", "list");
+    byEmailOnly.forEach(e => {
+      const rm = iconButton("user-minus", `Let ${e} in to no machine`, "small ghost row-act", true);
+      rm.onclick = async () => {
+        if (await ask(`Let ${e} in to no machine?`, `${byEmail[e].join(", ")} stop letting this address in, and its sign-in to the machines is ended.`,
+            [["cancel", "Cancel"], ["rm", "Remove", true]]) !== "rm") return;
+        try { await working(rm, "Removing", () => dropAll([e])); toast(`${e} can no longer connect to ${byEmail[e].join(", ")}`); r.remove(); }
+        catch (err) { msg.textContent = String(err); }
+      };
+      const r = kind(item(e, null, null, rm), "mail");
+      r.querySelector(".title").classList.add("chip");
+      r.querySelector(".text").append(machineLine([e], `Machines ${e} may connect to`));
+      elist.append(r);
+    });
+    const h = el("h3", null, "By email only");
+    h.append(info("Machines let these addresses in, but no intern or guest here is known by them: added before guests had a GitHub invitation, or by another owner for someone whose GitHub email is private."));
+    sec.append(h, elist);
   }
 
   // invite: a GitHub username, a role, and the layers they start in; everyone also gets the shared team
@@ -1112,6 +1204,7 @@ async function loadTeam(viewAs) {
   if (!t.git) return page.replaceChildren(missingTools(t));
   // the team's terms come first, once per version: two quick questions to GitHub, before the long read of access
   if (!termsOk() || !termsNow) { progress.set(null, "Reading the team's terms"); termsNow = await invoke("terms_state"); }
+  if (termsNow && termsNow.pending) return page.replaceChildren(invitationView(termsNow));
   if (!termsOk()) return page.replaceChildren(termsView(termsNow, termsNow.org, true));
   const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
   const s = lastTeam = await invoke("team_access").finally(stop);
@@ -1125,6 +1218,15 @@ async function loadTeam(viewAs) {
   const peopleNav = document.querySelector('nav [data-page="people"]');
   peopleNav.hidden = !org;   // everyone in the organisation sees People; only owners get the count of open requests
   if (owner && org) navLabel(peopleNav, "People", org.requests.length ? String(org.requests.length) : null);
+  // a guest: no documents to show, the machines are on their own page
+  if (guestOnly(s)) {
+    const toMachines = el("button", null, "Go to Machines"); toMachines.onclick = () => go("machines");
+    page.replaceChildren(el("h1", null, "Team access"), badge(s),
+      el("div", "list").appendChild(kind(item("Machines shared with you", "This account reaches none of the team's documents. The machines an owner let you in to are on the Machines page.", null, toMachines), "server")).parentNode);
+    paintTeamOpening(); pickPrimary(page);
+    if (current === "people") loadPeople();
+    return;
+  }
   // an owner signed in without the permission to manage the organisation: the tools below would be refused
   if (owner && org && !(s.scopes || []).includes("admin:org")) {
     const b = el("button", "small", "Unlock");
@@ -1142,6 +1244,24 @@ async function loadTeam(viewAs) {
   if (current === "people") loadPeople();   // a change made there reloads access through here
 }
 
+// Invited to the team's requests repo (an intern or a guest) and not accepted yet: the terms live there, so nothing
+// can be read until the invitation is accepted on GitHub.
+function invitationView(t) {
+  const box = el("div", "empty");
+  box.append(el("h1", null, "Before you start"));
+  setOpening(box, ["warn", "Accept the invitation GitHub sent you, then come back.", [`The team's terms are in ${t.org}'s requests repo, which opens to you once you accept.`],
+    [{ icon: "mail", text: "Accept the GitHub invitation, then come back", tone: "warn", tip: "Accept the invitation GitHub sent you, then come back" }]]);
+  const link = el("p", "sub"), copy = iconButton("copy", "Copy the invitation's address", "small ghost", true);
+  copy.style.marginLeft = "8px";
+  copy.onclick = () => navigator.clipboard.writeText(t.pending).then(() => toast("Copied the address"), () => toast(t.pending));
+  link.append("GitHub also emailed it. It is at ", el("strong", "cmd", t.pending), copy);
+  const again = el("button", null, "I accepted it");
+  again.onclick = () => { termsNow = null; loadTeam(); };
+  box.append(link, again);
+  pickPrimary(box);
+  return box;
+}
+
 // What still needs doing on Team access, set by the identity block's lines as they learn it: Machines (step 2 of the
 // sign-in), Claude Code (installed, not signed in), Owner tools (locked).
 const teamTodo = new Set();
@@ -1153,10 +1273,20 @@ function todo(what, on) {
 function paintTeamOpening() {
   const page = teamPage(), s = lastTeam;
   if (!s || !s.user || !page.querySelector(".badge")) return;
+  const left = ["Machines", "Claude Code", "Owner tools"].filter(t => teamTodo.has(t));
+  if (guestOnly(s)) {
+    const kept = keptMachines(s.user).length;
+    const items = [{ icon: "check", chips: [s.user], tip: `Signed in as ${s.user}, as a guest` },
+      { icon: "lock", num: 0, unit: "documents", tone: "calm", tip: "This account reaches none of the team's documents" },
+      { icon: "server", num: kept, unit: kept === 1 ? "machine" : "machines", tip: `${plural(kept, "machine")} added on the Machines page` }];
+    const detail = [`Signed in as ${s.user}, as a guest: none of the team's documents, ${plural(kept, "machine")} on the Machines page.`];
+    return setOpening(page, left.length
+      ? ["warn", "Signed in as a guest, with something still to do.", [...detail, ` Still to do: ${left.join(", ")}.`], [...items, { icon: "circle-alert", text: `To do: ${left.join(", ")}`, tone: "warn", tip: `Still to do: ${left.join(", ")}` }]]
+      : ["ok", "Signed in as a guest.", detail, items]);
+  }
   const org = (s.vaults.find(v => v.access) || {}).access, machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   const reach = [...new Set(machines.filter(m => m.tunnel).map(m => m.host))].filter(h => !org || connectRule(h, machines, org).may(s.user));
   const here = s.vaults.filter(v => local.copies[v.repo]).length;
-  const left = ["Machines", "Claude Code", "Owner tools"].filter(t => teamTodo.has(t));
   const detail = [`Signed in as ${s.user}. ${plural(here, "vault")} on this computer, ${plural(reach.length, "machine")} within reach.`];
   const items = [{ icon: "check", chips: [s.user], tip: `Signed in as ${s.user}` },
     { icon: "monitor-check", num: here, unit: here === 1 ? "vault here" : "vaults here", tip: `${plural(here, "vault")} on this computer` },
@@ -1204,18 +1334,21 @@ async function loadPeople() {
   }
   const first = !page.querySelector(".section");
   if (first) page.replaceChildren(...parts, stage("Reading the organisation's people"));
-  const people = await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree);
+  const people = await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree,
+    [...new Set(s.vaults.flatMap(v => (v.access && v.access.machines) || []).filter(m => m.tunnel).map(m => m.host))]);
   parts.push(requestsSection(org), people, prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
   if (current !== "people") return;
   page.replaceChildren(...parts);
   // the page opens with how many people, how many wait for you, and the invitations and interns
-  const all = Object.keys(org.people).length, waiting = org.requests.length, { invited = 0, interns = 0 } = people.counts || {};
+  const all = Object.keys(org.people).length, waiting = org.requests.length, { invited = 0, interns = 0, guests = 0, byEmail = 0 } = people.counts || {};
   const items = [{ icon: "users-round", num: all, unit: all === 1 ? "person" : "people", tip: plural(all, "person", "people") },
     waiting ? { icon: "inbox", num: waiting, text: "waiting", tone: "act", tip: `${waiting} waiting for you to approve or decline` }
       : { icon: "inbox", num: 0, unit: "waiting", tone: "calm", tip: "Nobody waiting for you" }];
   if (invited) items.push({ icon: "mail", num: invited, unit: "invited", tone: "calm", tip: `${plural(invited, "invitation")} not accepted yet` });
   if (interns) items.push({ icon: "graduation-cap", num: interns, unit: interns === 1 ? "intern" : "interns", tone: "calm", tip: `${plural(interns, "intern")} outside ${org.org}` });
-  const detail = [[invited, `${plural(invited, "invitation")} not accepted yet.`], [interns, `${plural(interns, "intern")} outside ${org.org}.`]]
+  const allGuests = guests + byEmail, guestTip = `${plural(allGuests, "guest")} on the machines${byEmail ? `, ${byEmail} known by email only` : ""}`;
+  if (allGuests) items.push({ icon: "server", num: allGuests, unit: allGuests === 1 ? "guest" : "guests", tone: "calm", tip: guestTip });
+  const detail = [[invited, `${plural(invited, "invitation")} not accepted yet.`], [interns, `${plural(interns, "intern")} outside ${org.org}.`], [allGuests, `${guestTip}.`]]
     .filter(([k]) => k).map(([, t]) => t).join(" ");
   setOpening(page, ["ok", `${plural(all, "person", "people")}, ${waiting ? `${waiting} waiting for you` : "nobody waiting"}.`, detail ? [detail] : [], items]);
   pickPrimary(page);
@@ -1243,6 +1376,7 @@ async function loadMachines() {
     b.onclick = () => go("team");
     return page.replaceChildren(...head, el("p", "sub", "Sign in on Team access first: the machines follow your GitHub account."), b);
   }
+  if (s.guest) return guestMachinesPage(page, s);
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   const org = (s.vaults.find(v => v.access) || {}).access;
   // coming back to the page keeps it as it was (its numbers refresh on their own); rebuild only when what it
@@ -1255,6 +1389,50 @@ async function loadMachines() {
   page.replaceChildren(...(machines.length ? [head[0]] : head), machines.length ? machinesSection(machines, org, s.user) : el("p", "sub", "No machines are listed for your team yet."),
     ...(owner ? [cloudflareSection()] : []));
   pickPrimary(page);
+}
+
+// A guest's Machines page: the machines they added by name, then the field to add one. Members never get it: their
+// machines come from the vault's rules.
+function guestMachinesPage(page, s) {
+  const kept = keptMachines(s.user);
+  const key = JSON.stringify(["guest", s.user, kept]);
+  if (page.dataset.key === key && page.querySelector(".guest-add")) return;
+  page.dataset.key = key;
+  const redraw = () => { page.dataset.key = ""; loadMachines(); if (lastTeam) paintTeamOpening(); };
+  const remove = host => { keepMachines(s.user, keptMachines(s.user).filter(([h]) => h !== host)); toast(`${host} is no longer listed here`); redraw(); };
+  page.replaceChildren(el("h1", null, "Machines"),
+    ...(kept.length ? [machinesSection(kept.map(guestMachine), null, s.user, { remove })]
+      : [el("p", "lede", "Add the machines an owner let you in to, by the name they gave you.")]),
+    addMachine(s, redraw), el("p", "quiet", "You are a guest on these machines. What you find on them belongs to the team."));
+  pickPrimary(page);
+}
+
+// A guest adds a machine by name: the backend checks that the team's Cloudflare Access guards ssh-<name>, then the
+// name and its tunnel are kept for this account.
+function addMachine(s, done) {
+  const sec = el("div", "section guest-add"), head = el("header"), h = el("h2", null, "Add a machine");
+  h.append(info("An owner lets your GitHub account in to a machine and tells you its name. The app checks the name with the team's Cloudflare and keeps it on this computer, for this GitHub account."));
+  head.append(h); sec.append(head);
+  const input = el("input"); input.placeholder = "Machine name"; input.autocomplete = "off"; input.spellcheck = false;
+  input.setAttribute("aria-label", "The machine's name, as the owner gave it");
+  const add = el("button", "small", "Add"), msg = el("p", "sub");
+  const go = async () => {
+    msg.textContent = "";
+    const name = input.value.trim();
+    if (!name) return input.focus();
+    if (keptMachines(s.user).some(([h]) => h === name)) { msg.textContent = `${name} is already listed here.`; return; }
+    try {
+      const tunnel = await working(add, "Checking", () => invoke("find_machine", { name }));
+      keepMachines(s.user, [...keptMachines(s.user), [name, tunnel]]);
+      toast(`${name} added`); done();
+    } catch (e) { msg.textContent = String(e); }
+  };
+  add.onclick = go;
+  input.onkeydown = e => { if (e.key === "Enter") go(); };
+  const list = el("div", "list");
+  list.append(kind(item("Its name, as the owner gave it", null, null, input, add), "plus"));
+  sec.append(list, msg);
+  return sec;
 }
 
 // Owners: the Cloudflare API token that lets this app add machines, sign SSH certificates and end people's
@@ -1362,8 +1540,24 @@ function connectRule(host, machines, org) {
   return { teamsFor, team, via, extra, may: login => via(login).length > 0 || extra(login) };
 }
 
+// A guest's machines: the names an owner gave them, kept on this computer per GitHub account in localStorage
+// ("guest-machines:<login>", a JSON list of [name, tunnel]). Nothing else lists them: a guest reads no vault.
+const keptKey = login => `guest-machines:${login}`;
+function keptMachines(login) { try { return JSON.parse(localStorage.getItem(keptKey(login))) || []; } catch { return []; } }
+function keepMachines(login, list) { try { localStorage.setItem(keptKey(login), JSON.stringify(list)); } catch {} }
+// a kept machine as the Machine the backend takes; what vault rules would say is unknown and left empty
+const guestMachine = ([host, tunnel]) => ({ host, tunnel, cert: true, repo: "", account: "", note: "", teams: [], via: null, sometimes: false, personal: false, ready: true });
+// Signed in with no vault to open: Team access shows the guest state instead of vaults.
+const guestOnly = s => s.guest && !s.vaults.some(v => v.permission);
+
+// Owners: which GitHub login a machine's email rule belongs to, remembered on this computer when an owner adds one
+// here ("guest-logins": {email: login}); other owners' additions are tied by the person's public GitHub email.
+function guestLogins() { try { return JSON.parse(localStorage.getItem("guest-logins")) || {}; } catch { return {}; } }
+function rememberGuest(email, login) { try { localStorage.setItem("guest-logins", JSON.stringify({ ...guestLogins(), [email.trim().toLowerCase()]: login })); } catch {} }
+
 // The tunnels this person may use, so signing in never asks Cloudflare for a machine it would refuse.
 function myTunnels(s) {
+  if (s.guest) return keptMachines(s.user).map(([, t]) => t);
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   const org = (s.vaults.find(v => v.access) || {}).access;
   const hosts = [...new Map(machines.filter(m => m.tunnel).map(m => [m.host, m.tunnel])).entries()];
@@ -1388,6 +1582,38 @@ async function askGuestEmail(login, host) {
   const go = await ask(`Let ${login} connect to ${host}`, `${host} recognises ${login} by this email address. It must be the primary email of their GitHub account.`,
     [["cancel", "Cancel"], ["add", "Let them connect", true]], input);
   return go === "add" && input.value.trim() ? input.value.trim() : null;
+}
+
+// Owners: someone outside the team, as a guest: their GitHub username (invited to the requests repo only, for the
+// terms) and the email of that account (for the machine). {login, email}, or null when cancelled.
+async function askGuest(host) {
+  const box = el("div", "invite");
+  const field = (label, input) => { const f = el("label", "field"); f.append(el("span", "label", label), input); return f; };
+  const login = el("input", "who"); login.placeholder = "Their GitHub username"; login.autocomplete = "off"; login.spellcheck = false;
+  const email = el("input"); email.type = "email"; email.placeholder = "The email of that GitHub account"; email.autocomplete = "off";
+  // their public email, when GitHub shows one, as a start; never over what the owner typed
+  let filled = "";
+  login.onchange = async () => {
+    const l = login.value.trim().replace(/^@/, "");
+    if (!l || (email.value && email.value !== filled)) return;
+    email.value = filled = await invoke("public_email", { login: l }).catch(() => null) || "";
+  };
+  box.append(field("Username", login), field("Email", email));
+  const go = await ask(`Let someone outside the team connect to ${host}`,
+    "GitHub invites them to read the team's terms, nothing else. The email must be the primary email of that GitHub account: it is how the machine knows them.",
+    [["cancel", "Cancel"], ["add", "Invite and let them connect", true]], box);
+  const l = login.value.trim().replace(/^@/, ""), e = email.value.trim();
+  return go === "add" && l && e ? { login: l, email: e } : null;
+}
+
+// After a guest is let in: what to send them, with a Copy button. The app sends no email.
+function tellGuest(who, host) {
+  const text = `Accept the GitHub invitation, install aIwalk System Setup, sign in with GitHub, open Machines, add the machine named ${host}.`;
+  const box = el("p"), copy = iconButton("copy", "Copy the instructions", "small ghost", true);
+  copy.style.marginLeft = "8px";
+  copy.onclick = () => navigator.clipboard.writeText(text).then(() => toast("Copied the instructions"), () => toast(text));
+  box.append(el("strong", null, text), copy);
+  return ask(`${who} may now connect to ${host}`, "Send them this. The app sends no email.", [["done", "Done", true]], box);
 }
 
 function whoCanConnect(host, machines, org, user, guestsP) {
@@ -1424,16 +1650,20 @@ function whoCanConnect(host, machines, org, user, guestsP) {
       rm: { tip: `Remove ${e}'s access to ${host}`, run: b => changeGuest(e, false, b) } }));
     const others = Object.keys(org.people).filter(l => !via(l).length && !extra.has(l)).sort((a, b) => name(a).localeCompare(name(b)));
     let pick = null;
-    if (others.length || g.interns.length) {
+    if (others.length || g.interns.length || g.cf) {
       pick = el("select");
       pick.append(new Option("Let someone connect", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)),
-        ...g.interns.map(i => new Option(`${i.login} (intern)`, `intern:${i.login}`)));
+        ...g.interns.map(i => new Option(`${i.login} (intern)`, `intern:${i.login}`)),
+        ...(g.cf ? [new Option("Someone outside the team…", "outside:")] : []));
       pick.onclick = e => e.stopPropagation();
       pick.onchange = async () => {
         const v = pick.value;
-        if (!v.startsWith("intern:")) return v && change(v, true, pick);
-        const email = await askGuestEmail(v.slice(7), host);
-        if (email) changeGuest(email, true, pick); else paint();
+        if (!v.includes(":")) return v && change(v, true, pick);
+        if (v === "outside:") return addOutside();
+        const login = v.slice(7), email = await askGuestEmail(login, host);
+        if (!email) return paint();
+        rememberGuest(email, login);
+        if (await changeGuest(email, true, pick)) tellGuest(login, host);
       };
     }
     box.append(whoLine(people, [...teamsFor, HAND, GUEST], pick, `Who can connect to ${host}`));
@@ -1448,12 +1678,35 @@ function whoCanConnect(host, machines, org, user, guestsP) {
     paint();
   }
   async function changeGuest(email, add, ctl) {
+    let done = false;
     try {
       toast(await working(ctl, add ? "Adding" : "Removing", () => invoke("machine_guest", { host, email, add })));
       const e = email.trim().toLowerCase(), now = (g.guests[host] || []).filter(x => x !== e);
       g.guests[host] = add ? [...now, e] : now;
+      done = true;
     } catch (e) { toast(`Could not change ${host}: ${e}`); }
     paint();
+    return done;
+  }
+  // a guest: invited to the requests repo (skipped when GitHub already knows them as an intern or guest), then the
+  // machine's email rule; a failed invitation leaves the machine as it was
+  async function addOutside() {
+    const who = await askGuest(host);
+    if (!who) return paint();
+    if (org.people[who.login]) { toast(`${who.login} is in ${org.org}: pick them from the list instead`); return paint(); }
+    const known = internsNow.some(i => i.login.toLowerCase() === who.login.toLowerCase());
+    if (!known) {
+      try { toast(await invoke("invite_intern", { org: org.org, login: who.login, guest: true })); }
+      catch (e) { toast(`Step 1 of 2, the GitHub invitation, failed: ${e}. ${host} was not changed.`); return paint(); }
+      internsNow = [...internsNow, { login: who.login, repos: [] }];
+    }
+    rememberGuest(who.email, who.login);
+    try { toast(await invoke("machine_guest", { host, email: who.email, add: true })); }
+    catch (e) { toast(`${known ? "" : `Invited ${who.login}, but step 2 of 2 failed: `}could not let them in to ${host}: ${e}`); return paint(); }
+    const e = who.email.trim().toLowerCase();
+    g.guests[host] = [...(g.guests[host] || []).filter(x => x !== e), e];
+    paint();
+    tellGuest(who.login, host);
   }
   paint();
   if (owner && guestsP) guestsP.then(v => { g = v; paint(); });
@@ -1552,6 +1805,8 @@ function termsView(t, org, asking) {
 async function loadTerms() {
   const page = document.getElementById("terms");
   const s = lastTeam, access = s && (s.vaults.find(v => v.access) || {}).access;
+  // interns and guests read the terms too, from the requests repo, without the vault's rules
+  if (!access && s && s.user && termsNow && termsNow.text) return page.replaceChildren(termsView(termsNow, termsNow.org, false));
   if (!access) return page.replaceChildren(el("h1", null, "Terms"), el("p", "sub", "Sign in on Team access to read the team's terms."));
   page.replaceChildren(el("h1", null, "Terms"), stage("Reading the terms"));
   const t = termsNow || await invoke("terms_state");

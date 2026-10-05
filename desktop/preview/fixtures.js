@@ -4,7 +4,9 @@
 window.__fixtures = (scenario, os) => {
   const ORG = "ExampleCorp", BOOK = `${ORG}/docs-book`, COMPANY = "amy-chen/ExampleCorp";
   const owner = scenario === "owner" || scenario === "terms", signedOut = scenario === "signedout";
-  const ME = owner ? "amy-chen" : "cy-wu";
+  // guest: outside the team, no vaults, machines added by name; invited: a guest who has not accepted GitHub's invitation
+  const guest = scenario === "guest" || scenario === "invited";
+  const ME = owner ? "amy-chen" : guest ? "jo-vance" : "cy-wu";
   const none = null, ok = text => () => text;
   const day = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
 
@@ -62,7 +64,10 @@ window.__fixtures = (scenario, os) => {
     requests: owner ? REQUESTS : [{ number: 44, author: ME, repo: "docs-l2", level: "read", body: "repo: docs-l2\nlevel: read\n\nCurious about the simulation notes.\n\n<!-- sent by aIwalk System Setup -->" }],
   };
   const teamAccess = signedOut
-    ? { user: none, name: none, accounts: [], error: "You are not logged in to any GitHub host", vaults: [], scopes: [] }
+    ? { user: none, name: none, accounts: [], error: "You are not logged in to any GitHub host", vaults: [], scopes: [], guest: false }
+    : guest ? { user: ME, name: "Jo Vance", accounts: [{ login: ME, active: true, method: "account", protocol: "https" }], error: none, guest: true, scopes: ["repo", "read:org"],
+        vaults: [{ name: "Team docs", repo: BOOK, about: "The team's technical documents, papers and progress notes", access: none, permission: 0 },
+                 { name: "Company", repo: COMPANY, about: "Company records, founders only", access: none, permission: 0 }] }
     : { user: ME, name: owner ? "Amy Chen" : none,
         accounts: [{ login: ME, active: true, method: "account", protocol: "https" }, ...(owner ? [{ login: "amy-chen-work", active: false, method: "temporary", protocol: "https" }] : [])],
         error: none,
@@ -70,12 +75,13 @@ window.__fixtures = (scenario, os) => {
           { name: "Team docs", repo: BOOK, about: "The team's technical documents, papers and progress notes", access: org, permission: owner ? 4 : 1 },
           { name: "Company", repo: COMPANY, about: "Company records, founders only", access: none, permission: owner ? 4 : 0 },
         ],
-        scopes: owner ? ["repo", "read:org", "admin:org"] : ["repo", "read:org"] };
+        scopes: owner ? ["repo", "read:org", "admin:org"] : ["repo", "read:org"], guest: false };
 
   // ---- terms
   const TERMS = "<!-- terms version: 2 -->\n# Terms of use\nThese terms apply to everyone who uses the team's repositories and machines.\n1. Keep your sign-in to yourself.\n2. Do not copy participant data off the team's machines.\n3. Tell an owner when you leave the team.\n4. Machines are shared: close desktops you no longer use.\n5. Papers and notes stay inside the team until an owner says otherwise.\n6. The owners may change these terms and will ask you to read them again.\n7. Questions go to the owners.\n\n# 使用條款\n本條款適用於所有使用實驗室儲存庫與機器的人。\n1. 請勿與他人共用你的登入。\n2. 請勿將受試者資料複製出實驗室機器。\n3. 離開團隊時請告知擁有者。\n4. 機器為共用資源，用完的桌面請關閉。\n5. 論文與筆記在擁有者同意前僅限團隊內部。\n6. 擁有者可能修改條款，屆時會請你重新閱讀。\n7. 有問題請洽擁有者。\n";
   const accepted = scenario === "terms" ? none : { version: 2, date: day(30) };
-  const termsState = signedOut ? none : { org: ORG, version: 2, text: TERMS, accepted };
+  const termsState = signedOut ? none : scenario === "invited" ? { org: ORG, pending: `https://github.com/${ORG}/access-requests/invitations` }
+    : { org: ORG, version: 2, text: TERMS, accepted };
 
   // ---- machines
   const gpu = (name, util, used, total, temp) => ({ name, util, mem_used_mb: used, mem_total_mb: total, temp_c: temp });
@@ -92,17 +98,24 @@ window.__fixtures = (scenario, os) => {
     tiger: { ...base, hostname: "tiger", cpu: "Intel(R) Core(TM) i7-12700", threads: 20, mem_gb: 31.1, mem_used_gb: 9.4, cpu_pct: 8.1, load: [0.9, 1.1, 0.8],
       gpus: [], disk_gb: 960, disk_free_gb: 402, uptime_h: 48.0, tools: none, host_tools: "Host tools: older than this app (the status page does not report versions yet)",
       desktops: [], cluster: none },
+    otter: { ...base, hostname: "otter", cpu: "AMD Ryzen 7 7700X 8-Core Processor", threads: 16, mem_gb: 62.6, mem_used_gb: 21.3, cpu_pct: 24.0, load: [3.1, 2.8, 2.5],
+      gpus: [gpu("NVIDIA GeForce RTX 4080", 41, 6100, 16376, 58)], disk_gb: 1920, disk_free_gb: 880, uptime_h: 300.2, tools: { "exo-status.py": 2, exo: 1, "exo-desktop": 1 }, host_tools: "Host tools: current",
+      desktops: [{ user: "visit", display: ":4", port: none, socket: "/home/visit/.vnc/desk-4.sock", geometry: "1920x1080" }], cluster: none },
   };
   // the status page answers only for machines this account may connect to
-  const reach = h => owner || ["dragon", "tiger"].includes(h);
+  const reach = h => guest ? h === "otter" : owner || ["dragon", "tiger"].includes(h);
+  // a guest's machines (mock.js keeps them in localStorage): otter lets them in, heron turns them away
+  const GUEST_HOSTS = ["otter", "heron", "lynx"];
 
   // ---- people and Cloudflare (owners)
   const members = Object.entries(PEOPLE).map(([login, p]) => ({ login, name: p.name, owner: p.grants === none }));
   // GitHub shows a member the list, and neither invitations nor outside collaborators
   const people = owner
     ? { members, can_edit: true, invites: [{ id: 7001, login: "hal-fox", owner: false, created: day(3) }],
-        interns: [{ login: "ivy-tam", repos: [{ repo: "docs-papers", level: "read", invite: none }, { repo: "docs-notes", level: "read", invite: none }, { repo: "docs-l1", level: "read", invite: 8102 }] }] }
-    : { members, can_edit: false, invites: [], interns: [] };
+        interns: [{ login: "ivy-tam", repos: [{ repo: "docs-papers", level: "read", invite: none }, { repo: "docs-notes", level: "read", invite: none }, { repo: "docs-l1", level: "read", invite: 8102 }] },
+                  { login: "kit-moss", repos: [{ repo: "access-requests", level: "read", invite: none }] },
+                  { login: "lou-gray", repos: [{ repo: "access-requests", level: "read", invite: 8201 }] }], requests: "access-requests" }
+    : { members, can_edit: false, invites: [], interns: [], requests: "access-requests" };
   const prRows = owner
     ? CODE.map(r => ({ repo: r, mine: 4, listed: true, merge: ["amy-chen", "bo-lin", ...(r === "MoCap" ? ["cy-wu"] : [])], write: Object.keys(PEOPLE).filter(l => PEOPLE[l].grants && PEOPLE[l].grants[r] === 2), extra: r === "MoCap" ? ["cy-wu"] : [] }))
     : [{ repo: "MoCap", mine: 3, listed: true, merge: ["amy-chen", "bo-lin", "cy-wu"], write: ["fay-ng"], extra: ["cy-wu"] }, { repo: "simulator", mine: 1, listed: false, merge: [], write: [], extra: [] }];
@@ -125,12 +138,13 @@ window.__fixtures = (scenario, os) => {
     terms_state: termsState, terms_accept: none,
     terms_everyone: { "amy-chen": { version: 2, date: day(30) }, "bo-lin": { version: 2, date: day(29) }, "cy-wu": { version: 2, date: day(12) }, "dee-park": { version: 1, date: day(80) }, "gus-oh": { version: 2, date: day(5) } },
     // owner tools
-    org_people: people, invite: ok("Invited"), invite_intern: ok("Invited"), remove_intern: ok("Removed"), cancel_invite: ok("Invitation cancelled"),
+    org_people: people, invite: ok("Invited"), invite_intern: a => a.guest ? `Invited ${a.login} as a guest, read on access-requests for the terms. GitHub emails them the invitation.` : "Invited", remove_intern: ok("Removed"), cancel_invite: ok("Invitation cancelled"),
     set_role: ok("Role changed"), remove_member: ok("Removed"), set_access: ok("Access changed"), machine_extra: ok("Done"),
     // people let in by email (interns); the backend reads them only with the Cloudflare token, so owners only
-    machine_guests: owner ? { dragon: ["ivy.tam.visiting@example-university.edu"] } : {},
+    // kit-moss and lou-gray are guests (tied by public email), the other two addresses belong to nobody known here
+    machine_guests: owner ? { dragon: ["ivy.tam.visiting@example-university.edu", "kit@example.net"], horse: ["kit@example.net", "lou.gray@example.net", "old.visitor@example.org"] } : {},
     machine_guest: a => a.add ? `${a.email} may now connect to ${a.host}` : `${a.email} can no longer connect to ${a.host}. Their sign-in to the machines is ended.`,
-    public_email: a => a.login === "ivy-tam" ? "ivy.tam@example.com" : none,
+    public_email: a => ({ "ivy-tam": "ivy.tam@example.com", "kit-moss": "kit@example.net", "lou-gray": "lou.gray@example.net", "max-hale": "max@example.net" })[a.login] || none,
     pr_permissions: prRows, merge_right: ok("Done"),
     cf_state: { connected: true, expires: "2027-03-01", shared: true, has_key: true, left: [] }, cf_key: "ABCD-EFGH-IJKL-MNOP-QRST",
     cf_connect: ok("Connected"), cf_share: ok("ABCD-EFGH-IJKL-MNOP-QRST"), cf_join: ok("Connected"), cf_renew: ok("Renewed"), cf_forget: none,
@@ -138,9 +152,11 @@ window.__fixtures = (scenario, os) => {
     vault_local: { copies: { [BOOK]: "/home/demo/Documents/aIwalk/docs-book" }, obsidian: true }, default_folder: a => `/home/demo/Documents/aIwalk/${(a.repo || "").split("/").pop()}`,
     pick_folder: none, vault_link: ok("Linked"), vault_download: ok("Downloaded"), vault_update: ok("Up to date"), vault_open: none, obsidian_install: ok("Obsidian installed"),
     // machines
-    reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, "up"])),
+    reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, guest && h === "heron" ? "refused" : "up"])),
+    find_machine: a => !/^[a-z0-9-]{1,32}$/.test((a.name || "").trim()) ? new Error("A machine's name is lower-case letters, digits and hyphens, 1 to 32 of them.")
+      : GUEST_HOSTS.includes(a.name.trim()) ? `ssh-${a.name.trim()}.example-corp.org` : new Error(`There is no machine called ${a.name.trim()}`),
     machine_status: a => Object.fromEntries((a.tunnels || []).filter(([h]) => reach(h) && STATUS[h]).map(([h]) => [h, STATUS[h]])),
-    forwards: { "dragon:2": 5902 }, ssh_status: "current", ssh_setup: ok("Connections set up"), access_login: ok("Signed in to 3 machines"),
+    forwards: { "dragon:2": 5902 }, ssh_status: guest ? "missing" : "current", ssh_setup: ok("Connections set up"), access_login: ok("Signed in to 3 machines"),
     lab_identity: { email: `${ME}@example.com`, expires: Math.floor(Date.now() / 1000) + 20 * 3600, matches: true, missing: 0 }, lab_sign_out: none,
     open_forward: 5911, close_forward: none, open_viewer: none, desktop: ":3", update_host_tools: ok("Host tools updated"),
     // Linux pages

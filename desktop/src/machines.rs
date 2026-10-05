@@ -30,15 +30,18 @@ fn through(tunnel: &str) -> Option<Vec<String>> {
 }
 
 /// "no-tunnel" (none set up yet), "sign-in" (no Cloudflare sign-in on this computer yet),
-/// "up" (the machine's SSH answered through the tunnel), "down" (it did not).
+/// "up" (the machine's SSH answered through the tunnel), "refused" (Access would not let this sign-in through),
+/// "down" (it did not answer).
 fn state(tunnel: Option<&str>) -> &'static str {
     let Some(t) = tunnel else { return "no-tunnel" };
     if crate::access::token(t).is_err() { return "sign-in" }
     let Some(app) = app() else { return "down" };
     let (_, out) = sh("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", &format!("ProxyCommand=\"{}\" --ssh-proxy %h", app.replace('%', "%%")), &format!("probe@{t}"), "true"], 30);
-    // sshd asking who we are means the whole path works; it refuses "probe", which is fine
-    if out.contains("Permission denied") || out.contains("Too many authentication failures") { "up" } else { "down" }
+    // sshd asking who we are means the whole path works; it refuses "probe", which is fine. Access turning the
+    // kept sign-in away (the person was never let in, or was taken out) is not the machine being down
+    if out.contains("Permission denied") || out.contains("Too many authentication failures") { "up" }
+    else if out.contains("Cloudflare refused the connection") { "refused" } else { "down" }
 }
 
 /// The state of each machine, checked all at once; a machine reached through another (`via`) shares its state.
@@ -63,6 +66,14 @@ pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_
         })
     }).collect();
     jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
+}
+
+/// A guest's machine by the name an owner gave them: its SSH hostname, once Cloudflare confirms the team's Access
+/// guards it. Err with a sentence for the page when the name is not one, or there is no such machine.
+#[tauri::command(async)]
+pub fn find_machine(name: String) -> Result<String, String> {
+    let tunnel = exo_core::machine_tunnel(&name, crate::access::ZONE)?;
+    if crate::access::is_team_app(&tunnel)? { Ok(tunnel) } else { Err(format!("There is no machine called {}", name.trim())) }
 }
 
 /// Signs this computer in to Cloudflare Access for `tunnel`: a browser opens for the GitHub sign-in.

@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ponytail: one team; move both to vault_rules.json when a second Access organisation appears
-const ZONE: &str = ".aiwalkcorp.com";
+pub(crate) const ZONE: &str = ".aiwalkcorp.com";
 const TEAM: &str = "aiwalkcorp.cloudflareaccess.com";
 
 fn dir() -> PathBuf { home().join(".cloudflared") }
@@ -74,6 +74,15 @@ fn app_from(c: &Value, host: &str, now: i64) -> Result<App, String> {
     let aud = s("aud");
     if aud.is_empty() || !aud.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("Access named no application".into()) }
     Ok(App { aud, app_host })
+}
+
+/// Whether `host` is one of the team's Access applications, by the same signed metadata request a sign-in starts
+/// with. Ok(false) when Cloudflare answers but not for it (or no such hostname exists); Err when Cloudflare itself
+/// cannot be reached, so an offline computer is not told the machine does not exist.
+pub fn is_team_app(host: &str) -> Result<bool, String> {
+    let host = team_host(host)?;
+    if app_info(&host).is_ok() { return Ok(true) }
+    agent().get(format!("https://{TEAM}/cdn-cgi/access/certs")).call().map(|_| false).map_err(|e| format!("Cloudflare did not answer: {e}"))
 }
 
 /// The claims of a token signed by the team's Access organisation (RS256, keys from its certs page, kept for the
