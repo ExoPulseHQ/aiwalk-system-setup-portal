@@ -1356,10 +1356,13 @@ function paintTeamOpening() {
   const org = (s.vaults.find(v => v.access) || {}).access, machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   const reach = [...new Set(machines.filter(m => m.tunnel).map(m => m.host))].filter(h => !ruledOut(org, h, machines, s.user));
   const here = s.vaults.filter(v => local.copies[v.repo]).length;
-  const detail = [`Signed in as ${s.user}. ${plural(here, "vault")} on this computer, ${plural(reach.length, "machine")} within reach.`];
+  // for someone let in machine by machine, which machines are theirs is Cloudflare's to say, not the vault's: the
+  // count would be every machine there is, so it is left out and the Machines page says it
+  const byEmail = outsider(org, s.user);
+  const detail = [`Signed in as ${s.user}. ${plural(here, "vault")} on this computer` + (byEmail ? ". The Machines page shows which machines let you in." : `, ${plural(reach.length, "machine")} within reach.`)];
   const items = [{ icon: "check", chips: [s.user], tip: `Signed in as ${s.user}` },
     { icon: "monitor-check", num: here, unit: here === 1 ? "vault here" : "vaults here", tip: `${plural(here, "vault")} on this computer` },
-    { icon: "server", num: reach.length, unit: "in reach", tip: `${plural(reach.length, "machine")} within reach` }];
+    ...(byEmail ? [] : [{ icon: "server", num: reach.length, unit: "in reach", tip: `${plural(reach.length, "machine")} within reach` }])];
   setOpening(page, left.length
     ? ["warn", "Almost everything is connected.", [...detail, ` Still to do: ${left.join(", ")}.`],
        [...items, { icon: "circle-alert", text: `To do: ${left.join(", ")}`, tone: "warn", tip: `Still to do: ${left.join(", ")}` }]]
