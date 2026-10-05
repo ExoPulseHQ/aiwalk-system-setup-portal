@@ -404,8 +404,22 @@ fn terms_everyone(org: String) -> BTreeMap<String, serde_json::Value> {
 }
 
 pub fn open_url(url: &str) {
+    // Linux: xdg-open hands the address to the desktop, which may have no web browser chosen (a fresh Xfce in a
+    // remote desktop says "Failed to execute default Web Browser"). When it fails for a web address, a browser found
+    // on this computer is started with it instead. Waited for on its own thread, so nothing is left unreaped.
     #[cfg(target_os = "linux")]
-    let _ = crate::cmd("xdg-open").arg(url).spawn();
+    {
+        let url = url.to_string();
+        std::thread::spawn(move || {
+            let opened = crate::cmd("xdg-open").arg(&url).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+            if opened || !url.starts_with("http") { return }
+            for b in ["firefox", "google-chrome", "chromium", "chromium-browser", "brave-browser", "microsoft-edge"] {
+                if let Some(p) = on_path(b) {
+                    if let Ok(mut c) = crate::cmd(p).arg(&url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() { let _ = c.wait(); return }
+                }
+            }
+        });
+    }
     #[cfg(target_os = "macos")]
     let _ = crate::cmd("open").arg(url).spawn();
     // not `cmd /c start`: cmd reads every & in the address as the end of the command, so a sign-in address arrived
