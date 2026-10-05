@@ -543,7 +543,14 @@ fn main() {
         // `github token`: the signed-in account's token on stdout, for the vault plugin (what `gh auth token` was)
         Some("github") if std::env::args().nth(2).as_deref() == Some("token") => match login::active() {
             Some((_, t)) => { println!("{t}"); return }
-            None => { eprintln!("not signed in to GitHub: sign in in aIwalk System Setup"); std::process::exit(1) }
+            None => {
+                // one line, the reason first: the vault plugin shows the last line of this to the person
+                match secrets::why_not("github") {
+                    Some(e) => eprintln!("the sign-in kept on this computer could not be read ({e}): open aIwalk System Setup once and allow it"),
+                    None => eprintln!("not signed in to GitHub: sign in in aIwalk System Setup"),
+                }
+                std::process::exit(1)
+            }
         },
         _ => {}
     }

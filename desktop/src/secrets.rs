@@ -14,6 +14,7 @@ mod imp {
     pub fn load(key: &str) -> Option<String> { apart(|| load_here(key)).flatten() }
     pub fn save(key: &str, secret: &str) -> Result<(), String> { apart(|| save_here(key, secret)).unwrap_or_else(|| Err("the keyring did not answer".into())) }
     pub fn forget(key: &str) { apart(|| forget_here(key)); }
+    pub fn why_not(_: &str) -> Option<String> { None }
     fn attrs(key: &str) -> HashMap<&str, &str> { HashMap::from([("xdg:schema", "com.aiwalk.setup.Secret"), ("key", key)]) }
     fn load_here(key: &str) -> Option<String> {
         let ss = SecretService::connect(EncryptionType::Dh).ok()?;
@@ -39,6 +40,15 @@ mod imp {
     pub fn load(key: &str) -> Option<String> { entry(key).ok()?.get_password().ok() }
     pub fn save(key: &str, secret: &str) -> Result<(), String> { entry(key)?.set_password(secret).map_err(|e| e.to_string()) }
     pub fn forget(key: &str) { if let Ok(e) = entry(key) { let _ = e.delete_credential(); } }
+    /// Why `key` could not be read, when that is something other than "nothing is kept": on a Mac the Keychain may
+    /// refuse a program it does not recognise (the app after an update, or started by another program) until the
+    /// person allows it, which reads exactly like not being signed in.
+    pub fn why_not(key: &str) -> Option<String> {
+        match entry(key).and_then(|e| e.get_password().map_err(|e| match e { keyring::Error::NoEntry => String::new(), e => e.to_string() })) {
+            Err(e) if !e.is_empty() => Some(e),
+            _ => None,
+        }
+    }
 }
 
 // ponytail: Android keeps each secret as a file (mode 600) in the app's private data folder, which other apps cannot
@@ -60,6 +70,7 @@ mod imp {
         crate::access::write_private(&f, secret.as_bytes())
     }
     pub fn forget(key: &str) { if let Some(f) = file(key) { let _ = std::fs::remove_file(f); } }
+    pub fn why_not(_: &str) -> Option<String> { None }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows, target_os = "android")))]
@@ -67,6 +78,7 @@ mod imp {
     pub fn load(_: &str) -> Option<String> { None }
     pub fn save(_: &str, _: &str) -> Result<(), String> { Err("this system has no keyring this app knows".into()) }
     pub fn forget(_: &str) {}
+    pub fn why_not(_: &str) -> Option<String> { None }
 }
 
-pub use imp::{forget, load, save};
+pub use imp::{forget, load, save, why_not};
