@@ -33,14 +33,16 @@
 <script>
 const listen = window.__TAURI__.event.listen;
 // Every call to the app's backend shows the top line while it runs, except the quiet background checks.
-const QUIET = new Set(["phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable", "ssh_status", "claude_state", "machine_status", "forwards"]);
+const QUIET = new Set(["start_page", "phones", "vm_state", "platform", "tools", "default_folder", "vault_local", "reachable", "ssh_status", "claude_state", "machine_status", "forwards"]);
 let pendingCalls = 0;
 function invoke(cmd, args) {
   const loud = !QUIET.has(cmd);
-  if (loud) document.getElementById("topline").classList.toggle("on", ++pendingCalls > 0);
-  return window.__TAURI__.core.invoke(cmd, args).finally(() => {
-    if (loud) document.getElementById("topline").classList.toggle("on", --pendingCalls > 0);
-  });
+  // counted once: when the answer comes, or after two minutes without one (a backend that died mid-command never
+  // answers, and the line would run for ever)
+  let counted = loud;
+  const done = () => { if (counted) { counted = false; document.getElementById("topline").classList.toggle("on", --pendingCalls > 0); } };
+  if (loud) { document.getElementById("topline").classList.toggle("on", ++pendingCalls > 0); setTimeout(done, 120000); }
+  return window.__TAURI__.core.invoke(cmd, args).finally(done);
 }
 
 // The button pressed shows what is happening until `job` settles; returns job's result (or throws its error).
@@ -278,7 +280,7 @@ async function showVersion() {
 invoke("platform").then(os => {
   // the phone and VM modules need a Linux computer
   if (os !== "linux") document.querySelectorAll("nav .linux").forEach(b => b.remove());
-  go("team");
+  invoke("start_page").then(p => go(p && pages[p] ? p : "team"), () => go("team"));
   showVersion();
 });
 </script>

@@ -1,13 +1,16 @@
 //! Small secrets in the system's own keyring, never in a file: Secret Service on Linux, Keychain on macOS,
 //! Credential Manager on Windows. `key` names one secret ("github").
 
+/// Runs `f` on a thread of its own; None if it panicked. The blocking Secret Service client starts a runtime, which
+/// panics on a thread that already drives one, and every command the page calls runs on such a thread: the page
+/// then waits for an answer that never comes. Every keyring call in the app goes through here.
+pub(crate) fn apart<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> { std::thread::scope(|s| s.spawn(f).join().ok()) }
+
 #[cfg(target_os = "linux")]
 mod imp {
     use secret_service::{blocking::SecretService, EncryptionType};
     use std::collections::HashMap;
-    /// The blocking Secret Service client starts its own runtime, which panics on a thread that already drives one
-    /// (every Tauri command does), so each call runs on a thread of its own.
-    fn apart<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> { std::thread::scope(|s| s.spawn(f).join().ok()) }
+    use super::apart;
     pub fn load(key: &str) -> Option<String> { apart(|| load_here(key)).flatten() }
     pub fn save(key: &str, secret: &str) -> Result<(), String> { apart(|| save_here(key, secret)).unwrap_or_else(|| Err("the keyring did not answer".into())) }
     pub fn forget(key: &str) { apart(|| forget_here(key)); }

@@ -26,7 +26,12 @@ mod store {
         if what != "token" { a.insert("what", what); }
         a
     }
-    pub fn load(what: &'static str) -> Option<String> {
+    pub fn load(what: &'static str) -> Option<String> { crate::secrets::apart(|| load_here(what)).flatten() }
+    pub fn save(what: &'static str, secret: &str) -> Result<(), String> {
+        crate::secrets::apart(|| save_here(what, secret)).unwrap_or_else(|| Err("the keyring did not answer".into()))
+    }
+    pub fn forget(what: &'static str) { crate::secrets::apart(|| forget_here(what)); }
+    fn load_here(what: &'static str) -> Option<String> {
         let ss = SecretService::connect(EncryptionType::Dh).ok()?;
         let found = ss.search_items(attrs(what)).ok()?;
         // a search for the token's attributes also matches the key's item (it has them all, plus "what"): skip those
@@ -34,14 +39,14 @@ mod store {
         let item = found.unlocked.into_iter().find(|i| mine(i)).or_else(|| { let i = found.locked.into_iter().find(|i| mine(i))?; i.unlock().ok()?; Some(i) })?;
         String::from_utf8(item.get_secret().ok()?).ok()
     }
-    pub fn save(what: &'static str, secret: &str) -> Result<(), String> {
+    fn save_here(what: &'static str, secret: &str) -> Result<(), String> {
         let ss = SecretService::connect(EncryptionType::Dh).map_err(|e| e.to_string())?;
         let c = ss.get_default_collection().map_err(|e| e.to_string())?;
         if c.is_locked().unwrap_or(false) { c.unlock().map_err(|e| e.to_string())? }
         let label = if what == "token" { "aIwalk System Setup: Cloudflare" } else { "aIwalk System Setup: Cloudflare team key" };
         c.create_item(label, attrs(what), secret.as_bytes(), true, "text/plain").map(|_| ()).map_err(|e| e.to_string())
     }
-    pub fn forget(what: &'static str) {
+    fn forget_here(what: &'static str) {
         let Ok(ss) = SecretService::connect(EncryptionType::Dh) else { return };
         let found = ss.search_items(attrs(what));
         if let Ok(found) = found {

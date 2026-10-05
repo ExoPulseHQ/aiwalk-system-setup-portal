@@ -150,7 +150,9 @@ fn start(vm: &Vm) -> Result<(), String> {
 
 fn keyring_attrs(user: &str) -> HashMap<&str, &str> { HashMap::from([("xdg:schema", SCHEMA), ("user", user)]) }
 
-pub fn load_password(user: &str) -> Option<String> {
+pub fn load_password(user: &str) -> Option<String> { crate::secrets::apart(|| load_password_here(user)).flatten() }
+
+fn load_password_here(user: &str) -> Option<String> {
     use secret_service::{blocking::SecretService, EncryptionType};
     let ss = SecretService::connect(EncryptionType::Dh).ok()?;
     let found = ss.search_items(keyring_attrs(user)).ok()?;
@@ -163,6 +165,10 @@ pub fn load_password(user: &str) -> Option<String> {
 }
 
 fn save_password(user: &str, password: &str) -> Result<(), String> {
+    crate::secrets::apart(|| save_password_here(user, password)).unwrap_or_else(|| Err("the keyring did not answer".into()))
+}
+
+fn save_password_here(user: &str, password: &str) -> Result<(), String> {
     use secret_service::{blocking::SecretService, EncryptionType};
     let ss = SecretService::connect(EncryptionType::Dh).map_err(|e| e.to_string())?;
     let c = ss.get_default_collection().map_err(|e| e.to_string())?;

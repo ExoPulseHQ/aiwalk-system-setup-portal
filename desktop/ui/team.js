@@ -387,7 +387,8 @@ function machinesSection(machines, org, user) {
     const page = document.getElementById("machines");
     if (!sec.isConnected) return;
     const of = k => hosts.map(m => m.host).filter(h => look[h] === k);
-    const up = of("up"), off = of("none"), bad = [...of("down"), ...of("no-tunnel")];
+    // a machine with no tunnel yet is not set up, which is not the same as down: it is said quietly, not in red
+    const up = of("up"), off = of("none"), bad = of("down"), unset = of("no-tunnel");
     if (of("checking").length === hosts.length)
       return setOpening(page, ["wait", "Checking the machines.", [], [{ icon: "circle-dashed", text: "Checking", tone: "calm", tip: "Checking the machines" }]]);
     const warns = hosts.map(m => m.host).filter(h => diskLow[h]).map(h => [h, diskLow[h]]);
@@ -396,6 +397,7 @@ function machinesSection(machines, org, user) {
       detail.push(`Within reach: ${up.join(", ")}.`); }
     if (off.length) { const t = `${plural(off.length, "other needs", "others need")} access from an owner`; items.push({ icon: "lock", num: off.length, unit: "no access", tone: "calm", tip: t }); detail.push(` ${t}.`); }
     warns.forEach(([h, w]) => { items.push({ icon: "circle-alert", chips: [h], text: w, tone: "warn", tip: `${h}: ${w}` }); detail.push(` ${h}: ${w}.`); });
+    if (unset.length) { const t = `Not set up yet: ${unset.join(", ")}`; items.push({ icon: "circle-dashed", num: unset.length, unit: "not set up", tone: "calm", tip: t }); detail.push(` ${t}.`); }
     if (bad.length) {
       items.push({ icon: "circle-x", chips: bad, text: "down", tone: "bad", tip: `Cannot be reached: ${bad.join(", ")}` });
       return setOpening(page, ["bad", `${bad.length} of ${plural(hosts.length, "machine")} cannot be reached.`, [...detail, ` Down: ${bad.join(", ")}.`], items]);
