@@ -106,6 +106,8 @@ pub struct Person {
     pub name: String,
     /// None for org owners, who are admins of every repo.
     pub grants: Option<BTreeMap<String, u8>>,
+    /// Not a member of the organisation: an intern or a guest, let in to single repos (an outside collaborator).
+    pub outside: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -141,7 +143,7 @@ pub fn org_access(response_json: &str) -> OrgAccess {
         let Some(login) = edge["node"]["login"].as_str() else { continue };
         let name = edge["node"]["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(login).to_string();
         let grants = (edge["role"] != "ADMIN").then(BTreeMap::new);
-        out.people.insert(login.to_string(), Person { name, grants });
+        out.people.insert(login.to_string(), Person { name, grants, outside: false });
     }
     for team in list(&org["teams"]["nodes"]) {
         let slug = team["slug"].as_str().unwrap_or_default();
@@ -161,7 +163,7 @@ pub fn org_access(response_json: &str) -> OrgAccess {
 /// Per-repo permissions. Owners may list every repo's collaborators (team and direct grants alike);
 /// anyone else can only ask for their own permission on the repos they can see.
 pub fn repos_query(org: &str, owner: bool) -> String {
-    let field = if owner { "collaborators(first:100, affiliation:ALL) { edges { permission node { login } } }" } else { "viewerPermission" };
+    let field = if owner { "collaborators(first:100, affiliation:ALL) { edges { permission node { login name } } }" } else { "viewerPermission" };
     format!("{{ organization(login:\"{org}\") {{ repositories(first:100) {{ nodes {{ name {field} }} }} }} }}")
 }
 
@@ -169,6 +171,15 @@ pub fn repos_query(org: &str, owner: bool) -> String {
 pub fn repo_grants(people: &mut BTreeMap<String, Person>, response_json: &str, viewer: &str) {
     let Ok(v) = serde_json::from_str::<Value>(response_json) else { return };
     let Some(repos) = v["data"]["organization"]["repositories"]["nodes"].as_array() else { return };
+    // an owner's answer names everyone on each repo. Whoever is on one without being a member is an intern or a
+    // guest; they join the list so an owner can look through their eyes as well
+    for r in repos {
+        for e in r["collaborators"]["edges"].as_array().into_iter().flatten() {
+            let Some(login) = e["node"]["login"].as_str().filter(|l| !people.contains_key(*l)) else { continue };
+            let name = e["node"]["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(login).to_string();
+            people.insert(login.to_string(), Person { name, grants: Some(BTreeMap::new()), outside: true });
+        }
+    }
     let mut set = |login: &str, repo: &str, perm: &str| {
         if let Some(g) = people.get_mut(login).and_then(|p| p.grants.as_mut()) {
             g.insert(repo.to_string(), perm_rank(perm));
@@ -1076,7 +1087,8 @@ mod tests {
     const REPOS_OWNER: &str = r#"{"data": {"organization": {"repositories": {"nodes": [
         {"name": "exo-l3", "collaborators": {"edges": [{"permission": "WRITE", "node": {"login": "alice"}},
                                                        {"permission": "ADMIN", "node": {"login": "owner"}}]}},
-        {"name": "NTKCAP", "collaborators": {"edges": [{"permission": "READ", "node": {"login": "alice"}}]}}]}}}}"#;
+        {"name": "NTKCAP", "collaborators": {"edges": [{"permission": "READ", "node": {"login": "alice"}},
+                                                       {"permission": "READ", "node": {"login": "ivy", "name": "Ivy Intern"}}]}}]}}}}"#;
 
     #[test]
     fn grants_come_from_repo_permissions() {
@@ -1091,6 +1103,9 @@ mod tests {
         let alice = people["alice"].grants.as_ref().unwrap();
         assert_eq!((alice["exo-l3"], alice["NTKCAP"]), (2, 1));
         assert_eq!(people["owner"].grants, None);
+        // on a repo without being a member: listed as outside, with what that repo gives
+        assert!(people["ivy"].outside && !people["alice"].outside);
+        assert_eq!((people["ivy"].name.as_str(), people["ivy"].grants.as_ref().unwrap().get("NTKCAP")), ("Ivy Intern", Some(&1)));
 
         let mut people = org_access(ORG).people;
         repo_grants(&mut people, r#"{"data":{"organization":{"repositories":{"nodes":[{"name":"exo-l3","viewerPermission":"READ"}]}}}}"#, "alice");

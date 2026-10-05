@@ -777,13 +777,15 @@ function vaultSection(v, user, viewAs, orgs) {
     editAccess = owner ? repo => accessDialog(a, repo) : null;   // pills are editable for owners, in every re-render
     docs.replaceChildren(tree(a.tree, person.grants, extra));
     editAccess = null;
-    teams.replaceChildren(owner && person.grants !== null && a.teams.length ? teamsList(a, login, person) : "");
+    // teams are for members: putting an intern on one would invite them into the organisation
+    teams.replaceChildren(owner && person.grants !== null && !person.outside && a.teams.length ? teamsList(a, login, person) : "");
   };
   const tools = el("div", "row view-as"), docsHead = el("h3", null, "Documents");
   if (owner) {   // owners may look through any member's eyes
     const pick = el("select");
-    Object.keys(a.people).sort((x, y) => (x !== user) - (y !== user) || a.people[x].name.localeCompare(a.people[y].name))
-      .forEach(l => pick.append(new Option(l === user ? "Me" : a.people[l].name === l ? l : `${a.people[l].name} (${l})`, l)));
+    // me, then members, then interns and guests, each by name
+    Object.keys(a.people).sort((x, y) => (x !== user) - (y !== user) || !!a.people[x].outside - !!a.people[y].outside || a.people[x].name.localeCompare(a.people[y].name))
+      .forEach(l => pick.append(new Option(l === user ? "Me" : (a.people[l].name === l ? l : `${a.people[l].name} (${l})`) + (a.people[l].outside ? ", not a member" : ""), l)));
     pick.onchange = () => show(pick.value);
     if (viewAs in a.people) pick.value = viewAs;
     const label = el("label", "sub", "View as ");
@@ -1138,6 +1140,7 @@ async function peopleSection(org, user, teams, tree, hosts = []) {
   function paint() {
     [[memberBtn, "member"], [ownerBtn, "owner"], [internBtn, "intern"]].forEach(([b, r]) => b.setAttribute("aria-checked", String(role === r)));
     const noTeams = role !== "member";
+    startsRow.hidden = noTeams;   // greyed boxes read as something broken; an owner or an intern has none to tick
     tiles.querySelectorAll(".tile").forEach(tile => {
       tile.disabled = noTeams;
       tile.setAttribute("aria-pressed", String(!noTeams && chosenTeams.has(tile.dataset.slug)));
