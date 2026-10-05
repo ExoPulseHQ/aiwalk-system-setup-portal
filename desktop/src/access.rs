@@ -379,6 +379,11 @@ pub fn ssh_cert_if_stale(host: &str) -> Result<(), String> {
 
 /// `--access-login <host>`: the browser sign-in, writing the tokens where cloudflared keeps them. `browser` false
 /// only prints the address. Waits up to 5 minutes.
+/// Told the address of every browser sign-in as it starts (the page shows it to copy): the browser may not open, or
+/// the person may want to sign in on another device, which works because the answer comes back through Cloudflare.
+static URL_HOOK: std::sync::Mutex<Option<Box<dyn Fn(&str) + Send>>> = std::sync::Mutex::new(None);
+pub fn on_sign_in_address(f: Box<dyn Fn(&str) + Send>) { *URL_HOOK.lock().unwrap() = Some(f); }
+
 pub fn login(host: &str, browser: bool) -> Result<(), String> {
     let host = team_host(host)?;
     let app = app_info(&host)?;
@@ -388,6 +393,7 @@ pub fn login(host: &str, browser: bool) -> Result<(), String> {
     let key = { use base64::Engine; base64::engine::general_purpose::URL_SAFE.encode(mine.public_key().as_bytes()) };
     let url = login_url(&host, &app.aud, &key);
     eprintln!("Sign in at:\n\n{url}\n");
+    if let Some(f) = URL_HOOK.lock().unwrap().as_ref() { f(&url) }
     if browser { crate::open_url(&url) }
     let (body, sender) = wait_for_transfer(&key, std::time::Instant::now() + Duration::from_secs(300), &|| eprint!("."))?;
     let got: Value = serde_json::from_slice(&open_transfer(&body, &sender, &mine)?).map_err(|_| "Cloudflare's sign-in answer is not readable")?;

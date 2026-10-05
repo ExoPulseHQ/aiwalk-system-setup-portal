@@ -120,6 +120,17 @@ function badge(s) {
 // Sign-in is one thing in two steps: 1 GitHub (gh, for repos), 2 the machines (Cloudflare Access, its own
 // GitHub sign-in in the browser, because Access cannot take gh's token). Both must be the same person, so step 2 lives
 // here next to step 1, shows whom Cloudflare knows, and is redone whenever the GitHub account changes.
+// While a browser sign-in runs, the place `where` offers its address to copy: the browser may not have opened (a bare
+// remote desktop), or the person may rather sign in on their phone. Either way the app hears the answer.
+async function withAddress(where, run) {
+  const stop = await listen("access-url", e => {
+    const url = e.payload, b = iconButton("copy", "Copy the sign-in address", "small ghost", true);
+    b.onclick = ev => { ev.stopPropagation(); navigator.clipboard.writeText(url).then(() => toast("Copied. Open it in any browser, on this computer or another."), () => toast(url)); };
+    where.replaceChildren("No browser opened? Copy the sign-in address ", b);
+  });
+  try { return await run(); } finally { stop(); where.replaceChildren(); }
+}
+
 function labLine(s) {
   const tunnels = myTunnels(s);
   // let in machine by machine (an intern, a guest): machines are asked without the browser, and one that says no
@@ -143,7 +154,7 @@ function labLine(s) {
     show(0, tunnels.length, "");
     state.className = "method m-off"; state.replaceChildren(ring, count);
     const stop = await listen("lab-progress", e => show(...e.payload));
-    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: quietOne })); }
+    try { await withAddress(msg, () => working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: quietOne }))); }
     catch (e) { msg.textContent = e; }
     stop();
     window.dispatchEvent(new Event("lab-signed-in"));
@@ -379,8 +390,10 @@ function machinesSection(machines, org, user, guest) {
       const b = signIns[m.host] = el("button", "small", "Sign in"); b.hidden = true;
       b.onclick = async e => {
         e.stopPropagation();
-        try { toast(await working(b, "Waiting for the browser", () => invoke("access_login", { tunnels: [m.tunnel] }))); }
+        const note = el("span", "sub"); b.after(note);
+        try { toast(await withAddress(note, () => working(b, "Waiting for the browser", () => invoke("access_login", { tunnels: [m.tunnel] })))); }
         catch (err) { refusedNote(m.host, true); }
+        note.remove();
         window.dispatchEvent(new Event("lab-signed-in"));
       };
       right.push(b);

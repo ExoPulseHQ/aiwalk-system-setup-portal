@@ -113,6 +113,7 @@ pub fn publish_machines(mut names: Vec<String>) -> Result<bool, String> {
 pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<bool>) -> Result<String, String> {
     use tauri::Emitter;
     let name = |t: &str| t.split('.').next().unwrap_or(t).trim_start_matches("ssh-").to_string();
+    { let app = app.clone(); crate::access::on_sign_in_address(Box::new(move |url| { let _ = app.emit("access-url", url); })); }
     // "lab-progress": (machines done, machines in all, the one being signed in to now)
     let tell = |done: usize, now: &str| { let _ = app.emit("lab-progress", (done, tunnels.len(), now)); };
     // each machine is its own Access app with its own token. The first sign-in may open the browser; after it the
