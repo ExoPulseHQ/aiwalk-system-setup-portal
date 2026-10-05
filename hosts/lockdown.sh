@@ -41,7 +41,12 @@ else
 echo " 2. This machine has no boot-time VNC desktops ($VNC_SERVICE): nothing to change there."
 fi
 echo " 3. SSH (22) is allowed only from: $PEERS"
+if ufw status | grep -q '^Status: active'; then
 echo "    Rules that open 22, 80, 443, 3389 (RDP) or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
+else
+echo "    The firewall is off now, so its stored rules cannot be listed yet; it is switched on and any rule that opens"
+echo "    22, 80, 443, 3389 (RDP) or 59xx to everyone is then removed."
+fi
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
 read -rp "Apply? [y/N] " answer
 [ "$answer" = y ] || { echo "Nothing changed."; exit 0; }
@@ -72,10 +77,11 @@ fi
 
 ufw default deny incoming >/dev/null
 for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'registered lab machine' >/dev/null; done
+# switched on first: an inactive firewall lists none of its stored rules, so the open ones could not be found, and
+# switching it on afterwards brought them to life (monkey kept a 5901 opened long ago)
+ufw --force enable >/dev/null
 # --force answers ufw's own question; piping "yes" into it ends with SIGPIPE, which pipefail turned into an abort
 for n in $(open_rules | sort -rn); do ufw --force delete "$n" >/dev/null; done
-# a machine whose firewall was never switched on gets the rules above but would enforce none of them
-ufw --force enable >/dev/null
 
 if [ $HAS_VNC = yes ]; then
 systemctl daemon-reload
