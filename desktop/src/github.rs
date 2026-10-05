@@ -163,8 +163,10 @@ pub fn device_sign_in(scopes: &str, show: &dyn Fn(&str, &str)) -> Result<String,
     let until = std::time::Instant::now() + Duration::from_secs(d["expires_in"].as_u64().unwrap_or(900));
     while std::time::Instant::now() < until {
         std::thread::sleep(Duration::from_secs(wait));
-        let r = oauth("https://github.com/login/oauth/access_token", serde_json::json!({
-            "client_id": CLIENT_ID, "device_code": device, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" }))?;
+        // a question that could not be asked is asked again, not the end of the sign-in: on a phone the app is in
+        // the background (frozen, its network paused) for exactly as long as the person is approving in the browser
+        let Ok(r) = oauth("https://github.com/login/oauth/access_token", serde_json::json!({
+            "client_id": CLIENT_ID, "device_code": device, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" })) else { continue };
         if let Some(t) = r["access_token"].as_str() { return Ok(t.to_string()) }
         match r["error"].as_str() {
             Some("authorization_pending") => {}

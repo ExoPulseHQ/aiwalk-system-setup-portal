@@ -503,3 +503,9 @@ nav .app .word { background-image: var(--fx-ink-rail); filter: var(--fx-glow); }
   .page { padding: var(--s6) var(--s4) var(--s10) calc(var(--s4) + 30px); }
   #toast { left: calc(50% + 28px); }
 }
+
+/* ---------------------------------------------------------------- a phone: the app draws under the status bar and
+   the gesture bar, so the rail and the page keep clear of both, and of the screen's rounded corners */
+html.phone nav { padding-top: max(env(safe-area-inset-top, 0px), 40px); padding-bottom: max(env(safe-area-inset-bottom, 0px), 28px); padding-left: var(--s3); padding-right: var(--s3); width: 64px; }
+html.phone .page { padding-top: max(env(safe-area-inset-top, 0px), 40px); padding-right: var(--s5); padding-bottom: max(env(safe-area-inset-bottom, 0px), 40px); }
+html.phone #toast { bottom: max(env(safe-area-inset-bottom, 0px), 32px); }

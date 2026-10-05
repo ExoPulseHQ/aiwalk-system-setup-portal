@@ -443,7 +443,8 @@ mod tests {
         let (v, o) = (vault.display().to_string(), other.display().to_string());
         let f = vault.join("L1").join("a.md").display().to_string();
         let ed = |p: &str| json!({ "file_path": p });
-        let sh = |c: String| json!({ "command": c });
+        // a shell command names paths with forward slashes on every system (a backslash is the shell's escape)
+        let sh = |c: String| json!({ "command": c.replace('\\', "/") });
         assert!(verdict("Edit", &ed(&f), &v, &v).is_none());                           // rooted in the vault
         assert!(verdict("Edit", &ed(&f), &o, &o).is_some());                           // rooted elsewhere
         assert!(verdict("Write", &ed("../vault/L1/a.md"), &o, &o).is_some());          // relative path out of another root

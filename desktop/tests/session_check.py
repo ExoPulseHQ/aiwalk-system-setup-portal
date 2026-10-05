@@ -39,6 +39,11 @@ class Client:
             d = self.p.stdout.read1(65536)
             if not d: return
             self.out += d
+            # Windows' console asks where the cursor is before it prints anything, and waits for the answer; a real
+            # terminal (the plugin's) answers by itself, so this stand-in must too
+            if b"\x1b[6n" in d:
+                try: self.type(b"\x1b[1;1R")
+                except OSError: pass
 
     def type(self, data):
         self.p.stdin.write(data); self.p.stdin.flush()

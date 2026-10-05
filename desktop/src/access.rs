@@ -293,8 +293,10 @@ fn login_url(host: &str, aud: &str, key: &str) -> String {
 /// Anything below 500 means "not yet"; the pause keeps a service that answers at once from being hammered.
 fn wait_for_transfer(key: &str, until: std::time::Instant, tick: &dyn Fn()) -> Result<(String, String), String> {
     while std::time::Instant::now() < until {
-        let mut resp = agent().get(format!("{TRANSFER}{key}")).header("User-Agent", "aiwalk-system-setup")
-            .config().timeout_global(Some(Duration::from_secs(65))).build().call().map_err(|e| format!("Cloudflare did not answer: {e}"))?;
+        // not answered is asked again until the time is up: a phone pauses the app's network while the person is in
+        // the browser signing in, and a laptop may be changing networks
+        let Ok(mut resp) = agent().get(format!("{TRANSFER}{key}")).header("User-Agent", "aiwalk-system-setup")
+            .config().timeout_global(Some(Duration::from_secs(65))).build().call() else { std::thread::sleep(Duration::from_secs(2)); continue };
         match resp.status().as_u16() {
             200 => {
                 let sender = resp.headers().get("service-public-key").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>aIwalk System Setup</title>
 <link rel="stylesheet" href="app.css">
 </head>
@@ -285,6 +286,7 @@ async function showVersion() {
 <script>
 invoke("platform").then(os => {
   OS = os;
+  document.documentElement.classList.toggle("phone", onPhone());
   // the phone and VM modules need a Linux computer
   if (os !== "linux") document.querySelectorAll("nav .linux").forEach(b => b.remove());
   invoke("start_page").then(p => go(p && pages[p] ? p : "team"), () => go("team"));
