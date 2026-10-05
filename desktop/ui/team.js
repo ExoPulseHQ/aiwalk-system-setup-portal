@@ -373,8 +373,9 @@ function machinesSection(machines, org, user, guest) {
     if (m.sometimes) { const t = el("span", "tag worded"); t.append(icon("moon"), "Often off"); t.dataset.tip = "Often off: this machine is switched off at times"; right.push(t); }
     if (m.via) right.push(el("span", "tag", `Through ${m.via}`));
     meters[m.host] = el("span", "meters");
-    if (guest) {
-      // signing in to this one machine, from its row: a guest has no team sign-in covering the others
+    // signing in to this one machine, from its row, through the browser: for a guest, who has no team sign-in covering
+    // the others, and for anyone else let in machine by machine, as the sure way when the quiet asking found nothing
+    if ((guest || outsider(org, user)) && m.tunnel && !m.via) {
       const b = signIns[m.host] = el("button", "small", "Sign in"); b.hidden = true;
       b.onclick = async e => {
         e.stopPropagation();
@@ -382,9 +383,11 @@ function machinesSection(machines, org, user, guest) {
         catch (err) { refusedNote(m.host, true); }
         window.dispatchEvent(new Event("lab-signed-in"));
       };
+      right.push(b);
+    }
+    if (guest) {
       rmMark = iconButton("x", `Remove ${m.host} from this list`, "small ghost row-act", true);
       rmMark.onclick = e => { e.stopPropagation(); guest.remove(m.host); };
-      right.push(b);
     }
     // a machine with its own tunnel can be reached by ssh: members as the account the vault's rules name (else ntk),
     // a guest as the account its desktops run as, once known
@@ -431,7 +434,7 @@ function machinesSection(machines, org, user, guest) {
   };
   // a state chip: a glyph when all is as it should be, words where it deviates
   const LOOK = { up: ["s-ok", "check", "Can connect"], down: ["p0 s-bad", "x", "Can't connect"], "no-tunnel": ["p0 s-bad", "x", "Tunnel not set up"],
-                 "sign-in": ["s-warn", "circle-alert", guest ? "Not signed in" : "Finish sign-in on Team access"], none: ["p0", "lock", "No access"],
+                 "sign-in": ["s-warn", "circle-alert", guest || outsider(org, user) ? "Not signed in" : "Finish sign-in on Team access"], none: ["p0", "lock", "No access"],
                  refused: ["p0 s-bad", "lock", "Not let in"] };
   const setLook = (host, key) => {
     const p = pills[host], [cls, name, word] = LOOK[key] || LOOK.down;
@@ -521,7 +524,7 @@ function machinesSection(machines, org, user, guest) {
     for (const h of Object.keys(state)) if (live.has(h)) state[h] = "up";
     lastState = state;
     // for someone who is not a member, a machine with no sign-in after signing in is one that does not let them in
-    hosts.forEach(m => setLook(m.host, ruledOut(org, way(m).host, machines, user) || (outsider(org, user) && state[way(m).host] === "sign-in") ? "none" : state[way(m).host]));
+    hosts.forEach(m => setLook(m.host, ruledOut(org, way(m).host, machines, user) ? "none" : state[way(m).host]));
     sortByReach();
     paintOpening();
     await showHelp(state);
