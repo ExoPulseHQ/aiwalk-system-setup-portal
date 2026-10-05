@@ -162,6 +162,48 @@ pub fn manifest(ls_files: &str, size: &dyn Fn(&str) -> Option<u64>, read: &dyn F
     (String::from_utf8(buf).unwrap() + "\n", line)
 }
 
+// ---------------------------------------------------------------- download results
+
+/// How one submodule fared in a download or update. `Later` and `Kept` come from the phone only (desktop/src/phonegit.rs).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Got {
+    Ok, Lazy, Skipped, Conflict,
+    /// an on-demand folder (the papers) the phone does not download in this version
+    Later,
+    /// the person changed files there that the team's version also changes: left as it was, not updated
+    Kept,
+}
+
+/// One line per submodule, as scripts/exo_repos.py prints them.
+pub fn row(path: &str, got: Got) -> String {
+    match got {
+        Got::Ok => format!("ok      {path}"),
+        Got::Lazy => format!("ok      {path}  (on demand: PDFs not downloaded)"),
+        Got::Skipped => format!("skipped {path}  (no access or unreachable)"),
+        Got::Conflict => format!("CONFLICT {path}  (your changes there and the team's do not fit together: finish the merge in that folder)"),
+        Got::Later => format!("later   {path}  (large files: not downloaded on a phone yet)"),
+        Got::Kept => format!("kept    {path}  (your changes there are kept; that folder was not updated)"),
+    }
+}
+
+/// The sentence a download or update ends with.
+pub fn summary(what: &str, rows: &[(String, Got)]) -> String {
+    let with = |g: Got| rows.iter().filter(|r| r.1 == g).map(|r| r.0.as_str()).collect::<Vec<_>>();
+    let ok = rows.iter().filter(|r| matches!(r.1, Got::Ok | Got::Lazy)).count();
+    let (skipped, clash, later, kept) = (with(Got::Skipped), with(Got::Conflict), with(Got::Later), with(Got::Kept));
+    if !clash.is_empty() {
+        return format!("{what}, but your changes in {} do not fit with the team's: open that folder and finish the merge there (git status shows the files)", clash.join(", "));
+    }
+    let mut s = match (ok, skipped.len()) {
+        (0, 0) => what.to_string(),
+        (n, 0) => format!("{what} with {n} folders"),
+        (n, m) => format!("{what} with {n} folders; {m} you cannot open stay empty ({})", skipped.join(", ")),
+    };
+    if !kept.is_empty() { s += &format!(". Not updated, because you changed files there: {}", kept.join(", ")) }
+    if !later.is_empty() { s += &format!(". Left for later (large files, not downloaded on a phone): {}", later.join(", ")) }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

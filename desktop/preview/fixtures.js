@@ -2,6 +2,7 @@
 // Nothing here comes from a real organisation: names, logins, repos, hosts and addresses are made up.
 // window.__fixtures(scenario, os) -> { command: value | (args) => value | Error }. An Error becomes the app's Err(String).
 window.__fixtures = (scenario, os) => {
+  const q = new URLSearchParams(location.search);
   const ORG = "ExampleCorp", BOOK = `${ORG}/docs-book`, COMPANY = "amy-chen/ExampleCorp";
   const owner = scenario === "owner" || scenario === "terms", signedOut = scenario === "signedout";
   // guest: outside the team, no vaults, machines added by name; invited: a guest who has not accepted GitHub's invitation
@@ -156,7 +157,9 @@ window.__fixtures = (scenario, os) => {
     cf_state: { connected: true, expires: "2027-03-01", shared: true, has_key: true, left: [] }, cf_key: "ABCD-EFGH-IJKL-MNOP-QRST",
     cf_connect: ok("Connected"), cf_share: ok("ABCD-EFGH-IJKL-MNOP-QRST"), cf_join: ok("Connected"), cf_renew: ok("Renewed"), cf_forget: none,
     // vault copies
-    vault_local: { copies: { [BOOK]: "/home/demo/Documents/aIwalk/docs-book" }, obsidian: true }, default_folder: a => `/home/demo/Documents/aIwalk/${(a.repo || "").split("/").pop()}`,
+    vault_local: os !== "android" ? { copies: { [BOOK]: "/home/demo/Documents/aIwalk/docs-book" }, obsidian: true }
+      // a phone: phone=here (a copy there), phone=denied (All files access not given yet), else not downloaded
+      : { copies: q.get("phone") === "here" ? { [BOOK]: "/storage/emulated/0/Documents/aIwalk/docs-book" } : {}, obsidian: true, writable: q.get("phone") !== "denied" }, default_folder: a => `/home/demo/Documents/aIwalk/${(a.repo || "").split("/").pop()}`,
     pick_folder: none, vault_link: ok("Linked"), vault_download: ok("Downloaded"), vault_update: ok("Up to date"), vault_open: none, obsidian_install: ok("Obsidian installed"),
     // machines
     reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, guest && h === "heron" ? "refused" : "up"])),

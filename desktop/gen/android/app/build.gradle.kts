@@ -20,6 +20,8 @@ android {
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         applicationId = "com.aiwalk.setup"
+        // a test build that installs beside the released app: AIWALK_APP_ID_SUFFIX=.dev makes com.aiwalk.setup.dev
+        System.getenv("AIWALK_APP_ID_SUFFIX")?.let { applicationIdSuffix = it }
         minSdk = 24
         targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

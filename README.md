@@ -42,9 +42,11 @@ one, check who changed it last: `git log -p hosts/`.
 
 The phone app is the same crate built as a library: `desktop/src/app.rs` holds the app, `main.rs` (computers) and
 `lib.rs` (Android, `run()`) both include it. It signs in with GitHub and Cloudflare, shows the Machines page (status,
-hardware numbers, who can connect, the ssh command to copy) and the owners' HTTPS tools. No vault downloads, terminals,
-desktops or updates. The Android project is `desktop/gen/android` (made by `cargo tauri android init`, then edited:
-backups off, the app's icon). Sign-ins are files in the app's private folder (see `secrets.rs`).
+hardware numbers, who can connect, the ssh command to copy) and the owners' HTTPS tools. It downloads the vault into
+`Documents/aIwalk/<repo>` (shared storage, so Obsidian for Android can open it; Android asks for "All files access"
+first) and brings it up to date with libgit2 inside the app (`desktop/src/phonegit.rs`): no commit or push, and the
+on-demand folders (papers) are left for later. No terminals, desktops or updates. The Android project is `desktop/gen/android` (made by
+`cargo tauri android init`, then edited: backups off, the app's icon, the storage permission). Sign-ins are files in the app's private folder (see `secrets.rs`).
 
 One-time setup (Android SDK command-line tools, platform 36/37, build-tools 36, NDK 29, JDK 21, tauri-cli 2.12):
 
@@ -65,5 +67,10 @@ cargo tauri android build --debug --apk --target aarch64
 # desktop/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
 adb install -r <that file>
 ```
+
+A test build that installs beside the released app (which is signed with the team's key): set
+`AIWALK_APP_ID_SUFFIX=.dev` for the build, which makes the id `com.aiwalk.setup.dev`; sign it with any key you own.
+The phone's git has its own test on a computer (needs the network, uses public GitHub repos):
+`cargo test -p aiwalk-setup --features phone-git phonegit`.
 
 The browser preview shows the phone page with `?os=android`; it refuses every command the phone build does not have.

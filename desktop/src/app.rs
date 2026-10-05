@@ -20,7 +20,7 @@ mod machines;
 mod vncshim;
 mod secrets;
 mod update;
-// a phone runs no programs: no Claude Code, terminals, git vaults, hooks or sessions there
+// a phone runs no programs: no Claude Code, terminals, git program, hooks or sessions there (its vault: phonegit.rs)
 #[cfg(not(target_os = "android"))]
 mod claude;
 #[cfg(not(target_os = "android"))]
@@ -37,6 +37,10 @@ mod sessioncli;
 mod vault;
 #[cfg(not(target_os = "android"))]
 mod vaultcli;
+// the phone's own git (libgit2): its vault downloads; on a computer only for its test (feature phone-git)
+#[cfg(any(target_os = "android", feature = "phone-git"))]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod phonegit;
 #[cfg(target_os = "linux")]
 mod android;
 #[cfg(target_os = "linux")]
@@ -488,13 +492,14 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
-/// Android: sign-in, the machines and the owners' tools, all of them HTTPS to GitHub and Cloudflare. Nothing that
-/// starts a program (ssh, git, a terminal, a viewer), downloads a vault or updates the app.
+/// Android: sign-in, the machines, the owners' tools and the vault's download and Get latest (phonegit.rs, git inside
+/// the app), all of them HTTPS to GitHub and Cloudflare. Nothing that starts a program (ssh, git, a terminal, a
+/// viewer) or updates the app.
 #[cfg(target_os = "android")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, start_page, misplaced, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, terms_state, terms_accept, terms_everyone, team_access, machines::reachable, machines::machine_status, machines::forwards, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::find_machine, machines::my_machines, machines::publish_machines,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
-                             set_team, request_access, approve_request, decline_request]
+                             phonegit::vault_local, phonegit::vault_download, phonegit::vault_update, set_team, request_access, approve_request, decline_request]
 }
 
 #[cfg(target_os = "android")]

@@ -79,19 +79,7 @@ fn fetch_on_demand(tree: &Path, name: &str, path: &str, extra: &[(&str, &str)]) 
 /// Reports progress: fraction of the whole job done (0..1) and what is happening now.
 pub type Progress<'a> = &'a dyn Fn(f32, &str);
 
-/// How one submodule fared.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Got { Ok, Lazy, Skipped, Conflict }
-
-/// One line per submodule, as scripts/exo_repos.py prints them.
-pub fn row(path: &str, got: Got) -> String {
-    match got {
-        Got::Ok => format!("ok      {path}"),
-        Got::Lazy => format!("ok      {path}  (on demand: PDFs not downloaded)"),
-        Got::Skipped => format!("skipped {path}  (no access or unreachable)"),
-        Got::Conflict => format!("CONFLICT {path}  (your changes there and the team's do not fit together: finish the merge in that folder)"),
-    }
-}
+pub use exo_core::exo_repos::{row, summary, Got};
 
 /// Git's answer when the account may not read a repo (not when the network is down).
 fn no_access(err: &str) -> bool {
@@ -150,20 +138,6 @@ fn update_each(tree: &Path, remote: bool, extra: &[(&str, &str)], from: f32, pro
         rows.push((path, got));
     }
     rows
-}
-
-fn summary(what: &str, rows: &[(String, Got)]) -> String {
-    let ok: Vec<&str> = rows.iter().filter(|r| r.1 != Got::Skipped && r.1 != Got::Conflict).map(|r| r.0.as_str()).collect();
-    let skipped: Vec<&str> = rows.iter().filter(|r| r.1 == Got::Skipped).map(|r| r.0.as_str()).collect();
-    let clash: Vec<&str> = rows.iter().filter(|r| r.1 == Got::Conflict).map(|r| r.0.as_str()).collect();
-    if !clash.is_empty() {
-        return format!("{what}, but your changes in {} do not fit with the team's: open that folder and finish the merge there (git status shows the files)", clash.join(", "));
-    }
-    match (ok.len(), skipped.len()) {
-        (0, 0) => what.to_string(),
-        (n, 0) => format!("{what} with {n} folders"),
-        (n, m) => format!("{what} with {n} folders; {m} you cannot open stay empty ({})", skipped.join(", ")),
-    }
 }
 
 /// Clones `url` into `dest`: the book is the first half of the progress, its folders the second.
