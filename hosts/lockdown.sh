@@ -8,7 +8,7 @@
 # Registered machines are the lab hosts in System/vault_rules.json `machines`; their addresses come from
 # Secrets/Compute_Repo_Access_Registry.md §1b. This machine's own address is left out automatically.
 set -euo pipefail
-MACHINES="120.126.83.20 120.126.83.112 120.126.83.1 120.126.83.67 120.126.83.76 120.126.83.143 120.126.83.28 120.126.83.209 120.126.83.228"
+MACHINES="120.126.83.20 120.126.83.112 120.126.83.1 120.126.83.67 120.126.83.76 120.126.83.143 120.126.83.28"
 VNC_USER=${1:-ntk}
 VNC_CONFIG=/home/$VNC_USER/.vnc/config
 VNC_SERVICE=gpu-free-vnc.service
