@@ -678,6 +678,102 @@ pub fn is_guest(signed_in: bool, machines: &[usize]) -> bool {
     signed_in && machines.iter().all(|&n| n == 0)
 }
 
+// ---------------------------------------------------------------- SSH without ~/.ssh/config
+// `aiwalk-setup ssh` and the Machines page's SSH button reach a machine with the app's own proxy and certificate, so
+// nobody depends on the block "Set up connections" writes.
+
+/// A login name on a machine: letters, digits, `_`, `.` and `-`, not starting with `-`, at most 32.
+fn account_ok(a: &str) -> bool {
+    (1..=32).contains(&a.len()) && !a.starts_with('-') && a.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+}
+
+/// `[account@]<name or ssh-<name><zone>>` as (account, SSH hostname): a name becomes ssh-<name><zone>, a full
+/// ssh-…<zone> hostname is taken as it is, anything else is refused with a sentence.
+pub fn ssh_destination(dest: &str, zone: &str) -> Result<(Option<String>, String), String> {
+    let (user, host) = match dest.rsplit_once('@') { Some((u, h)) => (Some(u), h), None => (None, dest) };
+    if let Some(u) = user.filter(|u| !account_ok(u)) { return Err(format!("{u} is not an account name")) }
+    let host = host.trim().to_ascii_lowercase();
+    let name = host.strip_prefix("ssh-").and_then(|r| r.strip_suffix(zone)).unwrap_or(&host);
+    let tunnel = machine_tunnel(name, zone)
+        .map_err(|_| format!("{host} is not one of the team's machines: give its name, like dragon, or its ssh-<name>{zone} hostname"))?;
+    Ok((user.map(String::from), tunnel))
+}
+
+/// The account for `tunnel` when none was given: the one the vault's rules name for that machine, else "ntk".
+pub fn default_account(rules_json: Option<&str>, tunnel: &str) -> String {
+    let name = tunnel.strip_prefix("ssh-").and_then(|t| t.split('.').next()).unwrap_or(tunnel);
+    machines(rules_json.unwrap_or_default()).into_iter()
+        .find(|m| (m.host == name || m.tunnel.as_deref() == Some(tunnel)) && account_ok(&m.account))
+        .map_or_else(|| "ntk".into(), |m| m.account)
+}
+
+/// `aiwalk-setup ssh`'s arguments as ssh reads them: (options before the destination, the destination, the remote
+/// command). An option letter that takes a value takes the rest of its word, or else the next argument (`-L 8080:x:80`,
+/// `-NL8080:x:80`, `-o Foo=bar`).
+pub fn ssh_args(args: &[String]) -> Result<(Vec<String>, String, Vec<String>), String> {
+    const WITH_VALUE: &str = "BbcDEeFIiJLlmOoPpQRSWw";   // ssh(1)'s synopsis
+    let mut opts = vec![];
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        if a == "--" { i += 1; break }
+        if !a.starts_with('-') || a.len() == 1 { break }
+        opts.push(a.clone());
+        let letters: Vec<char> = a[1..].chars().collect();
+        if letters.iter().position(|c| WITH_VALUE.contains(*c)).is_some_and(|p| p + 1 == letters.len()) {
+            i += 1;
+            opts.push(args.get(i).ok_or_else(|| format!("{a} needs a value"))?.clone());
+        }
+        i += 1;
+    }
+    let dest = args.get(i).ok_or("no machine given: aiwalk-setup ssh [ssh options] <account>@<machine> [command]")?.clone();
+    Ok((opts, dest, args[i + 1..].to_vec()))
+}
+
+/// What the SSH button runs in a terminal: this app's own `ssh` subcommand, so the certificate is fetched in there
+/// and the same line works again later.
+pub fn ssh_argv(app: &str, user: &str, tunnel: &str) -> Vec<String> {
+    vec![app.into(), "ssh".into(), format!("{user}@{tunnel}")]
+}
+
+/// Linux terminal programs in the order tried, each with the arguments that go before the command it runs (one
+/// argument each, never a shell string). $TERMINAL comes first: a known one with its own form, any other with -e.
+pub fn linux_terminals(terminal_env: Option<&str>) -> Vec<(String, Vec<&'static str>)> {
+    const KNOWN: [(&str, &[&str]); 7] = [("x-terminal-emulator", &["-e"]), ("gnome-terminal", &["--"]), ("konsole", &["-e"]),
+        ("xfce4-terminal", &["-x"]), ("kitty", &[]), ("alacritty", &["-e"]), ("xterm", &["-e"])];
+    let mut out: Vec<(String, Vec<&str>)> = vec![];
+    if let Some(t) = terminal_env.map(str::trim).filter(|t| !t.is_empty()) {
+        let base = t.rsplit('/').next().unwrap_or(t);
+        out.push((t.into(), KNOWN.iter().find(|k| k.0 == base).map_or(vec!["-e"], |k| k.1.to_vec())));
+    }
+    out.extend(KNOWN.iter().map(|(p, pre)| (p.to_string(), pre.to_vec())));
+    out
+}
+
+/// One word for sh, in single quotes (a single quote inside becomes '\'').
+pub fn sh_quote(s: &str) -> String { format!("'{}'", s.replace('\'', r"'\''")) }
+
+/// macOS: the .command file Terminal runs for the SSH button. It deletes itself (and its private folder) first, then
+/// becomes the command, so its exit code is ssh's and Terminal keeps the window open on a failure.
+pub fn command_file(argv: &[String]) -> String {
+    format!("#!/bin/sh\nrm -f \"$0\"; rmdir \"$(dirname \"$0\")\" 2>/dev/null\nexec {}\n", argv.iter().map(|a| sh_quote(a)).collect::<Vec<_>>().join(" "))
+}
+
+/// One word on a batch file's line: in double quotes, where & | < > ^ ( ) are plain; `%` is still read by cmd in a
+/// batch file, so it is doubled. A double quote or a line break cannot be carried at all.
+pub fn cmd_quote(s: &str) -> Result<String, String> {
+    if s.contains(['"', '\r', '\n']) { return Err(format!("{s} cannot be written into a Windows command line")) }
+    Ok(format!("\"{}\"", s.replace('%', "%%")))
+}
+
+/// Windows: the .cmd file the SSH button starts in a console window. UTF-8 (chcp first, so a path with non-ASCII
+/// letters reads right), waits when the command fails so its last words can be read, then deletes itself and its
+/// folder (`(goto)` ends the batch first, so cmd does not go on reading a deleted file; the window was started in
+/// that folder, so it steps out of it before removing it).
+pub fn batch_file(argv: &[String]) -> Result<String, String> {
+    let line = argv.iter().map(|a| cmd_quote(a)).collect::<Result<Vec<_>, _>>()?.join(" ");
+    Ok(format!("@chcp 65001 >nul\r\n@echo off\r\n{line}\r\nif errorlevel 1 pause\r\n(goto) 2>nul & del \"%~f0\" & cd /d \"%~dp0..\" & rmdir \"%~dp0\"\r\n"))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -707,6 +803,79 @@ mod tests {
         assert!(super::is_guest(true, &[]));
         assert!(!super::is_guest(true, &[3, 0]));
         assert!(!super::is_guest(false, &[0, 0]));
+    }
+
+    #[test]
+    fn ssh_destinations_are_a_name_or_the_full_hostname() {
+        let z = ".example.org";
+        let ok = |d: &str| super::ssh_destination(d, z).unwrap();
+        assert_eq!(ok("ntk@otter"), (Some("ntk".into()), "ssh-otter.example.org".into()));
+        assert_eq!(ok("otter"), (None, "ssh-otter.example.org".into()));
+        assert_eq!(ok("kuo.x-2@ssh-otter.example.org"), (Some("kuo.x-2".into()), "ssh-otter.example.org".into()));
+        assert_eq!(ok("Otter"), (None, "ssh-otter.example.org".into()));
+        for bad in ["ntk@otter.example.org", "ntk@ssh-otter.evil.org", "ntk@10.0.0.1", "ntk@", "-oProxyCommand=x@otter", "a b@otter",
+                    "ntk@ssh-.example.org", "ntk@ötter", "@otter"] {
+            assert!(super::ssh_destination(bad, z).is_err(), "{bad} should be refused");
+        }
+        assert!(super::ssh_destination("ntk@otter.example.org", z).unwrap_err().contains("not one of the team's machines"));
+    }
+
+    #[test]
+    fn the_default_account_is_the_vaults_or_ntk() {
+        let rules = r#"{"machines": {"hosts": [{"host": "otter", "repos": {"Otter": "kuo-x"}, "tunnel": "ssh-otter.example.org"},
+                                               {"host": "heron", "repos": {"Heron": ""}}]}}"#;
+        assert_eq!(super::default_account(Some(rules), "ssh-otter.example.org"), "kuo-x");
+        assert_eq!(super::default_account(Some(rules), "ssh-heron.example.org"), "ntk");
+        assert_eq!(super::default_account(Some(rules), "ssh-crane.example.org"), "ntk");
+        assert_eq!(super::default_account(None, "ssh-otter.example.org"), "ntk");
+    }
+
+    #[test]
+    fn ssh_options_stay_before_the_destination_and_the_command_after() {
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(super::ssh_args(&v(&["-N", "-L", "8080:localhost:80", "ntk@otter"])).unwrap(), (v(&["-N", "-L", "8080:localhost:80"]), "ntk@otter".into(), v(&[])));
+        assert_eq!(super::ssh_args(&v(&["-NL8080:x:80", "-o", "BatchMode=yes", "-t", "otter", "ls", "-la"])).unwrap(),
+                   (v(&["-NL8080:x:80", "-o", "BatchMode=yes", "-t"]), "otter".into(), v(&["ls", "-la"])));
+        assert_eq!(super::ssh_args(&v(&["-vNL", "1:x:2", "otter", "exit 7"])).unwrap(), (v(&["-vNL", "1:x:2"]), "otter".into(), v(&["exit 7"])));
+        assert_eq!(super::ssh_args(&v(&["--", "otter", "-x"])).unwrap(), (v(&[]), "otter".into(), v(&["-x"])));
+        assert!(super::ssh_args(&v(&["-L"])).is_err());
+        assert!(super::ssh_args(&v(&["-N"])).is_err());
+    }
+
+    #[test]
+    fn terminals_are_tried_terminal_env_first_each_with_its_own_form() {
+        let t = super::linux_terminals(None);
+        assert_eq!(t.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+                   ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "kitty", "alacritty", "xterm"]);
+        assert_eq!(t[1].1, ["--"]); assert_eq!(t[3].1, ["-x"]); assert!(t[4].1.is_empty());
+        assert_eq!(super::linux_terminals(Some("/home/x/my term"))[0], ("/home/x/my term".to_string(), vec!["-e"]));
+        assert_eq!(super::linux_terminals(Some("/usr/bin/gnome-terminal"))[0].1, ["--"]);
+        assert_eq!(super::linux_terminals(Some("  ")).len(), 7);
+    }
+
+    #[test]
+    fn the_macos_command_file_quotes_every_word_for_sh() {
+        let argv = super::ssh_argv("/Applications/aIwalk System Setup.app/Contents/MacOS/it's 100% «好»", "ntk", "ssh-otter.example.org");
+        let f = super::command_file(&argv);
+        assert_eq!(f, "#!/bin/sh\nrm -f \"$0\"; rmdir \"$(dirname \"$0\")\" 2>/dev/null\n\
+                       exec '/Applications/aIwalk System Setup.app/Contents/MacOS/it'\\''s 100% «好»' 'ssh' 'ntk@ssh-otter.example.org'\n");
+        // sh itself reads the words back exactly
+        if std::path::Path::new("/bin/sh").exists() {
+            let words = argv.iter().map(|a| super::sh_quote(a)).collect::<Vec<_>>().join(" ");
+            let out = std::process::Command::new("/bin/sh").args(["-c", &format!("printf '%s\\n' {words}")]).output().unwrap();
+            assert_eq!(String::from_utf8(out.stdout).unwrap(), argv.join("\n") + "\n");
+        }
+    }
+
+    #[test]
+    fn the_windows_batch_file_doubles_percent_and_refuses_quotes() {
+        let argv = super::ssh_argv(r"C:\Users\Jo Ann\AppData\Local\aIwalk (x86) & 100%\好\aiwalk-setup.exe", "ntk", "ssh-otter.example.org");
+        assert_eq!(super::batch_file(&argv).unwrap(),
+            "@chcp 65001 >nul\r\n@echo off\r\n\"C:\\Users\\Jo Ann\\AppData\\Local\\aIwalk (x86) & 100%%\\好\\aiwalk-setup.exe\" \"ssh\" \"ntk@ssh-otter.example.org\"\r\n\
+             if errorlevel 1 pause\r\n(goto) 2>nul & del \"%~f0\" & cd /d \"%~dp0..\" & rmdir \"%~dp0\"\r\n");
+        assert!(super::batch_file(&super::ssh_argv(r#"C:\a"b.exe"#, "ntk", "x")).is_err());
+        assert!(super::cmd_quote("a\nb").is_err());
+        assert_eq!(super::cmd_quote("%PATH%").unwrap(), "\"%%PATH%%\"");
     }
 
     #[test]

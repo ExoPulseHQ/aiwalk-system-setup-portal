@@ -158,6 +158,11 @@ window.__fixtures = (scenario, os) => {
     machine_status: a => Object.fromEntries((a.tunnels || []).filter(([h]) => reach(h) && STATUS[h]).map(([h]) => [h, STATUS[h]])),
     forwards: { "dragon:2": 5902 }, ssh_status: guest ? "missing" : "current", ssh_setup: ok("Connections set up"), access_login: ok("Signed in to 3 machines"),
     lab_identity: { email: `${ME}@example.com`, expires: Math.floor(Date.now() / 1000) + 20 * 3600, matches: true, missing: 0 }, lab_sign_out: none,
+    // the SSH button: ?ssh=fail answers as a computer with no terminal program would
+    open_ssh: a => { console.log("open_ssh", JSON.stringify(a));
+      return new URLSearchParams(location.search).get("ssh") === "fail"
+        ? new Error("No terminal program was found on this computer (looked for x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, xterm). Copy the command below into a terminal.")
+        : `A terminal opened: ssh ${a.user}@${(a.tunnel || "").replace(/^ssh-/, "").split(".")[0]}`; },
     open_forward: 5911, close_forward: none, open_viewer: none, desktop: ":3", update_host_tools: ok("Host tools updated"),
     // Linux pages
     phones, phone_action: ok("Done"), vm_state: { vm, disk_used_gb: 61.4, host_gb: 32, host_cpus: 16, shortcuts: [["open", "Open Windows", "Start the Windows VM and open its desktop", true], ["stop", "Shut down Windows", "Shut down the Windows VM and free its memory", false]] },

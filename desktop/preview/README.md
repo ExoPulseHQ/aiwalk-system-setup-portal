@@ -13,7 +13,8 @@ Then open `http://localhost:4173/?as=owner&page=people`.
 |---|---|---|
 | `as` | `owner` (default), `member`, `signedout`, `terms`, `guest`, `invited` | who is signed in; `terms` = signed in, terms not yet accepted; `guest` = outside the team, no vaults, two machines added by name (otter up, heron turns them away); `invited` = a guest who has not accepted GitHub's invitation |
 | `page` | `team`, `machines`, `people`, `terms`, `android`, `vm` | opens that page after load |
-| `os` | `linux` (default), `windows`, `macos` | what `platform` and `tools` report; non-Linux hides the phone and VM pages |
+| `os` | `linux` (default), `windows`, `macos`, `android` | what `platform` and `tools` report; non-Linux hides the phone and VM pages; `android` stands for a phone build: no SSH button, only the line to copy |
+| `ssh` | `fail` | the SSH button's `open_ssh` fails as on a computer with no terminal program, so the fallback line shows |
 | `theme` | `light`, `dark` | forces that theme (sets `data-theme`, which `app.css` honours); without it the page follows `prefers-color-scheme` |
 
 The page is the app's own UI as it ships (`app.css`, `icons.js`, `fonts/`, `icons/`), so what the preview shows is what the app draws.

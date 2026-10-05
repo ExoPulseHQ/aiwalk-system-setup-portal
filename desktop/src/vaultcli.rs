@@ -26,6 +26,8 @@ Usage
     aiwalk-setup vault index                    refresh System/vault_index.json (also done on every ship)
     aiwalk-setup vault sync-ownership [--check] [--all] [logs...]
                                                 rebuild the generated half of a primary log's ownership block
+    aiwalk-setup vault ssh-setup [--check]      the app's "Set up connections": the machines of System/vault_rules.json
+                                                into ~/.ssh/config; --check prints current, missing or nothing
     aiwalk-setup vault count <file>...          per file: CJK characters, lines, path (the writing rules' length budget)
     aiwalk-setup vault manifest | owner | plan | assemble | push | clone | pull
                                                 the repo split; give one a wrong argument for its own usage
@@ -574,6 +576,7 @@ pub fn main(a: &[String]) {
                 println!("{cjk} {lines}  {f}");
             }
         }
+        Some("ssh-setup") => std::process::exit(crate::machines::setup_cli(&vault, a.get(1).map(String::as_str) == Some("--check"))),
         Some("manifest") => manifest(&vault),
         Some("owner") => owner_cli(&vault, &a[1..]),
         Some("plan") => std::process::exit(plan(&a.get(1).map_or(vault.clone(), |p| abs(p)))),
