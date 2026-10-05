@@ -94,19 +94,18 @@ jobs:
         with: { targets: aarch64-linux-android }
       - uses: swatinem/rust-cache@v2
         if: steps.key.outputs.have == 'yes'
-      - uses: actions/setup-node@v4
-        if: steps.key.outputs.have == 'yes'
-        with: { node-version: 20 }
       - name: Build and sign
         if: steps.key.outputs.have == 'yes'
         run: |
-          npm install -g @tauri-apps/cli@2
+          # as a cargo command, not the npm one: the Gradle project calls `cargo tauri` itself while it builds, and
+          # the first release with this job failed on "no such command: tauri"
+          cargo install tauri-cli --version "^2" --locked
           export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           printf 'storeFile=%s\npassword=%s\nkeyAlias=aiwalk\n' "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" > desktop/gen/android/keystore.properties
           mkdir -p desktop/tools
           version=$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)
-          cd desktop && tauri android build --apk --target aarch64 --config "{\"version\":\"$version\"}"
+          cd desktop && cargo tauri android build --apk --target aarch64 --config "{\"version\":\"$version\"}"
           apk=$(find gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
           # an unsigned file would upload fine and install nowhere
           "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify "$apk"
