@@ -217,7 +217,16 @@ function claudeLine() {
     } else if (!c.signed_in) {
       state.className = "method m-temporary"; stateText(state, "circle-alert", `Installed ${c.version}, not signed in`);
       const b = el("button", "small", "Sign in to Claude");
-      b.onclick = () => run(b, "Waiting for the browser", "claude_login");
+      b.onclick = () => {
+        // the browser often ends on "Paste this into Claude Code": the code goes in here
+        const code = el("input"); code.placeholder = "Code from the browser, if it shows one"; code.autocomplete = "off"; code.spellcheck = false;
+        code.setAttribute("aria-label", "The code the browser shows after signing in to Claude"); code.style.flex = "1 1 220px";
+        const send = el("button", "small", "Send code");
+        const go = async () => { if (!code.value.trim()) return code.focus(); try { await invoke("claude_code", { code: code.value }); code.value = ""; toast("Code sent to Claude"); } catch (e) { toast(String(e)); } };
+        send.onclick = go; code.onkeydown = e => { if (e.key === "Enter") go(); };
+        line.append(code, send);
+        run(b, "Waiting for the browser", "claude_login").finally(() => { code.remove(); send.remove(); });
+      };
       line.append(b);
     } else {
       state.className = "method m-key";
