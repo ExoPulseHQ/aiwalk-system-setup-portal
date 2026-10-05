@@ -502,3 +502,12 @@ dialog .buttons { gap: var(--s2); }
     -webkit-text-fill-color: currentColor !important; }
   :root[data-fx] :is(nav button.on, button.nx-primary) { box-shadow: none !important; }
 }
+
+/* ---------------------------------------------------------------- machines: one machine, one block.
+   A machine is a heading row plus its details; the hairline that divides rows inside it is too quiet to divide
+   machines from each other. Each machine after the first starts after clear space and a stronger rule, and its name
+   reads as the block's heading. */
+#machines .specs + .item { margin-top: 48px; padding-top: 16px; border-top: 2px solid color-mix(in srgb, var(--ink) 22%, transparent); }
+#machines .item:has(+ .specs) { border-bottom: 0; }
+#machines .item:has(+ .specs) .title.nx-chip { font-size: 16px; font-weight: 600; height: 28px; padding: 0 10px; }
+#machines .specs { border-bottom: 0; }
