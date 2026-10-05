@@ -969,6 +969,8 @@ async function peopleSection(org, user, teams, tree, hosts = []) {
   let p;
   try { p = await invoke("org_people", { org }); } catch (e) { inviteBtn.remove(); sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
   internsNow = p.interns || [];
+  // the Machines page keeps what it read when it was built: after an invitation its pickers must be rebuilt
+  { const m = document.getElementById("machines"); if (m) m.dataset.key = ""; }
   sec.counts = { invited: p.invites.length, interns: p.interns.length };
   if (!p.can_edit) {
     // read-only: names, logins and roles, and whom to ask; GitHub shows invitations and interns to owners only
@@ -1733,10 +1735,10 @@ function whoCanConnect(host, machines, org, user, guestsP) {
       } } }));
     const others = Object.keys(org.people).filter(l => !org.people[l].outside && !via(l).length && !extra.has(l)).sort((a, b) => name(a).localeCompare(name(b)));
     let pick = null;
-    if (others.length || g.interns.length || g.cf) {
+    if (others.length || g.interns.length || internsNow.length || g.cf) {
       pick = el("select");
       pick.append(new Option("Let someone connect", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)),
-        ...g.interns.map(i => new Option(`${i.login} (intern)`, `intern:${i.login}`)),
+        ...(internsNow.length ? internsNow : g.interns).map(i => new Option(`${i.login} (intern)`, `intern:${i.login}`)),
         ...(g.cf ? [new Option("Someone outside the team…", "outside:")] : []));
       pick.onclick = e => e.stopPropagation();
       pick.onchange = async () => {
