@@ -105,7 +105,10 @@ fn ssh_config() -> PathBuf { home().join(".ssh/config") }
 pub fn ssh_status(machines: Vec<Machine>) -> &'static str {
     let Some(app) = app() else { return "nothing" };
     let block = ssh_block(&machines, &app);
-    if !block.contains("Host ") { return "nothing" }   // no tunnel exists yet
+    // no tunnel exists yet. Every entry has a HostName line; a machine that signs certificates is written as a
+    // `Match originalhost` block, with no `Host ` line at all, so looking for "Host " said "nothing" once every
+    // machine had certificates, and the page showed neither the button nor that connections were set up
+    if !block.contains("HostName ") { return "nothing" }
     if std::fs::read_to_string(ssh_config()).unwrap_or_default().contains(&block) { "current" } else { "missing" }
 }
 
