@@ -471,10 +471,11 @@ function machinesSection(machines, org, user, guest) {
     r.hidden = !reach;
     if (b) {
       b.hidden = !reach || !acct;
-      if (acct) { const words = `Open a terminal on ${host}`; b.setAttribute("aria-label", words); b.dataset.tip = words; }
+      if (acct) { const words = `Open your session on ${host}: it keeps running when the window closes`; b.setAttribute("aria-label", words); b.dataset.tip = words; }
     }
     if (!reach) return;
-    const line = `${sshAliases ? "ssh" : "aiwalk-setup ssh"} ${acct || "ACCOUNT"}@${host}`;
+    // the copied command opens the person's lasting session too; plain ssh stays for those who set up connections
+    const line = `aiwalk-setup ssh --session ${acct || "ACCOUNT"}@${host}`;
     const k = el("span", "k"), v = el("div"), copy = iconButton("copy", `Copy the ssh command for ${host}`, "small ghost", true);
     k.append(icon("square-terminal"), el("span", "sr", "SSH")); k.dataset.tip = "SSH";
     copy.style.marginLeft = "8px";
@@ -619,7 +620,7 @@ function machinesSection(machines, org, user, guest) {
       b.onclick = async e => {
         e.stopPropagation(); msg.textContent = "";
         const account = m.user || "ntk";
-        if (await ask(`Update host tools on ${m.host}?`, `The app copies exo, exo-status.py and exo-desktop into ~/.local/bin of ${account} and restarts the status page. Desktops and running work are left alone.`,
+        if (await ask(`Update host tools on ${m.host}?`, `The app copies exo, exo-status.py, exo-desktop and exo-term into ~/.local/bin of ${account} and restarts the status page. Desktops and running work are left alone.`,
           [["cancel", "Cancel"], ["ok", "Update host tools", true]]) !== "ok") return;
         try { toast(await working(b, "Updating", () => invoke("update_host_tools", { tunnel: m.tunnel, user: account }))); status(); }
         catch (err) { msg.textContent = err; }
