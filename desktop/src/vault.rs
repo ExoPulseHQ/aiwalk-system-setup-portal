@@ -160,7 +160,7 @@ fn summary(what: &str, rows: &[(String, Got)]) -> String {
 pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress) -> Result<Vec<(String, Got)>, String> {
     progress(0.0, "Connecting to GitHub");
     let parent = dest.parent().ok_or("bad folder")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("Could not make the folder {}: {e}. Pick another folder with the folder button and download again.", parent.display()))?;
     // shallow: members need the current notes, not years of history
     let mut child = git(parent, &["clone", "--progress", "--depth", "1", url, &dest.to_string_lossy()], extra)
         .stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("git: {e}"))?;
@@ -246,8 +246,14 @@ fn register(path: &Path) {
 }
 
 fn default_dest(repo: &str) -> PathBuf {
-    home().join("Documents/aIwalk").join(repo.rsplit('/').next().unwrap_or(repo))
+    // Windows: beside Documents, not in it. Documents there is often kept in OneDrive, which is no place for a git
+    // copy, and Windows' protection of that folder turns an unknown program away with "cannot find the file"
+    let base = if cfg!(windows) { "aIwalk" } else { "Documents/aIwalk" };
+    home().join(base).join(repo.rsplit('/').next().unwrap_or(repo))
 }
+
+/// Where downloads went on Windows up to 0.3.2, so a copy made then is still found.
+fn old_dest(repo: &str) -> PathBuf { home().join("Documents/aIwalk").join(repo.rsplit('/').next().unwrap_or(repo)) }
 
 /// Which folder the person chose for each repo, so it wins over any other copy Obsidian knows.
 fn chosen_file() -> PathBuf { home().join(".config/aiwalk-setup/vaults.json") }
@@ -276,6 +282,7 @@ fn find(repo: &str) -> Option<String> {
     let mut paths: Vec<String> = chosen().get(repo).and_then(|v| v.as_str()).map(String::from).into_iter().collect();
     paths.extend(obsidian_vaults());
     paths.push(default_dest(repo).to_string_lossy().into());
+    paths.push(old_dest(repo).to_string_lossy().into());
     paths.into_iter().find(|p| is_copy_of(p, repo))
 }
 
@@ -301,7 +308,7 @@ pub fn pick_folder(app: tauri::AppHandle, title: String) -> Option<String> {
         .and_then(|f| f.into_path().ok()).map(|p| p.to_string_lossy().into())
 }
 
-/// Where a download goes unless the person picks another folder: Documents/aIwalk/<repo> in their home folder.
+/// Where a download goes unless the person picks another folder: Documents/aIwalk/<repo> in their home folder (Windows: aIwalk/<repo>).
 #[tauri::command]
 pub fn default_folder(repo: String) -> String { default_dest(&repo).to_string_lossy().into() }
 
