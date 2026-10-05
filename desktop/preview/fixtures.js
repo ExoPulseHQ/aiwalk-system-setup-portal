@@ -127,6 +127,10 @@ window.__fixtures = (scenario, os) => {
     // owner tools
     org_people: people, invite: ok("Invited"), invite_intern: ok("Invited"), remove_intern: ok("Removed"), cancel_invite: ok("Invitation cancelled"),
     set_role: ok("Role changed"), remove_member: ok("Removed"), set_access: ok("Access changed"), machine_extra: ok("Done"),
+    // people let in by email (interns); the backend reads them only with the Cloudflare token, so owners only
+    machine_guests: owner ? { dragon: ["ivy.tam.visiting@example-university.edu"] } : {},
+    machine_guest: a => a.add ? `${a.email} may now connect to ${a.host}` : `${a.email} can no longer connect to ${a.host}. Their sign-in to the machines is ended.`,
+    public_email: a => a.login === "ivy-tam" ? "ivy.tam@example.com" : none,
     pr_permissions: prRows, merge_right: ok("Done"),
     cf_state: { connected: true, expires: "2027-03-01", shared: true, has_key: true, left: [] }, cf_key: "ABCD-EFGH-IJKL-MNOP-QRST",
     cf_connect: ok("Connected"), cf_share: ok("ABCD-EFGH-IJKL-MNOP-QRST"), cf_join: ok("Connected"), cf_renew: ok("Renewed"), cf_forget: none,

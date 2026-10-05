@@ -341,6 +341,8 @@ function machinesSection(machines, org, user) {
   sec.append(head);
   const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
   const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
+  // owners: the people let in by email (interns), read once for all machines
+  const guests = org && (org.people[user] || {}).grants === null ? machineGuests(org.org, hosts.map(m => m.host)) : null;
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
   const list = el("div", "list"), pills = {}, meters = {}, specs = {};
   const live = new Set();   // machines whose status page answered: signed in and reachable, whatever an older check said
@@ -362,7 +364,7 @@ function machinesSection(machines, org, user) {
     const detail = el("div", "specs"); detail.id = `specs-${m.host}`;
     specs[m.host] = el("div");
     detail.append(specs[m.host]);
-    if (org) detail.append(whoCanConnect(m.host, machines, org, user));
+    if (org) detail.append(whoCanConnect(m.host, machines, org, user, guests));
     row.tabIndex = 0; row.setAttribute("role", "button"); row.setAttribute("aria-expanded", "true"); row.setAttribute("aria-controls", detail.id);
     const fold = () => { detail.hidden = !detail.hidden; row.setAttribute("aria-expanded", String(!detail.hidden)); };
     row.onclick = fold;
@@ -1368,7 +1370,27 @@ function myTunnels(s) {
   return hosts.filter(([h]) => !org || connectRule(h, machines, org).may(s.user)).map(([, t]) => t);
 }
 
-function whoCanConnect(host, machines, org, user) {
+// Owners: {cf, guests: {host: [email]}, interns}. Guests and interns need the Cloudflare token on this computer;
+// without it cf is false and both are empty. Interns are reused from the People page when it read them.
+async function machineGuests(org, hosts) {
+  const st = await invoke("cf_state").catch(() => ({}));
+  if (!st.connected) return { cf: false, guests: {}, interns: [] };
+  const [guests, interns] = await Promise.all([invoke("machine_guests", { hosts }).catch(() => ({})),
+    internsNow.length ? internsNow : invoke("org_people", { org }).then(p => (internsNow = p.interns || []), () => [])]);
+  return { cf: true, guests, interns };
+}
+
+// Owners: the email an intern signs in to GitHub with, started from their public one. null when cancelled.
+async function askGuestEmail(login, host) {
+  const input = el("input"); input.type = "email"; input.style.width = "100%";
+  input.setAttribute("aria-label", `Email ${login} signs in to GitHub with`);
+  input.value = await invoke("public_email", { login }).catch(() => null) || "";
+  const go = await ask(`Let ${login} connect to ${host}`, `${host} recognises ${login} by this email address. It must be the primary email of their GitHub account.`,
+    [["cancel", "Cancel"], ["add", "Let them connect", true]], input);
+  return go === "add" && input.value.trim() ? input.value.trim() : null;
+}
+
+function whoCanConnect(host, machines, org, user, guestsP) {
   const box = el("div", "who-connect");
   const owner = (org.people[user] || {}).grants === null;
   const rule = connectRule(host, machines, org);
@@ -1376,7 +1398,8 @@ function whoCanConnect(host, machines, org, user) {
   const extraSlug = `machine-${host}`;
   // why people may connect, said once behind the label's info mark; the line's group labels say who
   const why = `Members of ${teamsFor.join(", ")} can connect, and anyone an owner adds by hand.`;
-  const HAND = "added by hand";
+  const HAND = "added by hand", GUEST = "by email";
+  let g = { cf: null, guests: {}, interns: [] };   // cf null: not known yet
   const paint = () => {
     const extra = new Set(team(extraSlug).members);
     const head = el("div", "row"), k = el("span", "k", "Who can connect");
@@ -1390,21 +1413,30 @@ function whoCanConnect(host, machines, org, user) {
       else { const p = el("p", "ask-line"); p.append(icon("lock"), "You can't connect to this machine. Ask an owner: write access to one of its code repos, or an extra place here."); box.append(p); }
       return;
     }
-    k.append(info(`${why} Changes reach the machine at that person's next sign-in, within 24 hours.`));
+    k.append(info(`${why} Changes reach the machine at that person's next sign-in, within 24 hours.${g.cf === false ? " Interns can be added once Cloudflare is connected on this computer." : ""}`));
     const name = l => org.people[l].name;
     const people = Object.keys(org.people).sort((a, b) => name(a).localeCompare(name(b)))
       .filter(l => via(l).length || extra.has(l))
       .map(l => ({ login: l, name: name(l), why: [...via(l), ...(extra.has(l) ? [HAND] : [])],
         rm: extra.has(l) ? { tip: `Remove ${l}'s ${via(l).length ? "extra " : ""}access to ${host}`, run: b => change(l, false, b) } : null }));
+    // people let in by email: the address is all Cloudflare knows, so it is what the chip shows
+    (g.guests[host] || []).forEach(e => people.push({ login: e.length > 26 ? `${e.slice(0, 25)}…` : e, name: e, why: [GUEST],
+      rm: { tip: `Remove ${e}'s access to ${host}`, run: b => changeGuest(e, false, b) } }));
     const others = Object.keys(org.people).filter(l => !via(l).length && !extra.has(l)).sort((a, b) => name(a).localeCompare(name(b)));
     let pick = null;
-    if (others.length) {
+    if (others.length || g.interns.length) {
       pick = el("select");
-      pick.append(new Option("Let someone connect", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)));
+      pick.append(new Option("Let someone connect", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)),
+        ...g.interns.map(i => new Option(`${i.login} (intern)`, `intern:${i.login}`)));
       pick.onclick = e => e.stopPropagation();
-      pick.onchange = () => pick.value && change(pick.value, true, pick);
+      pick.onchange = async () => {
+        const v = pick.value;
+        if (!v.startsWith("intern:")) return v && change(v, true, pick);
+        const email = await askGuestEmail(v.slice(7), host);
+        if (email) changeGuest(email, true, pick); else paint();
+      };
     }
-    box.append(whoLine(people, [...teamsFor, HAND], pick, `Who can connect to ${host}`));
+    box.append(whoLine(people, [...teamsFor, HAND, GUEST], pick, `Who can connect to ${host}`));
   };
   async function change(login, add, ctl) {
     try {
@@ -1415,7 +1447,16 @@ function whoCanConnect(host, machines, org, user) {
     } catch (e) { toast(`Could not change ${host}: ${e}`); }
     paint();
   }
+  async function changeGuest(email, add, ctl) {
+    try {
+      toast(await working(ctl, add ? "Adding" : "Removing", () => invoke("machine_guest", { host, email, add })));
+      const e = email.trim().toLowerCase(), now = (g.guests[host] || []).filter(x => x !== e);
+      g.guests[host] = add ? [...now, e] : now;
+    } catch (e) { toast(`Could not change ${host}: ${e}`); }
+    paint();
+  }
   paint();
+  if (owner && guestsP) guestsP.then(v => { g = v; paint(); });
   return box;
 }
 

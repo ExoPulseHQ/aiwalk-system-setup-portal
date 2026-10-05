@@ -3,7 +3,7 @@
 //! `pr_permissions` is the one read here that everyone gets.
 
 use crate::github;
-use exo_core::{can_edit_people, interns, merge_rights, org_access, org_query, permissions_rank, plan_access, Intern};
+use exo_core::{allow_policy, can_edit_people, guest_email, interns, policy_emails, policy_update, with_guest, merge_rights, org_access, org_query, permissions_rank, plan_access, Intern};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -140,6 +140,44 @@ pub fn machine_extra(org: String, host: String, login: String, add: bool) -> Res
     let path = format!("orgs/{org}/teams/machine-{host}/memberships/{login}");
     if add { github::send("PUT", &path, Some(serde_json::json!({ "role": "member" })))?; } else { github::send("DELETE", &path, None)?; }
     Ok(format!("{login} {} {host}", if add { "may now connect to" } else { "no longer has extra access to" }))
+}
+
+/// Each host's guests: the emails its Cloudflare Access application (named after the host) lets in one by one.
+/// Hosts without an application, and everything when Cloudflare is not connected here or refuses, are left out.
+#[tauri::command(async)]
+pub fn machine_guests(hosts: Vec<String>) -> std::collections::BTreeMap<String, Vec<String>> {
+    // ponytail: one page of access/apps (Cloudflare's default 25); page through when the account has more
+    let Ok(apps) = crate::cloudflare::api("GET", "access/apps", None) else { return Default::default() };
+    apps.as_array().into_iter().flatten()
+        .filter_map(|a| { let h = a["name"].as_str().filter(|n| hosts.iter().any(|h| h == n))?; Some((h.to_string(), policy_emails(allow_policy(a)?))) })
+        .collect()
+}
+
+/// Lets one person connect to `host` by the email they sign in to GitHub with, or takes that back: an email rule in
+/// the allow policy of the host's Access application, beside the GitHub team rules, which are never touched. For
+/// people GitHub teams cannot hold (interns). Removing also ends their Access sessions at once.
+#[tauri::command(async)]
+pub fn machine_guest(host: String, email: String, add: bool) -> Result<String, String> {
+    let email = guest_email(&email)?;
+    let apps = crate::cloudflare::api("GET", "access/apps", None)?;
+    let app = apps.as_array().into_iter().flatten().find(|a| a["name"] == host.as_str()).ok_or(format!("{host} has no Cloudflare Access application"))?;
+    let policy = allow_policy(app).ok_or(format!("{host}'s Access application has no allow policy"))?;
+    let include = policy["include"].as_array().cloned().unwrap_or_default();
+    let new = with_guest(&include, &email, add);
+    if new != include {
+        let (app_id, id) = (app["id"].as_str().unwrap_or_default(), policy["id"].as_str().unwrap_or_default());
+        crate::cloudflare::api("PUT", &format!("access/apps/{app_id}/policies/{id}"), Some(policy_update(policy, new)))?;
+    }
+    if add { return Ok(format!("{email} may now connect to {host}")) }
+    let ended = crate::cloudflare::api("POST", "access/organizations/revoke_user", Some(serde_json::json!({ "email": email })));
+    Ok(format!("{email} can no longer connect to {host}.{}", if ended.is_ok() { " Their sign-in to the machines is ended." }
+        else { " Their sign-in to the machines could not be ended; it runs out by itself within 24 hours." }))
+}
+
+/// The public email on `login`'s GitHub profile, to start from when asking for the one they sign in with.
+#[tauri::command(async)]
+pub fn public_email(login: String) -> Option<String> {
+    github::get(&format!("users/{login}")).ok()?["email"].as_str().map(String::from)
 }
 
 #[derive(Serialize)]

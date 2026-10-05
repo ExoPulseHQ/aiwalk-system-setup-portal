@@ -603,8 +603,95 @@ pub fn credential_reply(input: &str, login: &str, token: &str) -> Option<String>
     (field("protocol") == Some("https") && field("host") == Some("github.com")).then(|| format!("username={login}\npassword={token}\n"))
 }
 
+// ---------------------------------------------------------------- machine guests
+// An intern is no organisation member, so no GitHub team can hold them. A machine's Cloudflare Access policy can
+// still let one person in by the email of the identity they sign in with: an include rule {"email": {"email": …}}.
+
+/// `email` as Access compares it: trimmed, lower case, one "@" with something on both sides, no spaces, at most 254.
+pub fn guest_email(email: &str) -> Result<String, String> {
+    let e = email.trim().to_lowercase();
+    let ok = e.len() <= 254 && !e.chars().any(char::is_whitespace)
+        && matches!(e.split_once('@'), Some((a, b)) if !a.is_empty() && !b.is_empty() && !b.contains('@'));
+    if ok { Ok(e) } else { Err(format!("\"{}\" is not an email address", email.trim())) }
+}
+
+/// The application's allow policy: the first one deciding "allow".
+pub fn allow_policy(app: &Value) -> Option<&Value> {
+    app["policies"].as_array()?.iter().find(|p| p["decision"] == "allow")
+}
+
+/// The emails a policy lets in one by one, lower case, in the policy's order; every other kind of rule is skipped.
+pub fn policy_emails(policy: &Value) -> Vec<String> {
+    policy["include"].as_array().into_iter().flatten()
+        .filter_map(|r| r["email"]["email"].as_str().map(str::to_lowercase)).collect()
+}
+
+/// `include` with the email rule for `email` (already from `guest_email`) added at the end or removed. Every other
+/// rule stays as it was and where it was; adding one already there or removing one absent changes nothing.
+pub fn with_guest(include: &[Value], email: &str, add: bool) -> Vec<Value> {
+    let is = |r: &Value| r["email"]["email"].as_str().is_some_and(|e| e.eq_ignore_ascii_case(email));
+    let mut out: Vec<Value> = include.iter().filter(|r| add || !is(r)).cloned().collect();
+    if add && !include.iter().any(is) { out.push(serde_json::json!({ "email": { "email": email } })); }
+    out
+}
+
+/// The body that writes `policy` back with `include` in place of its own: every field Cloudflare reads kept as it
+/// was, the ones it sets itself (ids, times, reusable) left out.
+pub fn policy_update(policy: &Value, include: Vec<Value>) -> Value {
+    let mut body = policy.clone();
+    if let Some(o) = body.as_object_mut() {
+        for k in ["id", "uid", "created_at", "updated_at", "reusable"] { o.remove(k); }
+        o.insert("include".into(), Value::Array(include));
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
+    // shaped like a real app-scoped allow policy (GET access/apps), ids and names invented
+    fn guest_policy() -> serde_json::Value {
+        let gh = |team: &str| serde_json::json!({ "github-organization": { "id": "1001", "identity_provider_id": "idp-0000", "name": "ExampleCorp", "team": team } });
+        serde_json::json!({ "created_at": "2026-01-01T00:00:00Z", "decision": "allow", "exclude": [], "id": "pol-1", "uid": "pol-1",
+            "include": [gh("core"), { "email": { "email": "Ivy@Example.com" } }, gh("machine-dragon"), { "email_domain": { "domain": "example.org" } }],
+            "name": "dragon: code repo teams and machine-dragon", "precedence": 1, "require": [], "reusable": false, "updated_at": "2026-01-01T00:00:00Z" })
+    }
+
+    #[test]
+    fn guest_emails_come_from_email_rules_only() {
+        let app = serde_json::json!({ "name": "dragon", "policies": [{ "decision": "deny", "include": [{ "email": { "email": "no@x.io" } }] }, guest_policy()] });
+        assert_eq!(super::policy_emails(super::allow_policy(&app).unwrap()), ["ivy@example.com"]);
+        assert!(super::allow_policy(&serde_json::json!({ "name": "x" })).is_none());
+        assert!(super::policy_emails(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn adding_and_removing_a_guest_keeps_every_other_rule_in_place() {
+        let p = guest_policy();
+        let inc = p["include"].as_array().unwrap();
+        let text = |v: &[serde_json::Value]| v.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        let added = super::with_guest(inc, "jo@example.com", true);
+        assert_eq!(text(&added[..4]), text(inc));
+        assert_eq!(added[4], serde_json::json!({ "email": { "email": "jo@example.com" } }));
+        // already there (in another case): nothing changes
+        assert_eq!(text(&super::with_guest(inc, "ivy@example.com", true)), text(inc));
+        let removed = super::with_guest(inc, "ivy@example.com", false);
+        assert_eq!(text(&removed), text(&[inc[0].clone(), inc[2].clone(), inc[3].clone()]));
+        // absent: nothing changes
+        assert_eq!(text(&super::with_guest(inc, "nobody@example.com", false)), text(inc));
+        // the body keeps every field Cloudflare reads and drops the ones it sets
+        let body = super::policy_update(&p, removed.clone());
+        assert_eq!(body, serde_json::json!({ "decision": "allow", "exclude": [], "include": removed,
+            "name": "dragon: code repo teams and machine-dragon", "precedence": 1, "require": [] }));
+    }
+
+    #[test]
+    fn guest_emails_are_checked_and_lower_cased() {
+        assert_eq!(super::guest_email("  Ivy@Example.COM ").unwrap(), "ivy@example.com");
+        for bad in ["", "ivy", "@example.com", "ivy@", "a@b@c", "ivy tam@example.com"] { assert!(super::guest_email(bad).is_err(), "{bad}") }
+        let long = format!("{}@example.com", "a".repeat(243));
+        assert!(super::guest_email(&long).is_err());
+        assert!(super::guest_email(&long[1..]).is_ok());
+    }
     #[test]
     fn git_is_given_the_password_for_github_only() {
         let ask = |host: &str, proto: &str| format!("protocol={proto}\nhost={host}\r\npath=o/r.git\n\n");
