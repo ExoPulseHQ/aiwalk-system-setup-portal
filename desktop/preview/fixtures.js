@@ -49,6 +49,11 @@ window.__fixtures = (scenario, os) => {
     { host: "horse", repo: "simulator", account: "ops", ready: true, note: "Forward simulation", sometimes: false, via: none, personal: false, tunnel: "ssh-horse.example-corp.org", cert: true, teams: ["docs-l2"] },
     { host: "horse", repo: "trainer", account: "ops", ready: true, note: "Forward simulation", sometimes: false, via: none, personal: false, tunnel: "ssh-horse.example-corp.org", cert: true, teams: ["docs-l3"] },
     { host: "tiger", repo: "MoCap", account: "ops", ready: true, note: "Motion-capture service", sometimes: true, via: none, personal: false, tunnel: "ssh-tiger.example-corp.org", cert: false, teams: ["docs-l1"] },
+    { host: "ox", repo: "simulator", account: "ops", ready: true, note: "Development", sometimes: false, via: none, personal: false, tunnel: "ssh-ox.example-corp.org", cert: true, teams: ["docs-l2"] },
+    { host: "rabbit", repo: "MoCap", account: "ops", ready: true, note: "Capture room, second station", sometimes: false, via: none, personal: false, tunnel: "ssh-rabbit.example-corp.org", cert: true, teams: ["docs-l1"] },
+    { host: "goat", repo: "MoCap", account: "ops", ready: true, note: "Capture room, third station", sometimes: false, via: none, personal: false, tunnel: "ssh-goat.example-corp.org", cert: true, teams: ["docs-l1"] },
+    { host: "monkey", repo: "hand", account: "ops", ready: true, note: "Hardware bench laptop wired to the robot hand", sometimes: false, via: none, personal: false, tunnel: "ssh-monkey.example-corp.org", cert: true, teams: ["docs-l2"] },
+    { host: "rooster", repo: "trainer", account: "ops", ready: true, note: "University cluster under a job scheduler", sometimes: false, via: "horse", personal: true, tunnel: none, cert: true, teams: ["docs-l3"] },
   ];
   const REQUESTS = [
     { number: 41, author: "dee-park", repo: "docs-l4", level: "read", body: "repo: docs-l4\nlevel: read\n\nI need the exo drawings for the controller tuning.\n\n<!-- sent by aIwalk System Setup -->" },
