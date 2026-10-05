@@ -236,6 +236,15 @@ function claudeLine() {
       msg.textContent = c.version;
     }
     todo("Claude Code", !!c.path && !c.signed_in);
+    // installed, but a terminal would say "command not found": say where it is and offer the line that fixes it
+    line.querySelectorAll(".path-note").forEach(n => n.remove());
+    if (c.path && c.in_terminal === false) {
+      const note = el("p", "sub path-note"); note.style.cssText = "flex-basis: 100%; margin: 4px 0 0";
+      const copy = iconButton("copy", "Copy the line that adds it", "small ghost", true);
+      copy.onclick = () => navigator.clipboard.writeText(c.path_fix).then(() => toast("Copied. Paste it in a terminal once, then open a new terminal."), () => toast(c.path_fix));
+      note.append(`A terminal does not find "claude" yet: it is at ${c.path}. One line adds it `, copy);
+      line.append(note);
+    }
   };
   async function run(b, label, cmd) {
     msg.textContent = "";

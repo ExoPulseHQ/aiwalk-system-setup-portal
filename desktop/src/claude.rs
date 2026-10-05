@@ -25,6 +25,29 @@ pub struct ClaudeState {
     method: String,
     /// "max", "pro", … for a claude.ai sign-in
     plan: String,
+    /// Whether typing `claude` in a new terminal finds it. The installer puts it in ~/.local/bin, which a Mac's
+    /// shell does not search by default, so someone who then types `claude` is told there is no such command.
+    in_terminal: bool,
+    /// The line that makes a new terminal find it, for this person's shell; empty when it is found already.
+    path_fix: String,
+}
+
+/// Asks the person's own login shell, not this app's environment: an app started from the Dock has a short PATH
+/// that says nothing about what a terminal would find.
+#[cfg(unix)]
+fn in_terminal() -> bool {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    sh(&shell, &["-lic", "command -v claude"], 8).0 == 0
+}
+#[cfg(not(unix))]
+fn in_terminal() -> bool { true }   // ponytail: Windows' installer edits the user PATH itself; not checked here
+
+fn path_fix(found_at: &str) -> String {
+    let dir = std::path::Path::new(found_at).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let dir = dir.replace(&home().to_string_lossy().into_owned(), "$HOME");
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let rc = if shell.ends_with("zsh") { "~/.zshrc" } else if shell.ends_with("fish") { return format!("fish_add_path {dir}") } else { "~/.bashrc" };
+    format!("echo 'export PATH=\"{dir}:$PATH\"' >> {rc}")
 }
 
 #[tauri::command(async)]
@@ -32,10 +55,13 @@ pub fn claude_state() -> ClaudeState {
     let Some(path) = find() else { return ClaudeState::default() };
     let version = sh(&path, &["--version"], 15).1.split_whitespace().next().unwrap_or_default().to_string();
     let status: serde_json::Value = serde_json::from_str(&sh(&path, &["auth", "status", "--json"], 20).1).unwrap_or_default();
+    let found = in_terminal();
     ClaudeState {
         signed_in: status["loggedIn"].as_bool().unwrap_or(false),
         method: status["authMethod"].as_str().unwrap_or_default().into(),
         plan: status["subscriptionType"].as_str().unwrap_or_default().into(),
+        path_fix: if found { String::new() } else { path_fix(&path) },
+        in_terminal: found,
         path: Some(path), version,
     }
 }
