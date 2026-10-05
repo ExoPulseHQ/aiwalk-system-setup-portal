@@ -11,11 +11,19 @@
 #   exo-desktop start [N]     start display N, or the lowest free one; prints it
 #   exo-desktop stop N        stop display N
 set -euo pipefail
-VERSION=2   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION=3   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 MAX=8   # ponytail: fixed cap per machine, so desktops cannot eat a training run's memory; per-machine setting if needed
 
 # "vncserver -list" prints a table; newer TigerVNC writes the display as "1", older as ":1"
-running() { vncserver -list 2>/dev/null | awk '$1 ~ /^:?[0-9]+$/ { sub(/^:/, "", $1); print ":" $1 }' | sort -t: -k2 -n; }
+# plus this account's servers found by their socket: the old vncserver does not list one it did not start itself
+running() {
+  { vncserver -list 2>/dev/null | awk '$1 ~ /^:?[0-9]+$/ { sub(/^:/, "", $1); print ":" $1 }'
+    pgrep -u "$UID" -a Xtigervnc 2>/dev/null | sed -n 's/.*Xtigervnc :\([0-9]*\) .*desk-[0-9]*\.sock.*/:\1/p'; } | sort -u -t: -k2 -n
+}
+
+# never `running | grep -q`: with pipefail, grep leaving at its first match fails the pipe and a running desktop reads
+# as not running (which once sent a healthy start down the by-hand path and removed its socket)
+is_running() { local all; all=$(running); grep -qx ":$1" <<<"$all"; }
 
 # another X server (the machine's own screen, often :0 to :2) owns that display number
 taken() { local all; all=$(ss -xl 2>/dev/null) || true; grep -q "@/tmp/.X11-unix/X$1 " <<<"$all"; }
@@ -25,11 +33,11 @@ case "${1:-}" in
   start)
     n=${2:-}
     if [ -z "$n" ]; then
-      for i in $(seq 1 $MAX); do running | grep -qx ":$i" || taken "$i" || { n=$i; break; }; done
+      for i in $(seq 1 $MAX); do is_running "$i" || taken "$i" || { n=$i; break; }; done
       [ -n "$n" ] || { echo "All $MAX desktops are in use" >&2; exit 1; }
     fi
     [[ "$n" =~ ^[1-9]$ ]] && [ "$n" -le $MAX ] || { echo "Desktop number must be 1 to $MAX" >&2; exit 1; }
-    running | grep -qx ":$n" && { echo ":$n"; exit 0; }
+    is_running "$n" && { echo ":$n"; exit 0; }
     taken "$n" && { echo "Display :$n belongs to another X server on this machine" >&2; exit 1; }
     rm -f "$HOME/.vnc/desk-$n.sock"   # left by a desktop that died or failed to start; vncserver refuses to reuse it
     export LIBGL_ALWAYS_SOFTWARE=1 __GLX_VENDOR_LIBRARY_NAME=mesa GALLIUM_DRIVER=llvmpipe
@@ -39,11 +47,32 @@ case "${1:-}" in
       [ -s "$HOME/.vnc/desk.pass" ] && { sec=None,VncAuth; pass=(-PasswordFile "$HOME/.vnc/desk.pass"); }
     fi
     vncserver ":$n" -geometry 1920x1080 -depth 24 -localhost yes -rfbport -1 \
-      -rfbunixpath "$HOME/.vnc/desk-$n.sock" -rfbunixmode 0600 -SecurityTypes "$sec" "${pass[@]}" >/dev/null 2>&1
+      -rfbunixpath "$HOME/.vnc/desk-$n.sock" -rfbunixmode 0600 -SecurityTypes "$sec" "${pass[@]}" >/dev/null 2>&1 || true
+    # TigerVNC 1.10 (Ubuntu 20.04): its vncserver looks for the TCP port to know the server is up, finds none, says
+    # it did not start and kills it. There the server and the session are started by hand, with the same pid file,
+    # so list and stop keep working.
+    if ! is_running "$n"; then
+      host=$(hostname); log="$HOME/.vnc/$host:$n.log"; rm -f "$HOME/.vnc/desk-$n.sock"
+      cookie=$(mcookie); for name in "$host/unix:$n" ":$n"; do xauth -f "$HOME/.Xauthority" add "$name" . "$cookie" >/dev/null 2>&1 || true; done
+      setsid Xtigervnc ":$n" -geometry 1920x1080 -depth 24 -rfbport -1 -nolisten tcp -auth "$HOME/.Xauthority" \
+        -rfbunixpath "$HOME/.vnc/desk-$n.sock" -rfbunixmode 0600 -SecurityTypes "$sec" "${pass[@]}" >"$log" 2>&1 < /dev/null &
+      for _ in $(seq 1 50); do [ -S "$HOME/.vnc/desk-$n.sock" ] && break; sleep 0.1; done
+      [ -S "$HOME/.vnc/desk-$n.sock" ] || { echo "Desktop :$n did not start; see $log" >&2; exit 1; }
+      # the server's own pid, not setsid's, which may have forked
+      pgrep -u "$UID" -x Xtigervnc -a | awk -v d=":$n" '$3 == d { print $1; exit }' > "$HOME/.vnc/$host:$n.pid"
+      session="$HOME/.vnc/xstartup"; [ -x "$session" ] || session=/etc/X11/Xsession
+      DISPLAY=":$n" setsid "$session" >>"$log" 2>&1 < /dev/null &
+    fi
     echo ":$n" ;;
   stop)
     [[ "${2:-}" =~ ^[1-9]$ ]] || { echo "Which desktop? exo-desktop stop N" >&2; exit 1; }
-    vncserver -kill ":$2" >/dev/null 2>&1 || { echo "Desktop :$2 was not running" >&2; exit 1; }
+    is_running "$2" || { echo "Desktop :$2 was not running" >&2; exit 1; }
+    vncserver -kill ":$2" >/dev/null 2>&1 || true
+    # the old vncserver can say it killed a server it did not start: whatever is left is ended by its own pid
+    pid=$(pgrep -u "$UID" -x Xtigervnc -a | awk -v d=":$2" '$3 == d { print $1; exit }')
+    if [ -n "$pid" ]; then kill "$pid"; for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done; fi
+    rm -f "$HOME/.vnc/$(hostname):$2.pid" "$HOME/.vnc/desk-$2.sock"
+    is_running "$2" && { echo "Desktop :$2 would not stop" >&2; exit 1; }
     echo "stopped :$2" ;;
   *) sed -n '2,8p' "$0"; exit 1 ;;
 esac
