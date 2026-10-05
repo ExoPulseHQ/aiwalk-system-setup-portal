@@ -1647,13 +1647,15 @@ async function askGuest(host) {
 }
 
 // After a guest is let in: what to send them, with a Copy button. The app sends no email.
-function tellGuest(who, host) {
-  const text = `Accept the GitHub invitation, install aIwalk System Setup, sign in with GitHub, open Machines, add the machine named ${host}.`;
+function tellGuest(who, host, intern) {
+  // an intern has accepted already and reads the shared notes, so the machine is on their Machines page by itself
+  const text = intern ? `${host} is now on the Machines page of aIwalk System Setup. Sign in there when it asks.`
+    : `Accept the GitHub invitation, install aIwalk System Setup, sign in with GitHub, open Machines, add the machine named ${host}.`;
   const box = el("p"), copy = iconButton("copy", "Copy the instructions", "small ghost", true);
   copy.style.marginLeft = "8px";
   copy.onclick = () => navigator.clipboard.writeText(text).then(() => toast("Copied the instructions"), () => toast(text));
   box.append(el("strong", null, text), copy);
-  return ask(`${who} may now connect to ${host}`, "Send them this. The app sends no email.", [["done", "Done", true]], box);
+  return ask(`${who} may now connect to ${host}`, "Tell them yourself: the app sends no message.", [["done", "Done", true]], box);
 }
 
 function whoCanConnect(host, machines, org, user, guestsP) {
@@ -1703,7 +1705,7 @@ function whoCanConnect(host, machines, org, user, guestsP) {
         const login = v.slice(7), email = await askGuestEmail(login, host);
         if (!email) return paint();
         rememberGuest(email, login);
-        if (await changeGuest(email, true, pick)) tellGuest(login, host);
+        if (await changeGuest(email, true, pick)) tellGuest(login, host, true);
       };
     }
     box.append(whoLine(people, [...teamsFor, HAND, GUEST], pick, `Who can connect to ${host}`));
