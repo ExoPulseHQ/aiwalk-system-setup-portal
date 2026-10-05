@@ -1150,7 +1150,7 @@ function paintTeamOpening() {
   const page = teamPage(), s = lastTeam;
   if (!s || !s.user || !page.querySelector(".badge")) return;
   const org = (s.vaults.find(v => v.access) || {}).access, machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
-  const reach = [...new Set(machines.map(m => m.host))].filter(h => !org || connectRule(h, machines, org).may(s.user));
+  const reach = [...new Set(machines.filter(m => m.tunnel).map(m => m.host))].filter(h => !org || connectRule(h, machines, org).may(s.user));
   const here = s.vaults.filter(v => local.copies[v.repo]).length;
   const left = ["Machines", "Claude Code", "Owner tools"].filter(t => teamTodo.has(t));
   const detail = [`Signed in as ${s.user}. ${plural(here, "vault")} on this computer, ${plural(reach.length, "machine")} within reach.`];
