@@ -1,9 +1,9 @@
 // Stands in for the Tauri backend in a browser. Read by index.html before its own scripts.
-// Query: as=owner|member|signedout|terms, page=team|machines|people|terms|android|vm, theme=light, os=linux|windows|macos
+// Query: as=owner|member|signedout|terms, page=team|machines|people|terms|android|vm, theme=light|dark, os=linux|windows|macos
 (() => {
   const q = new URLSearchParams(location.search);
   const scenario = q.get("as") || "owner", os = q.get("os") || "linux";
-  if (q.get("theme") === "light") document.documentElement.dataset.theme = "light";
+  if (/^(light|dark)$/.test(q.get("theme"))) document.documentElement.dataset.theme = q.get("theme");   // app.css honours both
   document.write('<script src="/__preview/fixtures.js"><\/script>');   // parsed before any later script runs
 
   const wait = ms => new Promise(r => setTimeout(r, ms));
