@@ -59,9 +59,61 @@ jobs:
             - Windows: the `.msi` or `-setup.exe`
             - macOS, Apple silicon (M1 and later): `aarch64.dmg`; Intel: `x64.dmg`
             - Linux: the `.deb` (Ubuntu, Debian) or the `.AppImage`
+            - Android phone: the `.apk` (sign-in, machines and owner tools; no vault or terminal yet). The phone asks
+              once to allow installing from this source.
 
             On Windows git comes with the app; nothing else is needed. The app is not signed with a paid certificate yet:
             Windows SmartScreen asks once (More info, Run anyway). On macOS, open it once, then System Settings,
             Privacy & Security, Open Anyway.
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-rc') }}
+
+  # The Android app, added to the same release once the desktop installers have made it. It is signed with the
+  # team's one release key, kept in the repo's secrets: a phone only takes an update signed by the key of the app it
+  # already has. Without the secrets this job says so and uploads nothing, so the desktop release is never held up.
+  android:
+    needs: build
+    if: contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor)
+    runs-on: ubuntu-22.04
+    env:
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+    steps:
+      - name: The release key is there
+        id: key
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then echo "have=yes" >> "$GITHUB_OUTPUT"
+          else echo "::warning::No Android release key in this repo's secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD): no APK in this release."; fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.have == 'yes'
+      - uses: actions/setup-java@v4
+        if: steps.key.outputs.have == 'yes'
+        with: { distribution: temurin, java-version: 21 }
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.key.outputs.have == 'yes'
+        with: { targets: aarch64-linux-android }
+      - uses: swatinem/rust-cache@v2
+        if: steps.key.outputs.have == 'yes'
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.have == 'yes'
+        with: { node-version: 20 }
+      - name: Build and sign
+        if: steps.key.outputs.have == 'yes'
+        run: |
+          npm install -g @tauri-apps/cli@2
+          export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          printf 'storeFile=%s\npassword=%s\nkeyAlias=aiwalk\n' "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" > desktop/gen/android/keystore.properties
+          mkdir -p desktop/tools
+          version=$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)
+          cd desktop && tauri android build --apk --target aarch64 --config "{\"version\":\"$version\"}"
+          apk=$(find gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
+          # an unsigned file would upload fine and install nowhere
+          "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify "$apk"
+          cp "$apk" "$RUNNER_TEMP/aIwalk.System.Setup_${version}_android_arm64.apk"
+          rm -f gen/android/keystore.properties "$RUNNER_TEMP/release.jks"
+      - name: Add it to the release
+        if: steps.key.outputs.have == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP"/*.apk --clobber
