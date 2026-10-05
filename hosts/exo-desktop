@@ -11,7 +11,7 @@
 #   exo-desktop start [N]     start display N, or the lowest free one; prints it
 #   exo-desktop stop N        stop display N
 set -euo pipefail
-VERSION=3   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION=4   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 MAX=8   # ponytail: fixed cap per machine, so desktops cannot eat a training run's memory; per-machine setting if needed
 
 # "vncserver -list" prints a table; newer TigerVNC writes the display as "1", older as ":1"
@@ -63,6 +63,9 @@ case "${1:-}" in
       session="$HOME/.vnc/xstartup"; [ -x "$session" ] || session=/etc/X11/Xsession
       DISPLAY=":$n" setsid "$session" >>"$log" 2>&1 < /dev/null &
     fi
+    # programs in a sandbox (Firefox as a snap on Ubuntu 22.04 and later) cannot read ~/.Xauthority and are turned
+    # away with "Authorization required"; the account's own programs are let on to its own desktop by name instead
+    DISPLAY=":$n" XAUTHORITY="$HOME/.Xauthority" xhost "+SI:localuser:${USER:-$(whoami)}" >/dev/null 2>&1 || true
     echo ":$n" ;;
   stop)
     [[ "${2:-}" =~ ^[1-9]$ ]] || { echo "Which desktop? exo-desktop stop N" >&2; exit 1; }
