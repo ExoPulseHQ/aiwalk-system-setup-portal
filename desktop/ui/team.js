@@ -5,28 +5,84 @@ const teamPage = () => document.getElementById("team");
 // core is the owners' team, machine-* the machines' extras and merge-* the merge rights: not layers to tick or join
 const layerTeam = t => t.slug !== "core" && !/^(machine|merge)-/.test(t.slug);
 
-function pill(rank, title) { const p = el("span", "perm p" + rank, LABEL[rank]); p.title = title; return p; }
+// Each level has a glyph; its tooltip says what the level allows.
+const LEVEL_SAYS = { Admin: ["shield", "Admin: opens the repo and changes who else can"], Write: ["pencil", "Write: opens the repo and changes its files"],
+  Read: ["eye", "Read: opens and downloads the repo, no changes"], "No access": ["lock", "No access: ask an owner"] };
+// A level: its glyph alone (the access tree), "worded" with its glyph (a vault's heading), or "plain" words (dialogs).
+function pill(rank, look = "glyph", tip) {
+  const word = LABEL[rank], [name, says] = LEVEL_SAYS[word];
+  if (look === "glyph") return glyph("perm p" + rank, name, word, says);
+  const p = el("span", "perm p" + rank);
+  p.append(...(look === "worded" ? [icon(name)] : []), word);
+  p.dataset.tip = tip || says;
+  return p;
+}
+// The icon and words before a line of the identity block.
+const lineLabel = (text, name) => { const l = el("span", "label"); l.append(icon(name), text); return l; };
 
-function initials(name) {
-  const parts = name.trim().split(/\s+/);
-  return (parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : name.slice(0, 2)).toUpperCase();
+// A person in a list: the profile name over the login chip, or the login alone (as the title chip) with a second line
+// that says there is no profile name, so every person row has the same two lines.
+function personRow(login, name, ...right) {
+  const known = name && name !== login;
+  const r = kind(item(known ? name : login, known ? chip(login) : "No display name on GitHub", null, ...right), "user-round");
+  if (!known) r.querySelector(".title").classList.add("chip");
+  return r;
+}
+
+// Who may use a thing, as one wrapping line of people grouped by why: the reason is a quiet label said once, the
+// person is the chip. people: [{login, name, why: [group, ...], rm: {tip, run(button)} | null}], groups in `order`.
+// Added-by-hand people carry their own remove mark; `pick` (a select whose first option names the act) opens from a
+// "+" at the end of the line. Used for who can connect to a machine and who can merge on a repo.
+function whoLine(people, order, pick, label) {
+  const line = el("div", "who-line"); line.setAttribute("role", "list"); line.setAttribute("aria-label", label);
+  const groups = new Map(order.map(g => [g, []]));
+  people.forEach(p => { const g = p.why[0]; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(p); });
+  groups.forEach((ps, g) => {
+    if (!ps.length) return;
+    const grp = el("span", "who-g"); grp.setAttribute("role", "listitem");
+    grp.append(el("span", "who-k", g));
+    ps.forEach(p => {
+      const c = chip(p.login, [p.name !== p.login ? p.name : "", p.why.length > 1 ? `also ${p.why.slice(1).join(", ")}` : ""].filter(Boolean).join(", ") || p.login);
+      c.tabIndex = 0;
+      if (p.rm) {
+        const x = el("button", "x"); x.type = "button"; x.append(icon("x"));
+        x.dataset.tip = p.rm.tip; x.setAttribute("aria-label", p.rm.tip);
+        x.onclick = e => { e.stopPropagation(); p.rm.run(x); };
+        c.classList.add("has-x"); c.append(x);
+      }
+      grp.append(c);
+    });
+    line.append(grp);
+  });
+  if (!people.length) line.append(el("span", "who-k", "Nobody yet"));
+  if (pick) {
+    const wrap = el("span", "who-add"), b = iconButton("user-plus", pick.options[0].text, "small ghost add", true);
+    pick.hidden = true;
+    b.onclick = e => { e.stopPropagation(); pick.hidden = false; b.hidden = true; pick.focus(); try { pick.showPicker(); } catch {} };
+    pick.addEventListener("blur", () => { if (!pick.value) { pick.hidden = true; b.hidden = false; } });
+    wrap.append(b, pick); line.append(wrap);
+  }
+  return line;
 }
 
 // The badge: the signed-in person, how this computer is signed in, and Sign out.
 function badge(s) {
   const b = el("div", "badge");
-  const name = s.name || s.user;
   const who = el("div", "who");
-  who.append(el("div", "name", name), el("div", "dim", s.name ? `@${s.user}` : "Signed in on this computer"));
+  // the name in the display treatment over the login chip; without a profile name, the login alone, as the chip
+  if (s.name) who.append(el("div", "name", s.name), chip(s.user)); else who.append(el("div", "name chip", s.user));
   const methods = el("div", "methods claude-line");
   const a = s.accounts.find(x => x.active) || {};
-  methods.append(el("span", "label", "GitHub"),
-    el("span", "method " + (a.method === "account" ? "m-account" : "m-off"), "GitHub account"),
-    el("span", "method " + (a.method === "temporary" ? "m-temporary" : "m-off"), "Temporary credential"),
-    el("span", "method m-off", "Security key"));
+  // the way in use keeps its words; the other ways to sign in are their icon
+  const way = (m, word, cls, mark, other) => a.method === m ? stateText(el("span", "method " + cls), mark, word)
+    : glyph("method m-off", other, word, `${word}: another way to sign in, not in use`);
+  methods.append(lineLabel("GitHub", "github"),
+    way("account", "GitHub account", "m-account", "check", "user-round"),
+    way("temporary", "Temporary credential", "m-temporary", "circle-alert", "clock"),
+    glyph("method m-off", "key-round", "Security key", "Security key: another way to sign in, not in use"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
   who.append(methods, labLine(s), claudeLine());
-  const out = el("button", "ghost small", "Sign out of GitHub");
+  const out = iconButton("log-out", "Sign out of GitHub", "ghost small", true);
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
     if (await ask(`Sign out ${s.user} on this computer?`, (others.length ? `${others.join(", ")} stays signed in and takes over.`
@@ -49,11 +105,11 @@ function badge(s) {
     };
     actions.append(pick);
   }
-  const add = el("button", "ghost small", "Add a GitHub account");
+  const add = iconButton("user-plus", "Add a GitHub account", "ghost small", true);
   add.onclick = () => teamPage().replaceChildren(signInView(null, "add"));
   actions.append(add, out);
   who.append(actions);
-  b.append(el("div", "band"), el("div", "face", initials(name)), who);
+  b.append(who);
   return b;
 }
 
@@ -66,14 +122,14 @@ function labLine(s) {
   if (!tunnels.length) return line;
   let topped = false;
   const state = el("span", "method m-off"), msg = el("span", "sub");
-  line.append(el("span", "label", "Machines"), state, msg);
+  line.append(lineLabel("Machines", "server"), state, msg);
   const step2 = async b => {
     msg.textContent = "";
     // the machines are signed in to one after another: a ring fills as each one is done
     const ring = el("span", "ring"), count = el("span");
     const show = (done, total, now) => {
       ring.style.setProperty("--p", total ? 100 * done / total : 0);
-      ring.title = `${done} of ${total} machines signed in`;
+      ring.dataset.tip = `${done} of ${total} machines signed in`;
       count.textContent = now ? ` ${done} of ${total}, now ${now}` : ` ${done} of ${total}`;
     };
     show(0, tunnels.length, "");
@@ -92,25 +148,28 @@ function labLine(s) {
     if (!id) {
       state.textContent = "Step 2 of 2 not done";
       msg.textContent = "A browser opens with your GitHub account; no Cloudflare account is needed.";
-      const b = el("button", "small", "Finish signing in");
+      const b = el("button", "small", "Finish signing in"); b.dataset.primary = 1;
       b.onclick = () => step2(b);
       line.append(b);
+      todo("Machines", true);
       if (labSignInNext) { labSignInNext = false; step2(b); }
       return;
     }
     const until = new Date(id.expires * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
     if (id.matches === false) {
       // someone else's GitHub account in the browser: the machines would see a different person than this app
-      state.className = "method m-temporary"; state.textContent = `Signed in as ${id.email}`;
+      state.className = "method m-temporary"; stateText(state, "circle-alert", id.email, "Signed in as ");
       msg.textContent = `That is not ${s.user}. Sign out of GitHub in the browser (or use the right account there), then sign in again.`;
       const b = el("button", "small", "Sign in again");
       b.onclick = async () => { await invoke("lab_sign_out"); step2(b); };
       line.append(b);
+      todo("Machines", true);
       return;
     }
     // a machine added or split off since the last sign-in: the team sign-in covers it without the browser
-    if (id.missing && !topped) { topped = true; const b = el("button", "small", "Finish signing in"); line.append(b); return step2(b); }
-    state.className = "method m-key"; state.textContent = `Signed in as ${id.email}`;
+    if (id.missing && !topped) { topped = true; const b = el("button", "small", "Finish signing in"); b.dataset.primary = 1; line.append(b); return step2(b); }
+    state.className = "method m-key"; stateText(state, "check", id.email, "Signed in as ");
+    todo("Machines", false);
     msg.textContent = `until ${until}, ` + (id.matches ? `same person as @${s.user}` : `not checked against @${s.user}: this GitHub sign-in predates the email check, sign out and in once`);
   };
   paint();
@@ -120,7 +179,7 @@ function labLine(s) {
 // Claude Code on this computer: the team's vault workflow runs through it, so the badge says whether it is ready.
 function claudeLine() {
   const line = el("div", "claude-line");
-  const label = el("span", "label", "Claude Code");
+  const label = lineLabel("Claude Code", "square-terminal");
   const state = el("span", "method m-off"); state.append(el("span", "spinner"));
   const msg = el("span", "sub");
   line.append(label, state, msg);
@@ -134,15 +193,18 @@ function claudeLine() {
       b.onclick = () => run(b, "Installing", "claude_install");
       line.append(b);
     } else if (!c.signed_in) {
-      state.className = "method m-temporary"; state.textContent = `Installed ${c.version}, not signed in`;
+      state.className = "method m-temporary"; stateText(state, "circle-alert", `Installed ${c.version}, not signed in`);
       const b = el("button", "small", "Sign in to Claude");
       b.onclick = () => run(b, "Waiting for the browser", "claude_login");
       line.append(b);
     } else {
       state.className = "method m-key";
-      state.textContent = `Signed in${c.method === "claude.ai" ? " with Claude.ai" : c.method ? ` with ${c.method}` : ""}${PLAN[c.plan] ? `, ${PLAN[c.plan]} plan` : ""}`;
+      const plan = PLAN[c.plan] ? `, ${PLAN[c.plan]} plan` : "";
+      if (c.method) stateText(state, "check", (c.method === "claude.ai" ? "Claude.ai" : c.method) + plan, "Signed in with ");
+      else stateText(state, "check", `Signed in${plan}`);
       msg.textContent = c.version;
     }
+    todo("Claude Code", !!c.path && !c.signed_in);
   };
   async function run(b, label, cmd) {
     msg.textContent = "";
@@ -183,8 +245,16 @@ function node(title, where, rank, repo, extra, group) {
   const n = el("div", "node" + (group ? " group" : ""));
   n.append(el("span", "title", title), el("span", "where", where || ""));
   if (repo) {
-    const p = pill(rank, repo);
-    if (editAccess) { const ed = editAccess; p.classList.add("edit"); p.tabIndex = 0; p.title = `Who can open ${repo}`; p.onclick = () => ed(repo); p.onkeydown = e => e.key === "Enter" && ed(repo); }
+    let p = pill(rank);
+    if (editAccess) {
+      // an owner changes who can open the repo from its level: a real button, so keyboard and screen readers reach it
+      const ed = editAccess, word = LABEL[rank];
+      p = el("button", `perm p${rank} glyph edit`); p.type = "button";
+      p.append(icon(LEVEL_SAYS[word][0]), el("span", "sr", word));
+      p.dataset.tip = `${LEVEL_SAYS[word][1]}. Click to change who can open it.`;
+      p.setAttribute("aria-label", `${word}. Who can open ${repo}`);
+      p.onclick = () => ed(repo);
+    }
     n.append(p);
     const x = extra(repo, rank); if (x) n.append(x);
   }
@@ -223,7 +293,7 @@ async function accessDialog(a, repo) {
     if (p.grants === null) {
       const r = el("div", "item"), text = el("div", "text");
       text.append(el("div", "title", p.name === login ? login : p.name), el("div", "sub", login));
-      r.append(text, pill(4, "Owners can open every repo"));
+      r.append(text, pill(4, "plain", "Owners can open every repo"));
       return box.append(r);
     }
     box.append(row(p.name === login ? login : p.name, login, null, Math.min(p.grants[repo] || 0, 2), login, level => { p.grants[repo] = level; }));
@@ -264,52 +334,90 @@ let labSignInNext = false;
 function machinesSection(machines, org, user) {
   const sec = el("div", "section");
   const head = el("header");
-  const again = el("button", "small ghost", "Check again");
-  head.append(el("h2", null, "Reachable now"), el("span", "grow"), again);
-  sec.append(head, el("p", "sub", "Whether this computer can reach each machine right now, through Cloudflare."));
+  const again = iconButton("refresh-cw", "Check again", "small ghost", true);
+  const title = el("h2", null, "Reachable now");
+  title.append(info("Whether this computer can reach each machine right now, through Cloudflare. The team's machines, reached only through Cloudflare after you sign in with GitHub. Click a machine for its hardware and desktops."));
+  head.append(title, el("span", "grow"), again);
+  sec.append(head);
   const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
   const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
   const list = el("div", "list"), pills = {}, meters = {}, specs = {};
   const live = new Set();   // machines whose status page answered: signed in and reachable, whatever an older check said
   let lastState = null;
+  const look = {}, diskLow = {};   // per host: what its state chip says, and a disk running out (for the opening strip)
   hosts.forEach(m => {
     const p = el("span", "perm checking"); p.append(el("span", "spinner"));
-    pills[m.host] = p;
+    pills[m.host] = p; look[m.host] = "checking";
     const right = [];
-    if (m.sometimes) right.push(el("span", "tag", "Often off"));
+    if (m.sometimes) { const t = el("span", "tag worded"); t.append(icon("moon"), "Often off"); t.dataset.tip = "Often off: this machine is switched off at times"; right.push(t); }
     if (m.via) right.push(el("span", "tag", `Through ${m.via}`));
     meters[m.host] = el("span", "meters");
-    const row = item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p);
+    const row = kind(item(m.host, [m.note, `Carries ${carries(m.host)}`].filter(Boolean).join(". "), null, ...right, p), "server");
+    row.classList.add("machine", "click");
+    row.querySelector(".title").classList.add("chip");
     row.querySelector(".text").append(meters[m.host]);   // live numbers sit under the name, the right side keeps the status
-    // what the machine has, opened by clicking its row once its status is known
-    // the row opens to who may connect (always known) and, once the machine answers, its hardware and desktops
-    const detail = el("div", "specs"); detail.hidden = true;
+    // the row is a disclosure: open by default, it shows who may connect (always known) and, once the machine
+    // answers, its hardware and desktops; a click or Enter or Space folds it
+    const detail = el("div", "specs"); detail.id = `specs-${m.host}`;
     specs[m.host] = el("div");
     detail.append(specs[m.host]);
     if (org) detail.append(whoCanConnect(m.host, machines, org, user));
-    row.classList.add("click");
-    row.onclick = () => { detail.hidden = !detail.hidden; };
+    row.tabIndex = 0; row.setAttribute("role", "button"); row.setAttribute("aria-expanded", "true"); row.setAttribute("aria-controls", detail.id);
+    const fold = () => { detail.hidden = !detail.hidden; row.setAttribute("aria-expanded", String(!detail.hidden)); };
+    row.onclick = fold;
+    row.onkeydown = e => { if (e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); fold(); } };
     list.append(row, detail);
   });
+  // a state chip: a glyph when all is as it should be, words where it deviates
+  const LOOK = { up: ["s-ok", "check", "Can connect"], down: ["p0 s-bad", "x", "Can't connect"], "no-tunnel": ["p0 s-bad", "x", "Tunnel not set up"],
+                 "sign-in": ["s-warn", "circle-alert", "Finish sign-in on Team access"], none: ["p0", "lock", "No access"] };
+  const setLook = (host, key) => {
+    const p = pills[host], [cls, name, word] = LOOK[key] || LOOK.down;
+    look[host] = LOOK[key] ? key : "down";
+    p.className = "perm " + cls;
+    if (key === "up" || key === "none") {
+      p.classList.add("glyph"); p.tabIndex = 0;
+      p.replaceChildren(icon(name), el("span", "sr", word));
+      p.dataset.tip = key === "up" ? `Can connect: this computer reaches ${host} now, through Cloudflare` : LEVEL_SAYS["No access"][1];
+    } else { p.removeAttribute("tabindex"); delete p.dataset.tip; p.replaceChildren(icon(name), word); }
+  };
+  // the page's opening strip, from the same states
+  const paintOpening = () => {
+    const page = document.getElementById("machines");
+    if (!sec.isConnected) return;
+    const of = k => hosts.map(m => m.host).filter(h => look[h] === k);
+    const up = of("up"), off = of("none"), bad = [...of("down"), ...of("no-tunnel")];
+    if (of("checking").length === hosts.length)
+      return setOpening(page, ["wait", "Checking the machines.", [], [{ icon: "circle-dashed", text: "Checking", tone: "calm", tip: "Checking the machines" }]]);
+    const warns = hosts.map(m => m.host).filter(h => diskLow[h]).map(h => [h, diskLow[h]]);
+    const items = [], detail = [];
+    if (up.length) { items.push({ icon: "server", num: up.length, chips: up, tip: `${up.length === 1 ? "1 machine is" : `${up.length} machines are`} up: ${up.join(", ")}` });
+      detail.push(`Within reach: ${up.join(", ")}.`); }
+    if (off.length) { const t = `${plural(off.length, "other needs", "others need")} access from an owner`; items.push({ icon: "lock", num: off.length, unit: "no access", tone: "calm", tip: t }); detail.push(` ${t}.`); }
+    warns.forEach(([h, w]) => { items.push({ icon: "circle-alert", chips: [h], text: w, tone: "warn", tip: `${h}: ${w}` }); detail.push(` ${h}: ${w}.`); });
+    if (bad.length) {
+      items.push({ icon: "circle-x", chips: bad, text: "down", tone: "bad", tip: `Cannot be reached: ${bad.join(", ")}` });
+      return setOpening(page, ["bad", `${bad.length} of ${plural(hosts.length, "machine")} cannot be reached.`, [...detail, ` Down: ${bad.join(", ")}.`], items]);
+    }
+    const lead = up.length === 1 ? "1 machine is up." : `${up.length} machines are up.`;
+    setOpening(page, [warns.length ? "warn" : "ok", warns.length ? lead.replace(".", `, ${warns.length} needs a look.`) : lead, detail, items]);
+  };
+  queueMicrotask(paintOpening);
   const help = el("div");
   sec.append(help, list);
 
-  const LOOK = { up: ["p4", "Can connect"], down: ["p0", "Can't connect"], "no-tunnel": ["p0", "Tunnel not set up"],
-                 "sign-in": ["pending", "Finish sign-in on Team access"] };
   // a machine reached through another one shares that one's way in
   const way = m => byHost[m.via] || m;
   const check = async () => {
-    Object.values(pills).forEach(p => { p.className = "perm checking"; p.replaceChildren(el("span", "spinner")); });
+    Object.entries(pills).forEach(([h, p]) => { look[h] = "checking"; p.className = "perm checking"; p.removeAttribute("tabindex"); delete p.dataset.tip; p.replaceChildren(el("span", "spinner")); });
+    paintOpening();
     const targets = [...new Map(hosts.map(m => [way(m).host, way(m).tunnel || null])).entries()];
     const state = await working(again, "Checking", () => invoke("reachable", { machines: targets }));
     for (const h of Object.keys(state)) if (live.has(h)) state[h] = "up";
     lastState = state;
-    hosts.forEach(m => {
-      if (org && !connectRule(way(m).host, machines, org).may(user)) { pills[m.host].className = "perm p0"; pills[m.host].textContent = "No access"; return; }
-      const [cls, text] = LOOK[state[way(m).host]] || LOOK.down;
-      pills[m.host].className = "perm " + cls; pills[m.host].textContent = text;
-    });
+    hosts.forEach(m => setLook(m.host, org && !connectRule(way(m).host, machines, org).may(user) ? "none" : state[way(m).host]));
+    paintOpening();
     await showHelp(state);
   };
 
@@ -329,10 +437,11 @@ function machinesSection(machines, org, user) {
     } else if (ssh === "current") {
       help.append(el("p", "sub", "Connections are set up on this computer."));
     }
+    pickPrimary(document.getElementById("machines"));
   }
   // live numbers from each machine's status page, every 15 s while this page is on screen
   const bar = (label, pct, title) => {
-    const b = el("span", "meter-mini"); b.title = title;
+    const b = el("span", "meter-mini"); b.dataset.tip = title;
     const v = Math.max(0, Math.min(100, pct || 0));
     const fill = el("i"); fill.style.width = `${v}%`;
     if (v >= 85) fill.className = "hot";
@@ -350,16 +459,22 @@ function machinesSection(machines, org, user) {
       const gpu = g.length ? Math.max(...g.map(x => x.util || 0)) : null;
       // its status page answered through Cloudflare, so this computer is signed in and the tunnel is up
       live.add(host);
-      const [cls, text] = LOOK.up; pills[host].className = "perm " + cls; pills[host].textContent = text;
+      setLook(host, "up");
       const memPct = s.mem_gb ? 100 * s.mem_used_gb / s.mem_gb : 0;
       meters[host].replaceChildren(bar("CPU", s.cpu_pct, `CPU ${s.cpu_pct}% of ${s.threads} threads, load ${s.load.join(" ")}`),
         bar("RAM", memPct, `Memory ${s.mem_used_gb} of ${s.mem_gb} GB in use`),
         ...(gpu == null ? [] : [bar("GPU", gpu, g.map(x => `${x.name}: ${x.util}%, ${Math.round(x.mem_used_mb / 1024)}/${Math.round(x.mem_total_mb / 1024)} GB`).join("\n"))]));
-      const d = [["Processor", `${s.cpu} (${s.threads} threads)`], ["Memory", `${s.mem_used_gb} of ${s.mem_gb} GB in use`],
-        ...g.map((x, i) => [`GPU ${g.length > 1 ? i : ""}`.trim(), `${x.name}, ${x.util}% busy, ${(x.mem_used_mb / 1024).toFixed(1)} of ${Math.round(x.mem_total_mb / 1024)} GB, ${x.temp_c} °C`]),
-        ["Disk", `${gb(s.disk_free_gb)} free of ${gb(s.disk_gb)}`], ["System", `${s.os}, up ${Math.round(s.uptime_h / 24)} days, ${s.users} signed in`]];
-      specs[host].replaceChildren(...d.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
-      if (s.disk_free_gb != null && s.disk_free_gb < 20) specs[host].append(el("p", "warn", `Disk almost full: ${gb(s.disk_free_gb)} left.`));
+      // hardware: [label, its icon, which of several, value]; the label is its icon, the words in its tooltip
+      const d = [["Processor", "cpu", "", `${s.cpu} (${s.threads} threads)`], ["Memory", "memory-stick", "", `${s.mem_used_gb} of ${s.mem_gb} GB in use`],
+        ...g.map((x, i) => ["GPU", "gpu", g.length > 1 ? String(i) : "", `${x.name}, ${x.util}% busy, ${(x.mem_used_mb / 1024).toFixed(1)} of ${Math.round(x.mem_total_mb / 1024)} GB, ${x.temp_c} °C`]),
+        ["Disk", "hard-drive", "", `${gb(s.disk_free_gb)} free of ${gb(s.disk_gb)}`], ["System", "server-cog", "", `${s.os}, up ${Math.round(s.uptime_h / 24)} days, ${s.users} signed in`]];
+      specs[host].replaceChildren(...d.map(([k, name, n, v]) => {
+        const r = el("div", "spec hw"), label = el("span", "k");
+        label.append(icon(name), el("span", "sr", n ? `${k} ` : k), n);
+        label.dataset.tip = n ? `${k} ${n}` : k;
+        r.append(label, el("span", null, v)); return r; }));
+      diskLow[host] = s.disk_free_gb != null && s.disk_free_gb < 20 ? `disk almost full, ${gb(s.disk_free_gb)} left` : null;
+      if (diskLow[host]) { const w = el("p", "warn"); w.append(icon("circle-alert"), `Disk almost full: ${gb(s.disk_free_gb)} left.`); specs[host].append(w); }
       if (s.host_tools) specs[host].append(hostTools(byHost[host], s.host_tools));
       if ((s.desktops || []).length) specs[host].append(desktopList(byHost[host], s.desktops, open));
       // a cluster reached through this machine (rooster through horse) comes in the same answer
@@ -367,6 +482,7 @@ function machinesSection(machines, org, user) {
     }
     // a check that finished before these numbers arrived may still be asking for a sign-in
     if (lastState && [...live].some(h => lastState[h] !== "up")) { live.forEach(h => lastState[h] = "up"); showHelp(lastState); }
+    paintOpening();
   };
   // Whether the machine runs the exo, exo-status.py and exo-desktop this app carries; owners can copy them over.
   const owner = org && (org.people[user] || {}).grants === null;
@@ -374,7 +490,7 @@ function machinesSection(machines, org, user) {
     const r = el("div", "row"), msg = el("span", "sub");
     r.append(el("span", null, line));
     if (owner) {
-      const b = el("button", "small ghost", "Update host tools");
+      const b = iconButton("wrench", "Update host tools", "small ghost", true);
       b.onclick = async e => {
         e.stopPropagation(); msg.textContent = "";
         const account = m.account || "ntk";
@@ -405,7 +521,7 @@ function machinesSection(machines, org, user) {
   function desktopList(m, desktops, open) {
     const box = el("div", "desktops");
     const head = el("div", "row"), msg = el("span", "sub");
-    const add = el("button", "small ghost", "New desktop");
+    const add = iconButton("plus", "New desktop", "small ghost", true);
     add.onclick = async e => {
       e.stopPropagation(); msg.textContent = "";
       try { toast(`Desktop ${await working(add, "Starting", () => invoke("desktop", { tunnel: m.tunnel, user: desktops[0]?.user || "ntk", action: "start", display: 0 }))} is ready`); status(); }
@@ -419,9 +535,11 @@ function machinesSection(machines, org, user) {
       const rdp = d.kind === "rdp";
       const name = rdp ? "Screen sharing (RDP)" : `${d.display}  ${d.geometry || ""}  (${d.user})${d.socket ? "" : "  password"}`;
       const show = port => {
-        r.replaceChildren(el("span", null, name));
-        // closing ends the desktop for everyone on it, since desktops are shared by the account
-        const close = el("button", "small ghost", "Close");
+        r.replaceChildren(icon(rdp ? "screen-share" : "monitor"), el("span", "desk-name", name));
+        // closing ends the desktop for everyone on it, since desktops are shared by the account; disconnecting only
+        // stops this computer's view: two different glyphs, and tooltips that say the difference
+        const close = iconButton("power", `Close desktop ${d.display}: ends it for everyone on it`, "small ghost", true);
+        const acts = el("span", "acts");
         close.onclick = async e => {
           e.stopPropagation();
           if (await ask(`Close desktop ${d.display} on ${m.host}?`, "Anyone working on this desktop loses it, along with any unsaved work in it.",
@@ -439,15 +557,18 @@ function machinesSection(machines, org, user) {
             try { show(await working(b, "Connecting", () => invoke("open_forward", { host: m.host, tunnel: m.tunnel, user: d.user, display: num, socket: d.socket || null, port: d.port || null }))); }
             catch (err) { msg.textContent = err; r.append(msg); }
           };
-          r.append(b, ...(rdp ? [] : [close]));
+          acts.append(b, ...(rdp ? [] : [close]));
+          r.append(acts);
           return;
         }
         const addr = `127.0.0.1:${port}`;
-        const copy = el("button", "small ghost", "Copy"), view = el("button", "small ghost", "Open viewer"), stop = el("button", "small ghost", "Disconnect");
+        const copy = iconButton("copy", `Copy ${addr}`, "small ghost", true), view = iconButton("external-link", "Open viewer");
+        const stop = iconButton("unplug", rdp ? "Disconnect: it keeps running" : `Disconnect from ${d.display}: it keeps running`, "small ghost", true);
         copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(addr).then(() => toast(`Copied ${addr}`), () => toast(addr)); };
         view.onclick = e => { e.stopPropagation(); invoke("open_viewer", { port, kind: d.kind || "vnc" }); };
         stop.onclick = async e => { e.stopPropagation(); await invoke("close_forward", { host: m.host, display: num }); show(null); };
-        r.append(el("span", "sub", rdp ? "RDP at" : "VNC at"), el("strong", "cmd", addr), copy, view, stop, ...(rdp ? [] : [close]));
+        acts.append(copy, view, stop, ...(rdp ? [] : [close]));
+        r.append(el("span", "sub", rdp ? "RDP at" : "VNC at"), el("strong", "cmd", addr), acts);
       };
       show(open[`${m.host}:${num}`]);
       box.append(r);
@@ -485,8 +606,8 @@ function requestsSection(a) {
       };
       return b;
     };
-    list.append(item(`${r.author} asks for ${r.level} on ${r.repo}`, note || null, null, msg,
-      act("approve_request", "Approve"), act("decline_request", "Decline", true)));
+    list.append(kind(item([chip(r.author), ` asks for ${r.level} on ${r.repo}`], note || null, null, msg,
+      act("approve_request", "Approve"), act("decline_request", "Decline", true)), "inbox"));
   });
   sec.append(list);
   return sec;
@@ -546,8 +667,10 @@ function vaultSection(v, user, viewAs, orgs) {
   const summary = el("summary");
   const head = el("header");
   const here = local.copies[v.repo];
-  head.append(el("h2", null, v.name), el("span", "tag", here ? "On this computer" : "Not downloaded"),
-    pill(Math.min(v.permission, 4), v.repo), el("span", "grow"));
+  head.append(el("h2", null, v.name),
+    here ? glyph("tag", "monitor-check", "On this computer", "On this computer: a copy of this vault is here")
+         : glyph("tag", "cloud", "Not downloaded", "Not downloaded: it stays on GitHub until you download it"),
+    pill(Math.min(v.permission, 4), "worded"), el("span", "grow"));
   summary.append(head);
   sec.append(summary);
   const body = el("div", "vault-body");
@@ -571,7 +694,7 @@ function vaultSection(v, user, viewAs, orgs) {
     editAccess = null;
     teams.replaceChildren(owner && person.grants !== null && a.teams.length ? teamsList(a, login, person) : "");
   };
-  const tools = el("div", "row view-as");
+  const tools = el("div", "row view-as"), docsHead = el("h3", null, "Documents");
   if (owner) {   // owners may look through any member's eyes
     const pick = el("select");
     Object.keys(a.people).sort((x, y) => (x !== user) - (y !== user) || a.people[x].name.localeCompare(a.people[y].name))
@@ -580,10 +703,11 @@ function vaultSection(v, user, viewAs, orgs) {
     if (viewAs in a.people) pick.value = viewAs;
     const label = el("label", "sub", "View as ");
     label.append(pick);
-    tools.append(el("span", "sub grow", "Click a permission to choose who can open that repo."), label);
+    docsHead.append(info("Click a permission to choose who can open that repo."));
+    tools.append(label);
   }
   show(viewAs in a.people ? viewAs : user);
-  body.append(el("h3", null, "Documents"), tools, docs, teams);
+  body.append(docsHead, tools, docs, teams);
   return sec;
 }
 
@@ -594,12 +718,13 @@ function signInView(error, mode) {
     add: ["Add another GitHub account", "The page that opens approves whichever account your browser is signed in to. Sign in to the other account there first, or use a private window. The new account becomes the active one; switch back from the badge."],
     owner: ["Unlock the owner tools", "Inviting people, changing roles and moving people between teams need GitHub's permission to manage the organisation. Approve it once with your owner account; members never need it."],
   }[mode] || ["Sign in with GitHub", "Your team access follows your GitHub account. Signing in has two steps in the browser: GitHub for the repos, then the same account for the machines."];
-  box.append(el("h1", null, TEXT[0]), el("p", "lede", TEXT[1]));
+  box.append(el("h1", null, TEXT[0]));
   const code = el("p", "sub"), btn = el("button", null, mode === "owner" ? "Approve on GitHub" : "Sign in with GitHub");
+  btn.dataset.primary = 1;
   btn.onclick = async () => {
     code.textContent = "";
     const stop = await listen("gh-code", e => {
-      const copy = el("button", "small ghost", "Copy");
+      const copy = iconButton("copy", `Copy ${e.payload}`, "small ghost", true);
       copy.style.marginLeft = "8px";
       copy.onclick = () => navigator.clipboard.writeText(e.payload).then(() => toast(`Copied ${e.payload}`), () => toast(e.payload));
       const hint = el("span");
@@ -613,9 +738,14 @@ function signInView(error, mode) {
     stop(); stopLine();
     if (ok) { labSignInNext = mode !== "owner"; termsNow = null; loadTeam(); } else code.textContent = why || "Sign-in was not finished. Try again.";
   };
+  // the first sign-in: the strip says what is missing; adding an account or the owner tools keep their explanation
+  if (mode) box.append(el("p", "lede", TEXT[1]));
+  else setOpening(box, ["warn", "You are not signed in.", ["Nothing is connected yet: no vaults, no machines.", TEXT[1]],
+    [{ icon: "github", text: "Not signed in", tone: "warn", tip: "You are not signed in: no vaults, no machines yet" }]]);
   box.append(btn, code);
   if (mode) { const back = el("button", "ghost", "Cancel"); back.style.marginLeft = "8px"; back.onclick = () => loadTeam(); btn.after(back); }
   if (error && !/not logged|auth login/i.test(error)) box.append(el("p", "sub", error));
+  pickPrimary(box);
   return box;
 }
 
@@ -642,7 +772,7 @@ function downloadRow(v) {
   // the vault gets its own folder inside the one picked
   const into = parent => parent.replace(/[\\/]+$/, "") + (parent.includes("\\") ? "\\" : "/") + v.repo.split("/").pop();
   const text = el("div", "text");
-  const useCopy = el("button", "small ghost", path ? "Change folder" : "Use a copy I already have");
+  const useCopy = path ? iconButton("folder-open", "Change folder", "small ghost", true) : el("button", "small ghost", "Use a copy I already have");
   useCopy.onclick = async () => {
     const p = await invoke("pick_folder", { title: `Pick the folder that holds your copy of ${v.name}` });
     if (!p) return;
@@ -656,7 +786,8 @@ function downloadRow(v) {
     await busy(useCopy, "Downloading", () => invoke("vault_download", { repo: v.repo, dest }))();
   };
   if (path) {
-    const update = el("button", "small ghost", "Get latest"), open = el("button", "small", "Open in Obsidian");
+    const update = iconButton("arrow-down-to-line", "Get latest"), open = iconButton("external-link", "Open in Obsidian", "small");
+    open.dataset.primary = 1;
     update.onclick = busy(update, "Getting the latest", () => invoke("vault_update", { repo: v.repo, path }));
     open.disabled = !local.obsidian;
     open.onclick = () => invoke("vault_open", { path });
@@ -677,7 +808,7 @@ function downloadRow(v) {
 
   const get = el("button", "small", "Download");
   get.onclick = busy(get, "Downloading", () => invoke("vault_download", { repo: v.repo, dest: chosen[v.repo] || null }));
-  const change = el("button", "small ghost", "Change folder");
+  const change = iconButton("folder-open", "Change folder", "small ghost", true);
   change.onclick = async () => {
     const parent = await invoke("pick_folder", { title: `Where should ${v.name} go?` });
     if (!parent) return;
@@ -724,9 +855,10 @@ function missingTools(t) {
                                               : "It normally comes with this app. Reinstall the app.", null));
     }
   }
-  const again = el("button", null, "Check again");
+  const again = iconButton("refresh-cw", "Check again", "", true);
   again.onclick = () => loadTeam();
   box.append(list, again);
+  pickPrimary(box);
   return box;
 }
 
@@ -735,21 +867,22 @@ async function peopleSection(org, user, teams, tree) {
   const sec = el("div", "section");
   const head = el("header");
   // inviting is an occasional act: its form stays folded away until this button opens it, right under the heading
-  const inviteBtn = el("button", "small", "Invite someone");
-  inviteBtn.setAttribute("aria-expanded", "false");
-  head.append(el("h2", null, "People"), el("span", "grow"), inviteBtn);
-  const lede = el("p", "sub", `Everyone in ${org} on GitHub. Owners can open every repo and change everyone's access.`);
+  const inviteBtn = iconButton("user-plus", "Invite someone", "small");
+  inviteBtn.setAttribute("aria-expanded", "false"); inviteBtn.dataset.primary = 1;
+  const title = el("h2", null, "People");
+  head.append(title, el("span", "grow"), inviteBtn);
+  const lede = el("p", "sub", `Everyone in ${org} on GitHub.`);
   sec.append(head, lede);
   let p;
-  try { p = await invoke("org_people", { org }); } catch (e) { sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
+  try { p = await invoke("org_people", { org }); } catch (e) { inviteBtn.remove(); sec.append(el("p", "sub", `Could not read the organisation: ${e}`)); return sec; }
   internsNow = p.interns || [];
+  sec.counts = { invited: p.invites.length, interns: p.interns.length };
   if (!p.can_edit) {
     // read-only: names, logins and roles, and whom to ask; GitHub shows invitations and interns to owners only
     inviteBtn.remove();
-    lede.textContent = `Everyone in ${org} on GitHub.`;
     const rows = el("div", "list");
     p.members.slice().sort((x, y) => (y.owner - x.owner) || x.name.localeCompare(y.name)).forEach(m =>
-      rows.append(item(m.name === m.login ? m.login : m.name, m.name === m.login ? null : m.login, null, el("span", "sub", m.owner ? "Owner" : "Member"))));
+      rows.append(personRow(m.login, m.name, el("span", "sub", m.owner ? "Owner" : "Member"))));
     sec.append(rows);
     const owners = p.members.filter(m => m.owner);
     if (owners.length) {
@@ -759,6 +892,9 @@ async function peopleSection(org, user, teams, tree) {
     }
     return sec;
   }
+  // an owner's view: what the list is says the info mark
+  lede.remove();
+  title.append(info(`Everyone in ${org} on GitHub. Owners can open every repo and change everyone's access.`));
   const msg = el("p", "sub");
   const act = (fn, done, button, label) => async () => {
     msg.textContent = "";
@@ -780,19 +916,23 @@ async function peopleSection(org, user, teams, tree) {
     };
     const right = [role];
     if (m.login !== user) {
-      const rm = el("button", "small ghost", "Remove");
+      const rm = iconButton("user-minus", `Remove ${m.login} from ${org}`, "small ghost row-act", true);
       rm.onclick = async () => {
         if (await ask(`Remove ${m.name} from ${org}?`, "Their teams and repo access end now. Copies already on their computer stay there.",
             [["cancel", "Cancel"], ["rm", "Remove", true]]) === "rm") act(() => invoke("remove_member", { org, login: m.login }), null, rm, "Removing")();
       };
       right.push(rm);
     }
-    list.append(item(m.name === m.login ? m.login : m.name, m.name === m.login ? null : m.login, null, ...right));
+    list.append(personRow(m.login, m.name, ...right));
   });
+  // an invitation is a login without a profile yet: the login is the row's title
   p.invites.forEach(i => {
     const cancel = el("button", "small ghost", "Cancel invitation");
     cancel.onclick = () => act(() => invoke("cancel_invite", { org, id: i.id }), null, cancel, "Cancelling")();
-    list.append(item(i.login, `Invited ${i.created}${i.owner ? " as owner" : ""}, not accepted yet`, null, el("span", "tag", "Invited"), cancel));
+    const r = kind(item(i.login, `Invited ${i.created}${i.owner ? " as owner" : ""}, not accepted yet`, null,
+      glyph("tag", "hourglass", "Invited", "Invited: has not accepted yet"), cancel), "mail");
+    r.querySelector(".title").classList.add("chip");
+    list.append(r);
   });
   sec.append(list);
 
@@ -803,21 +943,27 @@ async function peopleSection(org, user, teams, tree) {
     p.interns.forEach(n => {
       const has = n.repos.filter(r => r.invite == null), invited = n.repos.filter(r => r.invite != null);
       const sub = [has.length && `Has ${levels(has)}`, invited.length && `Invited, not accepted yet: ${levels(invited)}`].filter(Boolean).join(". ");
-      const rm = el("button", "small ghost", "Remove");
+      const rm = iconButton("user-minus", `Remove ${n.login} from every repo of ${org}`, "small ghost row-act", true);
       rm.onclick = async () => {
         if (await ask(`Remove ${n.login} from every repo of ${org}?`, "This removes them from every repo of the organisation and cancels their pending repo invitations. Copies already on their computer stay there.",
             [["cancel", "Cancel"], ["rm", "Remove", true]]) === "rm")
           act(() => invoke("remove_intern", { org, login: n.login, invites: invited.map(r => [r.repo, r.invite]) }), null, rm, "Removing")();
       };
-      ilist.append(item(n.login, sub || "No repos", null, el("span", "tag", "Intern"), rm));
+      const r = kind(item(n.login, sub || "No repos", null, glyph("tag", "graduation-cap", "Intern", "Intern: outside the organisation, single repos only"), rm), "user-round");
+      r.querySelector(".title").classList.add("chip");
+      ilist.append(r);
     });
-    sec.append(el("h3", null, "Interns"), el("p", "sub", `Not in ${org}; they have single repos only.`), ilist);
+    const h = el("h3", null, "Interns");
+    h.append(info(`Not in ${org}; they have single repos only.`));
+    sec.append(h, ilist);
   }
 
   // invite: a GitHub username, a role, and the layers they start in; everyone also gets the shared team
   const form = el("div", "invite");
   const who = el("input", "who"); who.placeholder = "Their GitHub username"; who.autocomplete = "off"; who.spellcheck = false;
-  form.append(who);
+  const nameRow = el("label", "field");
+  nameRow.append(el("span", "label", "Username"), who);
+  form.append(nameRow);
 
   let role = "member";
   const seg = el("div", "segmented"); seg.setAttribute("role", "radiogroup"); seg.setAttribute("aria-label", "Role");
@@ -852,7 +998,7 @@ async function peopleSection(org, user, teams, tree) {
   startsRow.append(el("span", "label", "Starts in"), tiles);
   form.append(startsRow, ownerNote);
 
-  const send = el("button", null, "Send invitation");
+  const send = el("button", null, "Send invitation"); send.dataset.primary = 1;
   const foot = el("div", "foot"); foot.append(send);
   form.append(foot);
 
@@ -884,13 +1030,16 @@ async function peopleSection(org, user, teams, tree) {
     drawer.classList.toggle("open", open);
     inner.inert = !open;
     inviteBtn.setAttribute("aria-expanded", String(open));
-    inviteBtn.textContent = open ? "Close" : "Invite someone";
+    inviteBtn.replaceChildren(icon(open ? "x" : "user-plus"), open ? "Close" : "Invite someone");
     inviteBtn.classList.toggle("ghost", open);
+    // open, sending the invitation is the page's action, not the Close that took Invite someone's place
+    if (open) delete inviteBtn.dataset.primary; else inviteBtn.dataset.primary = 1;
+    pickPrimary(sec.closest(".page"));
     if (open) who.focus();
   };
   inviteBtn.onclick = () => setOpen(!drawer.classList.contains("open"));
   form.addEventListener("keydown", e => { if (e.key === "Escape") { setOpen(false); inviteBtn.focus(); } });
-  lede.after(drawer);
+  head.after(drawer);   // right under the heading
   sec.append(msg);
   return sec;
 }
@@ -901,8 +1050,11 @@ async function peopleSection(org, user, teams, tree) {
 function prSection(org, user, machines) {
   const sec = el("div", "section pr");
   const head = el("header");
-  head.append(el("h2", null, "Pull request permissions"));
-  sec.append(head, el("p", "sub", "On GitHub's Free plan anyone with write can still merge on the website. Until the Team plan adds rulesets, merge rights hold by convention: a pre-push hook and this list."));
+  const title = el("h2");
+  title.append(icon("git-pull-request"), "Pull request permissions",
+    info("On GitHub's Free plan anyone with write can still merge on the website. Until the Team plan adds rulesets, merge rights hold by convention: a pre-push hook and this list."));
+  head.append(title);
+  sec.append(head);
   const list = el("div", "list");
   sec.append(list);
   const owner = (org.people[user] || {}).grants === null;
@@ -916,31 +1068,22 @@ function prSection(org, user, machines) {
     rows.forEach(r => {
       list.append(item(r.repo, MINE[r.mine]));
       if (!r.listed) return;
-      const box = el("div", "specs");
-      const line = (k, logins) => {
-        const row = el("div", "spec"), tags = el("span");
-        if (!logins.length) tags.append(el("span", "sub", "Nobody"));
-        logins.forEach(l => {
-          const extra = r.extra.includes(l);
-          tags.append(el("span", "tag" + (extra ? " extra" : ""), name(l)));
-          if (owner && extra) {
-            const rm = el("button", "small ghost", "Remove");
-            rm.onclick = () => change(r.repo, l, false, rm);
-            tags.append(rm);
-          }
-        });
-        row.append(el("span", "k", k), tags);
-        box.append(row);
-      };
-      line("Can merge", r.merge);
-      line("Can open pull requests", r.write);
+      // one line of people: who can merge, then who opens pull requests; the extras an owner added can be removed
+      const box = el("div", "specs"), people = [], seen = new Map();
+      [["can merge", r.merge], ["opens pull requests", r.write]].forEach(([g, logins]) => logins.forEach(l => {
+        if (seen.has(l)) return seen.get(l).why.push(g);
+        const rm = owner && r.extra.includes(l) ? { tip: `Remove ${l}'s merge right on ${r.repo}`, run: b => change(r.repo, l, false, b) } : null;
+        const p = { login: l, name: name(l), why: [g], rm };
+        seen.set(l, p); people.push(p);
+      }));
       const others = Object.keys(org.people).filter(l => !r.merge.includes(l)).sort((a, b) => name(a).localeCompare(name(b)));
+      let pick = null;
       if (owner && others.length) {
-        const pick = el("select");
+        pick = el("select");
         pick.append(new Option("Let someone merge", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)));
         pick.onchange = () => pick.value && change(r.repo, pick.value, true, pick);
-        box.append(pick);
       }
+      box.append(whoLine(people, ["can merge", "opens pull requests"], pick, `Who can merge on ${r.repo}`));
       list.append(box);
     });
   };
@@ -971,27 +1114,53 @@ async function loadTeam(viewAs) {
   if (!s.user) return page.replaceChildren(signInView(s.error));
   await refreshLocal();
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
-  const parts = [el("h1", null, "Team access"),
-    el("p", "lede", owner ? "What your GitHub account reaches. As an owner you manage everyone else's on the People page."
-                          : "What your GitHub account reaches. Ask the owners for anything you need that is not here."),
-    badge(s), obsidianNotice()];
+  teamTodo.clear();
+  const parts = [el("h1", null, "Team access"), badge(s), obsidianNotice()];
   const org = (s.vaults.find(v => v.access) || {}).access;
   // owners get a page of their own for the organisation; its entry in the sidebar carries the count of open requests
   const peopleNav = document.querySelector('nav [data-page="people"]');
   peopleNav.hidden = !org;   // everyone in the organisation sees People; only owners get the count of open requests
-  if (owner && org) peopleNav.replaceChildren("People", ...(org.requests.length ? [el("span", "os", String(org.requests.length))] : []));
+  if (owner && org) navLabel(peopleNav, "People", org.requests.length ? String(org.requests.length) : null);
   // an owner signed in without the permission to manage the organisation: the tools below would be refused
   if (owner && org && !(s.scopes || []).includes("admin:org")) {
     const b = el("button", "small", "Unlock");
     b.onclick = () => page.replaceChildren(signInView(null, "owner"));
     parts.push(item("Owner tools are locked", "Inviting people and changing access need one more approval on GitHub.", null, b));
+    teamTodo.add("Owner tools");
   }
   // a member sees their own merge rights here; an owner sets everyone's on the People page
   if (org && !owner) parts.push(prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
   const orgs = new Set(s.vaults.filter(v => v.access).map(v => v.access.org));
   s.vaults.forEach(v => parts.push(vaultSection(v, s.user, viewAs, orgs)));
   page.replaceChildren(...parts);
+  paintTeamOpening();
+  pickPrimary(page);
   if (current === "people") loadPeople();   // a change made there reloads access through here
+}
+
+// What still needs doing on Team access, set by the identity block's lines as they learn it: Machines (step 2 of the
+// sign-in), Claude Code (installed, not signed in), Owner tools (locked).
+const teamTodo = new Set();
+function todo(what, on) {
+  if (teamTodo.has(what) !== on) { teamTodo[on ? "add" : "delete"](what); paintTeamOpening(); }
+  pickPrimary(teamPage());
+}
+// Team access opens with who is signed in, how many vaults are here and how many machines are within reach.
+function paintTeamOpening() {
+  const page = teamPage(), s = lastTeam;
+  if (!s || !s.user || !page.querySelector(".badge")) return;
+  const org = (s.vaults.find(v => v.access) || {}).access, machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
+  const reach = [...new Set(machines.map(m => m.host))].filter(h => !org || connectRule(h, machines, org).may(s.user));
+  const here = s.vaults.filter(v => local.copies[v.repo]).length;
+  const left = ["Machines", "Claude Code", "Owner tools"].filter(t => teamTodo.has(t));
+  const detail = [`Signed in as ${s.user}. ${plural(here, "vault")} on this computer, ${plural(reach.length, "machine")} within reach.`];
+  const items = [{ icon: "check", chips: [s.user], tip: `Signed in as ${s.user}` },
+    { icon: "monitor-check", num: here, unit: here === 1 ? "vault here" : "vaults here", tip: `${plural(here, "vault")} on this computer` },
+    { icon: "server", num: reach.length, unit: "in reach", tip: `${plural(reach.length, "machine")} within reach` }];
+  setOpening(page, left.length
+    ? ["warn", "Almost everything is connected.", [...detail, ` Still to do: ${left.join(", ")}.`],
+       [...items, { icon: "circle-alert", text: `To do: ${left.join(", ")}`, tone: "warn", tip: `Still to do: ${left.join(", ")}` }]]
+    : ["ok", "Everything is connected.", detail, items]);
 }
 
 // People, the owners' page: requests waiting, everyone in the organisation with what they reach, and who may merge.
@@ -1019,19 +1188,33 @@ async function loadPeople() {
     const first = !page.querySelector(".section");
     if (first) page.replaceChildren(title, stage("Reading the organisation's people"));
     const members = await peopleSection(org.org, s.user, [], null);
-    return current === "people" && page.replaceChildren(title, el("p", "lede", "Everyone in the organisation and what you can ask for."), mine, members,
+    if (current !== "people") return;
+    page.replaceChildren(title, el("p", "lede", "Everyone in the organisation and what you can ask for."), mine, members,
       prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
+    return pickPrimary(page);
   }
-  const parts = [title, el("p", "lede", "Everyone in the organisation: who is asking for access, what each person reaches, and who may merge.")];
+  const parts = [title];
   if (!(s.scopes || []).includes("admin:org")) {
     toTeam.className = "small"; toTeam.textContent = "Unlock on Team access";
     parts.push(item("Owner tools are locked", "Inviting people and changing access need one more approval on GitHub.", null, toTeam));
   }
   const first = !page.querySelector(".section");
   if (first) page.replaceChildren(...parts, stage("Reading the organisation's people"));
-  parts.push(requestsSection(org), await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree),
-    prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
-  if (current === "people") page.replaceChildren(...parts);
+  const people = await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree);
+  parts.push(requestsSection(org), people, prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
+  if (current !== "people") return;
+  page.replaceChildren(...parts);
+  // the page opens with how many people, how many wait for you, and the invitations and interns
+  const all = Object.keys(org.people).length, waiting = org.requests.length, { invited = 0, interns = 0 } = people.counts || {};
+  const items = [{ icon: "users-round", num: all, unit: all === 1 ? "person" : "people", tip: plural(all, "person", "people") },
+    waiting ? { icon: "inbox", num: waiting, text: "waiting", tone: "act", tip: `${waiting} waiting for you to approve or decline` }
+      : { icon: "inbox", num: 0, unit: "waiting", tone: "calm", tip: "Nobody waiting for you" }];
+  if (invited) items.push({ icon: "mail", num: invited, unit: "invited", tone: "calm", tip: `${plural(invited, "invitation")} not accepted yet` });
+  if (interns) items.push({ icon: "graduation-cap", num: interns, unit: interns === 1 ? "intern" : "interns", tone: "calm", tip: `${plural(interns, "intern")} outside ${org.org}` });
+  const detail = [[invited, `${plural(invited, "invitation")} not accepted yet.`], [interns, `${plural(interns, "intern")} outside ${org.org}.`]]
+    .filter(([k]) => k).map(([, t]) => t).join(" ");
+  setOpening(page, ["ok", `${plural(all, "person", "people")}, ${waiting ? `${waiting} waiting for you` : "nobody waiting"}.`, detail ? [detail] : [], items]);
+  pickPrimary(page);
 }
 
 // Machines, its own page on every OS: which lab machines this computer can reach, their load, and their desktops.
@@ -1064,19 +1247,23 @@ async function loadMachines() {
   if (page.dataset.key === key && page.querySelector(".section")) return;
   page.dataset.key = key;
   const owner = org && (org.people[s.user] || {}).grants === null;
-  page.replaceChildren(...head, machines.length ? machinesSection(machines, org, s.user) : el("p", "sub", "No machines are listed for your team yet."),
+  // with machines listed, the opening strip says how they are and the lede is behind the section's info mark
+  page.replaceChildren(...(machines.length ? [head[0]] : head), machines.length ? machinesSection(machines, org, s.user) : el("p", "sub", "No machines are listed for your team yet."),
     ...(owner ? [cloudflareSection()] : []));
+  pickPrimary(page);
 }
 
 // Owners: the Cloudflare API token that lets this app add machines, sign SSH certificates and end people's
 // sign-ins. Pasted once and kept in the system keyring; it is never shown again and never written to a file.
 function cloudflareSection() {
   const sec = el("div", "section"), body = el("div", "list");
-  sec.append(el("h2", null, "Cloudflare"), el("p", "sub", "For owners. The machines sit behind the team's Cloudflare account, the one that owns aiwalkcorp.com (not your personal one). With an API token made in that account, this app adds machines and ends a removed person's sign-in. Only the owner who does those things needs one."), body);
+  const title = el("h2", null, "Cloudflare");
+  title.append(info("For owners. The machines sit behind the team's Cloudflare account, the one that owns aiwalkcorp.com (not your personal one). With an API token made in that account, this app adds machines and ends a removed person's sign-in. Only the owner who does those things needs one."));
+  sec.append(title, body);
   // the team key, shown to be told to another owner in person
   const showKey = key => ask("The team key", "Tell this key to the other owners in person or by a channel you trust. With it their app opens the team's token; without the owners' repo it opens nothing.",
     [["done", "Done", true]], (() => {
-      const box = el("div"), k = el("strong", "cmd", key), copy = el("button", "small ghost", "Copy");
+      const box = el("div"), k = el("strong", "cmd", key), copy = iconButton("copy", "Copy the team key", "small ghost", true);
       copy.style.marginLeft = "8px";
       copy.onclick = () => navigator.clipboard.writeText(key).then(() => toast("Copied the team key"), () => {});
       box.append(k, copy); return box;
@@ -1084,10 +1271,10 @@ function cloudflareSection() {
   const paint = async () => {
     const st = await invoke("cf_state");
     if (st.connected) {
-      const forget = el("button", "small ghost", "Disconnect");
+      const forget = iconButton("unplug", "Disconnect");
       forget.onclick = async () => { await invoke("cf_forget"); paint(); };
       const renew = el("button", "small ghost", "Renew");
-      renew.title = "Cloudflare gives the token a new value; the old one stops working at once";
+      renew.dataset.tip = "Cloudflare gives the token a new value; the old one stops working at once";
       renew.onclick = async () => {
         if (await ask("Renew the token?", "The token gets a new value and the old one stops working at once, on every computer. Owners who joined with the team key get the new one by themselves.",
           [["cancel", "Cancel"], ["ok", "Renew", true]]) !== "ok") return;
@@ -1106,7 +1293,7 @@ function cloudflareSection() {
         const see = el("button", "small ghost", "Show the team key");
         see.onclick = async () => { const k = await invoke("cf_key"); if (k) showKey(k); };
         const change = el("button", "small ghost", "New key");
-        change.title = "After an owner left: a new key, and renew the token as well";
+        change.dataset.tip = "After an owner left: a new key, and renew the token as well";
         change.onclick = async () => {
           if (await ask("Make a new team key?", "The other owners must enter the new key before their app gets the token again. Do this after an owner left, and renew the token as well.",
             [["cancel", "Cancel"], ["ok", "New key", true]]) !== "ok") return;
@@ -1123,7 +1310,8 @@ function cloudflareSection() {
       rows.push(item(st.shared ? "Shared with the other owners" : "Only on this computer",
         st.shared ? "The token is in the owners' repo, locked with the team key. The other owners enter that key once."
                   : "Share it and the other owners connect with one key instead of making tokens of their own.", null, ...extra));
-      return body.replaceChildren(...rows);
+      body.replaceChildren(...rows);
+      return pickPrimary(sec.closest(".page"));
     }
     const msg = el("p", "sub", st.problem ? `The kept token no longer works: ${st.problem}` : "");
     const rows = [];
@@ -1153,6 +1341,7 @@ function cloudflareSection() {
     needs.append(el("summary", null, "What the token needs"), list);
     rows.push(item(st.shared ? "Or paste a token of your own" : "Not connected", "Sign in to Cloudflare as the team's account, create a custom token (Manage Account, API Tokens) and paste it here. It goes to this computer's keyring only.", null, input, go));
     body.replaceChildren(...rows, needs, msg);
+    pickPrimary(sec.closest(".page"));
   };
   paint();
   return sec;
@@ -1183,41 +1372,37 @@ function whoCanConnect(host, machines, org, user) {
   const rule = connectRule(host, machines, org);
   const { teamsFor, team, via } = rule;
   const extraSlug = `machine-${host}`;
+  // why people may connect, said once behind the label's info mark; the line's group labels say who
+  const why = `Members of ${teamsFor.join(", ")} can connect, and anyone an owner adds by hand.`;
+  const HAND = "added by hand";
   const paint = () => {
     const extra = new Set(team(extraSlug).members);
-    const head = el("div", "row");
-    head.append(el("span", "k", "Who can connect"), el("span", "sub", `Teams: ${teamsFor.join(", ")}, plus extra people`));
+    const head = el("div", "row"), k = el("span", "k", "Who can connect");
+    head.append(k);
     box.replaceChildren(head);
     if (!owner) {
+      // a member's copy of the rule knows only their own teams, so they see their own sentence, not a line of one
+      k.append(info(why));
       const v = via(user);
-      box.append(el("p", "sub", v.length ? `You can connect, through ${v.join(", ")}.` : extra.has(user) ? "You can connect: an owner added you."
-        : "You can't connect to this machine. Ask an owner: write access to one of its code repos, or an extra place here."));
+      if (v.length || extra.has(user)) box.append(el("p", "sub", v.length ? `You can connect, through ${v.join(", ")}.` : "You can connect: an owner added you."));
+      else { const p = el("p", "ask-line"); p.append(icon("lock"), "You can't connect to this machine. Ask an owner: write access to one of its code repos, or an extra place here."); box.append(p); }
       return;
     }
-    const people = Object.keys(org.people).sort((a, b) => org.people[a].name.localeCompare(org.people[b].name));
-    const can = people.filter(l => via(l).length || extra.has(l));
-    for (const login of can) {
-      const row = el("div", "spec");
-      const tags = el("span");
-      via(login).forEach(t => tags.append(el("span", "tag", t)));
-      if (extra.has(login)) {
-        tags.append(el("span", "tag extra", "Extra"));
-        const rm = el("button", "small ghost", "Remove");
-        rm.onclick = e => { e.stopPropagation(); change(login, false, rm); };
-        tags.append(rm);
-      }
-      row.append(el("span", "k", org.people[login].name), tags);
-      box.append(row);
-    }
-    const others = people.filter(l => !can.includes(l));
+    k.append(info(`${why} Changes reach the machine at that person's next sign-in, within 24 hours.`));
+    const name = l => org.people[l].name;
+    const people = Object.keys(org.people).sort((a, b) => name(a).localeCompare(name(b)))
+      .filter(l => via(l).length || extra.has(l))
+      .map(l => ({ login: l, name: name(l), why: [...via(l), ...(extra.has(l) ? [HAND] : [])],
+        rm: extra.has(l) ? { tip: `Remove ${l}'s ${via(l).length ? "extra " : ""}access to ${host}`, run: b => change(l, false, b) } : null }));
+    const others = Object.keys(org.people).filter(l => !via(l).length && !extra.has(l)).sort((a, b) => name(a).localeCompare(name(b)));
+    let pick = null;
     if (others.length) {
-      const pick = el("select");
-      pick.append(new Option("Let someone connect", ""), ...others.map(l => new Option(`${org.people[l].name} (@${l})`, l)));
+      pick = el("select");
+      pick.append(new Option("Let someone connect", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)));
       pick.onclick = e => e.stopPropagation();
       pick.onchange = () => pick.value && change(pick.value, true, pick);
-      box.append(pick);
     }
-    box.append(el("p", "sub", "Changes reach the machine at that person's next sign-in, within 24 hours."));
+    box.append(whoLine(people, [...teamsFor, HAND], pick, `Who can connect to ${host}`));
   };
   async function change(login, add, ctl) {
     try {
@@ -1241,7 +1426,7 @@ const termsOk = () => !termsNow || (termsNow.accepted && termsNow.accepted.versi
 // The terms file is plain: "# " headings, "N. " numbered items, paragraphs. Built as elements, never as HTML.
 // Each "# " heading starts one language's copy; one is shown at a time, picked with the switch above the text.
 function termsText(text) {
-  const box = el("div", "text");
+  const box = el("div", "doc");
   const parts = [];
   let part = null, list = null;
   for (const raw of text.split("\n")) {
@@ -1275,13 +1460,33 @@ function termsSwitch(text, onChange) {
   return row;
 }
 
+// The terms page's opening strip: the version, and for owners how many have agreed to it (marks: one true per person
+// on the current version, or null before that list is read).
+function termsOpening(t, marks) {
+  if (!t.accepted || t.accepted.version < t.version) return ["warn", `Version ${t.version} of the terms is waiting for you.`, [],
+    [{ icon: "scroll-text", text: `Agree to version ${t.version}`, tone: "warn", tip: `Version ${t.version} of the terms is waiting for you` }]];
+  const detail = [`Version ${t.version}, agreed on ${t.accepted.date}.`];
+  const items = [{ icon: "scroll-text", num: `v${t.version}`, tip: `You agreed to version ${t.version} on ${t.accepted.date}` }];
+  const behind = marks ? marks.filter(ok => !ok).length : 0;
+  if (marks && marks.length) {
+    items.push({ icon: "users-round", num: `${marks.length - behind}/${marks.length}`, unit: "agreed", tip: `${marks.length - behind} of ${marks.length} have agreed to version ${t.version}` });
+    if (behind) items.push({ icon: "circle-alert", num: behind, text: "not yet", tone: "warn", tip: `${behind} of ${marks.length} have not agreed to version ${t.version} yet` });
+    detail.push(behind ? ` ${behind} of ${marks.length} have not agreed to it yet.` : ` All ${marks.length} have agreed to it.`);
+  }
+  return [behind ? "warn" : "ok", "You agreed to the current terms.", detail, items];
+}
+
 function termsView(t, org, asking) {
   const wrap = el("div", "terms");
-  wrap.append(el("h1", null, asking ? "Before you start" : "Terms"),
-    el("p", "lede", asking ? (t.accepted ? `The team's terms changed (version ${t.version}). Please read them again.` : "Please read the team's terms. You are asked once; they stay under Terms in the sidebar.")
-                           : `Version ${t.version}.` + (t.accepted ? ` You accepted version ${t.accepted.version} on ${t.accepted.date}.` : "")));
+  wrap.append(el("h1", null, asking ? "Before you start" : "Terms"));
+  if (asking) {
+    const said = t.accepted ? `The team changed its terms. Please agree to version ${t.version}.` : "The team asks you to agree to its terms.";
+    setOpening(wrap, ["warn", said, [`Version ${t.version}. Read it to the end, then press I agree. You are asked once per version; they stay under Terms in the sidebar.`],
+      [{ icon: "scroll-text", text: `Agree to version ${t.version}`, tone: "warn", tip: `${said} Read it to the end, then press I agree.` }]]);
+  } else setOpening(wrap, termsOpening(t, null));
   const text = termsText(t.text);
-  const agree = el("button", null, "I agree"), note = el("span", "sub", "Scroll to the end to agree.");
+  // the page's one action, even while it waits for the end of the text
+  const agree = el("button", "primary", "I agree"), note = el("span", "sub", "Scroll to the end to agree.");
   // reaching the end of either language's copy is enough: they say the same thing
   const atEnd = () => { if (text.scrollTop + text.clientHeight >= text.scrollHeight - 8) { agree.disabled = false; note.textContent = ""; } };
   wrap.append(termsSwitch(text, () => setTimeout(atEnd, 0)), text);
@@ -1315,15 +1520,27 @@ async function loadTerms() {
     const who = await invoke("terms_everyone", { org: access.org });
     const sec = el("div", "section"), list = el("div", "list");
     sec.append(el("h2", null, "Who accepted"));
-    const accepted = a => a ? el("span", "perm " + (a.version >= t.version ? "p4" : "pending"), `Version ${a.version}, ${a.date}`) : el("span", "perm p0", "Not yet");
+    // on the current version: the date, the version in the tooltip; an older version or none: words, in amber
+    const marks = [];
+    const accepted = a => {
+      marks.push(!!a && a.version >= t.version);
+      if (!a) return stateText(el("span", "perm p0 s-warn"), "circle-alert", "Not yet");
+      if (a.version < t.version) return stateText(el("span", "perm pending"), "circle-alert", `Version ${a.version}, ${a.date}`);
+      const p = stateText(el("span", "perm s-ok"), "check", a.date, `Version ${a.version}, `);
+      p.dataset.tip = `Agreed to version ${a.version} on ${a.date}`; p.tabIndex = 0;
+      return p;
+    };
     Object.keys(access.people).sort((a, b) => access.people[a].name.localeCompare(access.people[b].name)).forEach(login => {
-      list.append(item(access.people[login].name, `@${login}`, null, accepted(who[login])));
+      list.append(personRow(login, access.people[login].name, accepted(who[login])));
     });
     // interns after the members; they record acceptance in the same requests repo
     const interns = await invoke("org_people", { org: access.org }).then(p => p.interns, () => []);
     interns.forEach(n => {
-      list.append(item(n.login, `@${n.login}, intern${n.repos.every(r => r.invite != null) ? ", invitation not accepted yet" : ""}`, null, accepted(who[n.login])));
+      const r = kind(item(n.login, `Intern${n.repos.every(r => r.invite != null) ? ", invitation not accepted yet" : ""}`, null, accepted(who[n.login])), "user-round");
+      r.querySelector(".title").classList.add("chip");
+      list.append(r);
     });
     sec.append(list); view.append(sec);
+    setOpening(view, termsOpening(t, marks));
   }
 }

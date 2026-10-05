@@ -1,0 +1,499 @@
+/* aIwalk System Setup: one stylesheet, one look. DESIGN.md at the repo root says why each value is what it is.
+   A calm instrument panel: type, alignment and hairlines; purple only for selected, the page's one primary button,
+   and connected / healthy; amber and red only where something deviates. */
+
+@font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-Regular-Latin1.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-Medium-Latin1.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url(fonts/IBMPlexSans-SemiBold-Latin1.woff2) format("woff2"); font-weight: 600 700; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Regular-Latin1.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url(fonts/IBMPlexMono-Medium-Latin1.woff2) format("woff2"); font-weight: 500 700; font-display: swap; }
+
+:root {
+  /* colour: roles, not hues */
+  --paper: #F7F6FA; --surface: #FFFFFF; --ink: #1E1A29; --muted: #6B6578; --line: #E4E0EC;
+  --rail: #1B1724; --rail-ink: #E9E5F0; --rail-muted: #9C95AB; --rail-edge: transparent;
+  --purple: #8C54D9; --purple-ink: #7A42C8;          /* -ink: the same purple as small text on paper, AA */
+  --amber: #C77A12; --amber-ink: #9A5B0A; --red: #C8402F; --red-ink: #B3361F;
+  --tint: color-mix(in srgb, var(--purple) 8%, transparent); --on-purple: #FFFFFF;
+  --hover: color-mix(in srgb, var(--ink) 4%, transparent);
+
+  /* type: one scale, ratio about 1.2 from a 14px body */
+  --font: "IBM Plex Sans", "IBM Plex Sans TC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --fs-xs: 12px; --fs-s: 13px; --fs-m: 14px; --fs-l: 16px; --fs-xl: 20px; --fs-xxl: 28px;
+  --lh: 1.5; --lh-tight: 1.25;
+  /* display: the wordmark, the opening strip's figures and the person's name */
+  --d-state: 32px; --d-name: 26px; --d-mark: 22px; --d-track: -.025em; --d-lh: 1.1;
+
+  /* space: a 4px unit */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px; --s10: 40px; --s12: 48px;
+  --row: 44px;
+  /* radius by size: controls and chips, panels and dialogs, the largest containers */
+  --r-control: 4px; --r-panel: 8px; --r-large: 12px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  /* ink: a narrow same-hue fill; every stop is at least 4.5:1 on its own surface */
+  --fx-ink: linear-gradient(180deg, #A06BEA 8%, #7A42C8 52%, #4E2795 96%);
+  --fx-ink-amber: linear-gradient(180deg, #C77A12 8%, #9A5A08 52%, #74420A 96%);
+  --fx-ink-red: linear-gradient(180deg, #DB5340 8%, #B5361F 52%, #8A2616 96%);
+  --fx-ink-name: linear-gradient(180deg, #1E1A29 30%, #4A2F86 96%);
+  --fx-glow: drop-shadow(0 2px 5px rgb(122 66 200 / .30));
+  /* the sidebar is dark in both themes, so the wordmark always takes the dark recipe */
+  --fx-ink-rail: linear-gradient(180deg, #FBF7FF 6%, #C9ABF7 48%, #9A6AE3 96%);
+  color-scheme: light;
+}
+/* dark: the same block twice, once for the system setting and once for data-theme="dark" (the preview forces it) */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #1E1A27; --surface: #26212F; --ink: #ECE8F3; --muted: #A49DB3; --line: #3A3347;
+  --rail: #0D0B12; --rail-ink: #E2DCEC; --rail-muted: #8F88A0; --rail-edge: #2A2434;
+  --purple: #A97CEB; --purple-ink: #B48CF0;
+  --amber: #E0A040; --amber-ink: #E0A040; --red: #E8735F; --red-ink: #EF7F6C;
+  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #0D0B12; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
+  --fx-ink: linear-gradient(180deg, #F1E6FF 6%, #B892F2 48%, #9764E6 96%);
+  --fx-ink-amber: linear-gradient(180deg, #FFE2B0 6%, #EBAA48 48%, #D08E2C 96%);
+  --fx-ink-red: linear-gradient(180deg, #FFC9BD 6%, #EC7B66 48%, #DB5F4A 96%);
+  --fx-ink-name: linear-gradient(180deg, #FFFFFF 20%, #D5C2F4 96%);
+  --fx-glow: drop-shadow(0 0 5px rgb(169 124 235 / .50)) drop-shadow(0 0 16px rgb(140 84 217 / .32));
+  color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --paper: #1E1A27; --surface: #26212F; --ink: #ECE8F3; --muted: #A49DB3; --line: #3A3347;
+  --rail: #0D0B12; --rail-ink: #E2DCEC; --rail-muted: #8F88A0; --rail-edge: #2A2434;
+  --purple: #A97CEB; --purple-ink: #B48CF0;
+  --amber: #E0A040; --amber-ink: #E0A040; --red: #E8735F; --red-ink: #EF7F6C;
+  --tint: color-mix(in srgb, var(--purple) 14%, transparent); --on-purple: #0D0B12; --hover: color-mix(in srgb, var(--ink) 5%, transparent);
+  --fx-ink: linear-gradient(180deg, #F1E6FF 6%, #B892F2 48%, #9764E6 96%);
+  --fx-ink-amber: linear-gradient(180deg, #FFE2B0 6%, #EBAA48 48%, #D08E2C 96%);
+  --fx-ink-red: linear-gradient(180deg, #FFC9BD 6%, #EC7B66 48%, #DB5F4A 96%);
+  --fx-ink-name: linear-gradient(180deg, #FFFFFF 20%, #D5C2F4 96%);
+  --fx-glow: drop-shadow(0 0 5px rgb(169 124 235 / .50)) drop-shadow(0 0 16px rgb(140 84 217 / .32));
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; display: flex; height: 100vh; overflow: hidden; background: var(--paper); color: var(--ink);
+       font: var(--fs-m)/var(--lh) var(--font); -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* icons (icons.js, Lucide): outline, the colour of the text they sit by; 18px in the sidebar, 16px in rows and
+   headings, 14px in buttons, 12px in chips */
+.icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
+  vertical-align: -3px; overflow: visible; }
+code, .cmd { font-family: var(--mono); font-size: var(--fs-s); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* ---------------------------------------------------------------- sidebar */
+nav { width: 208px; flex: none; background: var(--rail); color: var(--rail-ink); padding: var(--s6) var(--s3); display: flex; flex-direction: column; gap: 2px;
+  box-shadow: inset -1px 0 0 var(--rail-edge); }
+nav .app { font: 600 var(--d-mark)/28px var(--font); letter-spacing: var(--d-track); padding: 0 var(--s3) var(--s6); }
+nav .app .word { display: inline; }
+nav .app .tagline { display: block; font: 400 var(--fs-s)/var(--lh) var(--font); letter-spacing: 0; margin-top: 2px; color: var(--rail-muted); }
+nav button { all: unset; font-family: inherit; cursor: pointer; height: 36px; padding: 0 var(--s3); border-radius: var(--r-control); font-size: var(--fs-m);
+  box-sizing: border-box; display: flex; justify-content: flex-start; align-items: center; gap: 6px; }
+nav button .icon { width: 18px; height: 18px; stroke-width: 1.6; }
+nav button .os { margin-left: auto; font-size: var(--fs-xs); color: var(--rail-muted); font-variant-numeric: tabular-nums; }
+nav button:hover { background: rgba(255, 255, 255, .05); }
+nav button.on { background: var(--purple); color: var(--on-purple); font-weight: 500; }
+nav button.on .os { color: inherit; opacity: .8; }
+nav .gap { flex: 1; }
+nav #ver { padding: var(--s3) var(--s3) 0; font-size: var(--fs-xs); color: var(--rail-muted); font-family: var(--mono); }
+/* the update offer is not this page's primary action: an outline in the rail */
+nav button.update { color: var(--rail-ink); font-weight: 500; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18); margin-top: var(--s2); }
+nav button.update:hover { background: transparent; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .32); }
+
+/* ---------------------------------------------------------------- page: one column, 720px of content, left aligned */
+main { flex: 1; overflow-y: auto; }
+.page { max-width: calc(720px + 2 * var(--s10)); padding: var(--s10) var(--s10) var(--s12); }
+h1 { font-size: var(--fs-xl); line-height: var(--lh-tight); font-weight: 600; margin: 0 0 var(--s1); letter-spacing: -.005em; }
+h2 { font-size: var(--fs-l); line-height: var(--lh-tight); font-weight: 600; margin: 0; }
+h3 { font-size: var(--fs-m); font-weight: 600; margin: var(--s8) 0 var(--s2); }
+.dim, .sub { color: var(--muted); }
+.sub { font-size: var(--fs-s); }
+.lede { color: var(--muted); font-size: var(--fs-m); margin: 0 0 var(--s8); max-width: 64ch; }
+strong { font-weight: 600; }
+/* with an opening strip under it, the page name is the small label above the strip */
+h1.page-name, .empty h1.page-name { font-size: var(--fs-s); font-weight: 500; color: var(--muted); margin: 0 0 var(--s2); letter-spacing: 0; }
+
+/* ---------------------------------------------------------------- the opening strip: icons and figures; words only
+   where something deviates or asks for action. The state mark hangs in the margin, so the strip keeps the left edge. */
+.opening { margin: 0 0 var(--s3); }
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s8); position: relative; margin: 0; min-height: calc(var(--d-state) * var(--d-lh)); }
+.state-mark { position: absolute; left: -30px; top: calc((var(--d-state) * var(--d-lh) - 20px) / 2); line-height: 0; color: var(--purple); }
+.state-mark > .icon { width: 20px; height: 20px; }
+.strip[data-tone="warn"] > .state-mark { color: var(--amber); }
+.strip[data-tone="bad"] > .state-mark { color: var(--red); }
+.strip[data-tone="wait"] > .state-mark, .strip[data-tone="off"] > .state-mark { color: var(--muted); }
+.fig { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink); border-radius: var(--r-control); cursor: default; }
+.fig > .icon { width: 22px; height: 22px; stroke-width: 1.6; color: var(--muted); }
+.fig > .icon[data-icon="check"] { color: var(--purple); width: 18px; height: 18px; }
+.fig-num { font: 600 var(--d-state)/var(--d-lh) var(--font); letter-spacing: var(--d-track); font-variant-numeric: tabular-nums lining-nums; }
+.fig-unit { font-size: var(--fs-s); color: var(--muted); margin-left: -4px; align-self: flex-end; padding-bottom: .55em; }
+.fig-text { font-size: var(--fs-m); font-weight: 500; }
+.fig > .chip + .chip { margin-left: -4px; }
+.fig.calm, .fig.calm > .icon { color: var(--muted); }
+.fig.warn { color: var(--amber-ink); } .fig.warn > .icon { color: var(--amber); }
+.fig.bad { color: var(--red-ink); } .fig.bad > .icon { color: var(--red); }
+.fig.act { color: var(--purple-ink); } .fig.act > .icon { color: var(--purple); }
+.opening + .badge { margin-top: var(--s6); }
+
+/* ---------------------------------------------------------------- controls */
+button { font: inherit; font-weight: 500; font-size: var(--fs-s); height: 32px; padding: 0 var(--s4); border: 0; border-radius: var(--r-control); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; vertical-align: middle;
+  background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+button:hover { background: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
+button:disabled { opacity: .45; cursor: default; }
+button.small { height: 28px; padding: 0 var(--s3); }
+button.ghost { background: transparent; }
+button.ghost:hover { background: var(--hover); }
+/* the one primary action of the page (pickPrimary in index.html) */
+button.primary { background: var(--purple); color: var(--on-purple); box-shadow: none; }
+button.primary:hover { background: color-mix(in srgb, #000 8%, var(--purple)); }
+button > .icon { width: 14px; height: 14px; }
+/* a button that is its icon: the words are its aria-label and its tooltip; while it works, only the spinner shows */
+button.icon-only { font-size: 0; width: 28px; padding: 0; gap: 0; }
+button.working { gap: var(--s2); }
+select, input { font: inherit; font-size: var(--fs-s); height: 32px; color: inherit; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-control); padding: 0 var(--s2); }
+input[type=number] { width: 84px; }
+/* toggles: a hairline track when off, purple when on; the knob is the page's surface, never a shadow */
+.switch { appearance: none; width: 34px; height: 20px; border-radius: 10px; background: var(--line); position: relative; cursor: pointer; flex: none; margin: 0; padding: 0; border: 1px solid var(--line); }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); }
+.switch:checked { background: var(--purple); }
+.switch:checked::after { left: 17px; background: #FFFFFF; }
+.switch:hover:not(:disabled) { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent); }
+.switch:disabled { opacity: .5; }
+progress { width: 140px; accent-color: var(--purple); }
+@media (prefers-reduced-motion: no-preference) {
+  .switch::after { transition: left .15s; }
+  button, .item.click, .tile { transition: background-color .15s var(--ease), box-shadow .15s var(--ease); }
+  button.primary { transition: none; }
+}
+
+/* ---------------------------------------------------------------- chips: one object for people and machines.
+   .chip is the identity chip (a login, a machine name), monospace; tags, levels and states share its geometry in the
+   UI face, so everything small and pill-shaped on a page is the same shape. */
+.chip, .tag, .perm, .method, button.perm {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: var(--r-control); gap: 0;
+  font-size: var(--fs-xs); font-weight: 500; line-height: 1; white-space: nowrap; vertical-align: middle;
+  background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); min-width: 0;
+}
+.chip { font-family: var(--mono); background: var(--surface); letter-spacing: -.01em; }
+.item .title.chip { font-size: var(--fs-s); height: 24px; padding: 0 8px; }
+.perm > .icon, .method > .icon { width: 12px; height: 12px; stroke-width: 2; margin-right: 4px; }
+.tag { color: var(--muted); }
+.tag > .icon { width: 12px; height: 12px; stroke-width: 2; }
+.tag.worded { gap: 4px; box-shadow: none; padding: 0; }
+/* access levels: neutral, the word carries the meaning */
+.perm { justify-content: center; min-width: 76px; flex: none; }
+.p1, .p0 { color: var(--muted); }
+.p0 { font-weight: 400; }
+.perm.checking { color: var(--muted); }
+button.perm.edit:hover { background: transparent; box-shadow: inset 0 0 0 1px var(--ink); }
+/* states: purple is healthy, amber deviates, red is broken */
+.s-ok, .m-account, .m-key { color: var(--purple-ink); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 45%, transparent); }
+.s-warn, .m-temporary, .pending { color: var(--amber-ink); box-shadow: inset 0 0 0 1px var(--amber); }
+.s-bad { color: var(--red-ink); box-shadow: inset 0 0 0 1px var(--red); }
+.m-off { color: var(--muted); font-weight: 400; }
+/* a level, state or tag as its glyph alone: the word is in .sr for assistive tech and in the tooltip. A glyph that
+   only says something has no frame; a frame means a button (the levels an owner can change keep theirs). */
+.glyph { width: 22px; min-width: 22px; padding: 0; justify-content: center; cursor: default; }
+.glyph > .icon { margin: 0; width: 13px; height: 13px; }
+.glyph.edit { cursor: pointer; }
+.glyph:not(.edit) { box-shadow: none; background: none; width: 18px; min-width: 18px; }
+.glyph:not(.edit) > .icon { width: 15px; height: 15px; }
+.tag.glyph, .method.glyph { color: var(--muted); }
+/* an explanation behind a small info mark */
+.info { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
+  margin-left: var(--s1); border-radius: 50%; color: var(--muted); cursor: help; vertical-align: middle; flex: none; }
+.info:hover { color: var(--ink); }
+.info:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+.info > .icon { width: 15px; height: 15px; }
+/* the tooltip: ink on paper, one line where it fits, never covering the pointer */
+#tip { position: fixed; z-index: 30; max-width: 300px; padding: 6px 8px; border-radius: var(--r-control); background: var(--ink); color: var(--paper);
+  font: 400 var(--fs-xs)/1.45 var(--font); pointer-events: none; box-shadow: 0 6px 16px -8px rgba(0, 0, 0, .35); white-space: pre-line; }
+
+/* ---------------------------------------------------------------- the identity block: rows, not a card */
+.badge { margin: 0 0 var(--s8); border-top: 1px solid var(--line); }
+.badge + .section, .badge + * + .section { margin-top: var(--s4); }
+.badge .who { padding: var(--s3) 0 var(--s4); }
+.badge .who .name { display: block; font: 600 var(--d-name)/var(--d-lh) var(--font); letter-spacing: var(--d-track); margin-bottom: var(--s2); }
+.badge .who .name.chip { display: inline-flex; font: 500 var(--fs-m)/1 var(--mono); letter-spacing: -.01em; height: 28px; padding: 0 var(--s2); margin: 0; }
+.badge .methods { margin-top: var(--s3); gap: 6px; }
+.badge .actions { display: flex; gap: var(--s2); align-items: center; padding: var(--s3) 0 0; border-top: 1px solid var(--line); }
+.badge .actions select { margin-right: auto; }
+.claude-line { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; min-height: var(--row); padding: var(--s2) 0; border-top: 1px solid var(--line); }
+.claude-line .label { color: var(--muted); font-size: var(--fs-s); width: 112px; flex: none; display: inline-flex; align-items: center; gap: var(--s2); }
+.claude-line .sub { overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------- sections and lists: hairline rows */
+.section { border-top: 1px solid var(--line); margin-top: var(--s8); padding: 0; }
+.section + .section { margin-top: var(--s6); }
+.section > header { display: flex; align-items: baseline; gap: var(--s3); padding-top: var(--s6); flex-wrap: wrap; }
+.grow { flex: 1; }
+.section > .sub, .section > p.sub { margin: var(--s2) 0 var(--s3); }
+.section > .list:last-child { margin-bottom: 0; }
+h2 > .icon { color: var(--muted); }
+.section.pr > header > h2 { display: inline-flex; align-items: center; gap: var(--s2); }
+.card { margin: 0 0 28px; }
+.row { display: flex; gap: 14px; align-items: center; }
+.detail { flex: 1; color: var(--muted); }
+.list { border-top: 1px solid var(--line); margin: var(--s3) 0; }
+.item { display: flex; gap: var(--s3); align-items: center; min-height: var(--row); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+.item .text { flex: 1; min-width: 0; }
+.item .title { font-weight: 500; line-height: 24px; }
+.item .text > .sub { margin-top: 2px; line-height: 20px; }
+.item .text > .sub.has-chip { display: flex; align-items: center; height: 20px; white-space: pre; }
+/* what a row is: an icon in a column of its own, level with the first line */
+.item > .icon { align-self: flex-start; margin-top: 4px; color: var(--muted); }
+.item.click { cursor: pointer; }
+.item.click:hover { background: var(--hover); }
+.item.busy { pointer-events: none; }
+/* a row's own remove mark is quiet until its row is pointed at or focused: the column stops repeating a frame per row */
+.item button.row-act:not(:hover):not(:focus-visible) { box-shadow: none; background: transparent; color: var(--muted); }
+.item:is(:hover, :focus-within) button.row-act { box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); }
+.quiet { color: var(--muted); padding: var(--s4) 0 0; margin: 0; font-size: var(--fs-s); }
+/* where a vault lives on this computer: text on top, buttons on their own line so a long path never hides them */
+.place { padding: var(--s3) 0; border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); margin: var(--s3) 0; }
+.place .title { font-weight: 500; }
+.place .path { overflow-wrap: anywhere; font-family: var(--mono); font-size: var(--fs-s); }
+.place .buttons { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.place .cmd { overflow-wrap: anywhere; }
+.banner { color: var(--ink); padding: var(--s3) 0; border-top: 1px solid var(--amber); border-bottom: 1px solid var(--line); margin: 0 0 var(--s6); }
+.warn { display: flex; align-items: center; gap: 6px; color: var(--amber-ink); font-size: var(--fs-s); margin: 6px 0 0; }
+.empty { padding: 0 0 var(--s12); max-width: 56ch; }
+.empty h1 { font-size: var(--fs-xxl); font-weight: 500; letter-spacing: -.012em; margin-bottom: var(--s3); }
+.empty h2 { margin-bottom: 8px; }
+.access-list { max-height: 60vh; overflow-y: auto; margin-top: 12px; min-width: 380px; }
+.req { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* vaults fold; the summary keeps name, place and access visible; the chevron says it folds */
+details.vault > summary { list-style: none; cursor: pointer; }
+details.vault > summary::-webkit-details-marker { display: none; }
+details.vault > summary header { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; padding-top: var(--s6); }
+details.vault > summary h2 { display: inline-flex; align-items: center; gap: var(--s2); }
+details.vault > summary h2::before { content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 var(--s2) 3px 2px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); }
+details.vault[open] > summary h2::before { transform: rotate(45deg); margin-bottom: 5px; }
+@media (prefers-reduced-motion: no-preference) { details.vault > summary h2::before { transition: transform .15s; } }
+details.vault > summary:focus-visible { outline: 2px solid var(--purple); outline-offset: 4px; border-radius: 6px; }
+.vault-body { padding-bottom: 8px; }
+.view-as { justify-content: space-between; flex-wrap: wrap; margin-bottom: var(--s2); }
+.ask { padding: 8px 0; }
+.ask p:first-child { margin: 8px 0 12px; }
+
+/* the access tree, drawn with 1px connectors, 40px rows */
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { margin-left: 7px; padding-left: var(--s4); border-left: 1px solid var(--line); }
+.tree li { position: relative; }
+.tree ul > li::before { content: ""; position: absolute; left: calc(-1 * var(--s4)); top: 20px; width: 10px; border-top: 1px solid var(--line); }
+.tree ul > li:last-child::after { content: ""; position: absolute; left: calc(-1 * var(--s4) - 1px); top: 20px; bottom: 0; border-left: 1px solid var(--paper); }
+.node { display: flex; align-items: center; gap: var(--s3); min-height: 40px; padding: 0; }
+.node .title { font-weight: 500; }
+.node.group > .title { font-size: var(--fs-m); font-weight: 600; }
+.node .where { flex: 1; color: var(--muted); font-size: var(--fs-s); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* ---------------------------------------------------------------- machines: one machine, one block.
+   A machine is a heading row plus its details. Each machine after the first starts after clear space and a stronger
+   rule, and its name reads as the block's heading. */
+.meters { display: flex; gap: var(--s4); flex-wrap: wrap; margin-top: var(--s2); }
+.meters:empty { display: none; }
+.meter-mini { display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--fs-xs); color: var(--muted); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.meter-mini .k { width: 26px; font-family: var(--font); }
+.meter-mini .v { width: 34px; text-align: right; color: var(--ink); }
+.meter-mini .track { width: 64px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.meter-mini i { display: block; height: 100%; background: var(--muted); border-radius: inherit; }
+.meter-mini i.hot { background: var(--amber); }
+@media (prefers-reduced-motion: no-preference) { .meter-mini i { transition: width .4s ease-out; } }
+.specs { display: grid; gap: var(--s1); padding: var(--s2) 0 var(--s4) 28px; border-bottom: 1px solid var(--line); }   /* level with the row's text */
+.spec { display: grid; grid-template-columns: 112px 1fr; gap: var(--s3); font-size: var(--fs-s); font-variant-numeric: tabular-nums; }
+.spec .k { color: var(--muted); }
+/* hardware: the label is its icon, the values stay text and numbers */
+.spec.hw { grid-template-columns: 36px 1fr; }
+.spec.hw > .k { display: inline-flex; align-items: center; gap: 3px; }
+.spec.hw > .k > .icon { width: 15px; height: 15px; }
+.machine { border-bottom: 0; }
+.machine .title.chip { font-size: var(--fs-l); font-weight: 600; height: 28px; padding: 0 10px; }
+#machines .specs { border-bottom: 0; }
+#machines .specs + .machine { margin-top: var(--s12); padding-top: var(--s4); border-top: 2px solid color-mix(in srgb, var(--ink) 22%, transparent); }
+.desktops { margin-top: var(--s3); display: grid; gap: var(--s2); }
+/* one line at 720px: the buttons hold together and wrap as one group */
+.desk { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: var(--fs-s); }
+.desk > .icon { color: var(--muted); }
+.desk > .desk-name { font-family: var(--mono); font-size: var(--fs-xs); }
+.acts { display: inline-flex; gap: 6px; flex-wrap: nowrap; }
+.acts button.small { padding: 0 10px; }
+.acts button.icon-only { padding: 0; }
+.who-connect { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.who-connect > .row { align-items: center; }
+/* a machine with nothing to show yet: no empty block, the row opens straight to who may connect */
+.specs > div:empty { display: none; }
+.specs > div:empty + .who-connect { margin-top: 0; padding-top: 0; border-top: 0; }
+.ask-line { display: flex; align-items: flex-start; gap: var(--s2); margin: var(--s2) 0 0; font-size: var(--fs-s); }
+.ask-line > .icon { width: 14px; height: 14px; margin-top: 3px; color: var(--muted); }
+
+/* who may use a thing: one wrapping line, people grouped under a quiet label that says why, once */
+.who-line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); margin: var(--s2) 0 0; }
+.pr .specs > .who-line { margin: 0; }
+.who-g { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
+.who-k { font-size: var(--fs-xs); color: var(--muted); margin-right: 2px; white-space: nowrap; }
+.who-line .chip:focus-visible { outline-offset: 1px; }
+/* added by hand: the chip carries its own remove mark */
+.chip.has-x { padding-right: 0; gap: 2px; }
+.who-line button.x { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  margin-right: 1px; border-radius: 3px; color: var(--muted); cursor: pointer; }
+.who-line button.x > .icon { width: 12px; height: 12px; stroke-width: 2; }
+.who-line button.x:hover { color: var(--red-ink); background: var(--hover); }
+.who-line button.x:focus-visible { outline: 2px solid var(--purple); outline-offset: 0; }
+.who-add { display: inline-flex; align-items: center; }
+.who-line button.add { height: 22px; width: 22px; color: var(--muted); }
+.who-line button.add:hover { color: var(--ink); }
+.who-line button.add > .icon { width: 13px; height: 13px; }
+.who-line select { height: 28px; }
+
+/* waiting: a plain purple line across the top while the app waits on GitHub or a long task */
+#topline { position: sticky; top: 0; height: 2px; margin-bottom: -2px; z-index: 5; overflow: hidden; visibility: hidden; }
+#topline.on { visibility: visible; }
+#topline::before { content: ""; position: absolute; inset: 0; width: 40%; background: var(--purple); }
+@media (prefers-reduced-motion: no-preference) { #topline.on::before { animation: sweep 1.3s ease-in-out infinite; } }
+@media (prefers-reduced-motion: reduce) { #topline.on::before { width: 100%; animation: breathe 2s ease-in-out infinite; } }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+@keyframes breathe { 50% { opacity: .35; } }
+/* how many of the machines are signed in: a ring that fills clockwise, --p in percent */
+.ring { --p: 0; width: 14px; height: 14px; border-radius: 50%; display: inline-block; vertical-align: -2px; flex: none;
+  background: conic-gradient(var(--purple) calc(var(--p) * 1%), var(--line) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent 52%, #000 54%); mask: radial-gradient(farthest-side, transparent 52%, #000 54%); }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; vertical-align: -2px; flex: none; }
+@media (prefers-reduced-motion: no-preference) { .spinner { animation: turn .8s linear infinite; } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: breathe 1.6s ease-in-out infinite; } }
+@keyframes turn { to { transform: rotate(360deg); } }
+.stage { display: flex; flex-direction: column; gap: 8px; max-width: 420px; padding: 8px 0; }
+.stage .line { display: flex; gap: 10px; align-items: center; color: var(--muted); font-size: var(--fs-s); }
+.meter { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.meter > i { display: block; height: 100%; width: 0; background: var(--muted); border-radius: inherit; }
+@media (prefers-reduced-motion: no-preference) { .meter > i { transition: width .35s ease-out; } }
+
+/* ---------------------------------------------------------------- invite: a drawer that grows out of its section
+   when asked for: no room and no focus while closed (0fr to 1fr animates to the content's own height) */
+.drawer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .24s var(--ease); }
+.drawer.open { grid-template-rows: 1fr; }
+.drawer-in { overflow: hidden; min-height: 0; }
+.drawer.open .drawer-in { overflow: visible; transition: overflow 0s .24s; }
+@media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
+.invite { display: flex; flex-direction: column; gap: var(--s3); margin: var(--s2) 0 var(--s6); padding: var(--s4) var(--s4) var(--s3);
+  border-radius: var(--r-panel); background: var(--surface); border: 1px solid var(--line); }
+.invite .who { font-size: var(--fs-m); height: 36px; padding: 0 var(--s3); font-family: var(--mono); }
+.invite .field { display: grid; grid-template-columns: 88px 1fr; gap: 12px; align-items: center; }
+.invite .field.top { align-items: start; }
+.invite .field.top .label { padding-top: 10px; }
+.invite .label { color: var(--muted); font-size: var(--fs-s); }
+.invite .foot { display: flex; justify-content: flex-end; }
+.invite > .sub { margin: -4px 0 0 100px; }
+.segmented { display: inline-flex; padding: 2px; border-radius: var(--r-control); background: var(--line); width: max-content; }
+.segmented button { height: 28px; padding: 0 var(--s4); border-radius: 3px; box-shadow: none; font-weight: 500; background: transparent; color: var(--muted); }
+.segmented button[aria-checked="true"] { background: var(--surface); color: var(--ink); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+.tile { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 2px; padding: var(--s2) var(--s3) var(--s2) 32px;
+  border-radius: var(--r-control); background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); position: relative; font-family: inherit; }
+.tile::before { content: ""; position: absolute; left: 10px; top: 11px; width: 14px; height: 14px; border-radius: 3px; box-shadow: inset 0 0 0 1.5px var(--muted); }
+.tile:hover { box-shadow: inset 0 0 0 1px var(--purple); }
+.tile:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+.tile[aria-pressed="true"] { background: var(--tint); box-shadow: inset 0 0 0 2px var(--purple); }
+.tile[aria-pressed="true"]::before { background: var(--purple); box-shadow: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.2l2.6 2.6L11 4.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+.tile:disabled { cursor: default; opacity: .45; }
+.tile-title { font-weight: 500; font-size: var(--fs-m); }
+.tile-sub { color: var(--muted); font-size: var(--fs-xs); font-family: var(--mono); overflow-wrap: anywhere; }
+@media (max-width: 560px) { .invite .field { grid-template-columns: 1fr; } .invite > .sub { margin-left: 0; } }
+
+/* ---------------------------------------------------------------- terms: the text keeps its faces on purpose (Times
+   New Roman, 標楷體 for Chinese: DFKai-SB on Windows, BiauKai / Kaiti TC on macOS, each language label in its copy's
+   face); only the chrome around it is Plex */
+.terms { max-width: 720px; }
+.terms .doc { max-height: 52vh; overflow-y: auto; padding: var(--s2) var(--s6) var(--s4); border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--surface);
+  font-family: "Times New Roman", "Liberation Serif", Times, "DFKai-SB", "標楷體", "BiauKaiTC", "BiauKai", "Kaiti TC", serif; font-size: 17px; }
+.terms .doc h2 { font-size: 19px; margin: 18px 0 8px; }
+.terms .doc li { margin: 6px 0; line-height: 1.6; }
+.terms .opening { margin-bottom: var(--s6); }
+/* language switch: one track, the chosen copy's segment raised */
+.terms .lang { display: flex; width: max-content; margin: 0 0 12px auto; padding: 2px; border-radius: var(--r-control); background: var(--line); }
+.terms .lang:empty { display: none; }
+.terms .lang button { all: unset; cursor: pointer; padding: 4px var(--s4); border-radius: 3px; font-size: 16px; line-height: 1.4;
+  color: color-mix(in srgb, var(--ink) 80%, var(--line)); transition: background .15s, color .15s; }   /* 80% ink: AA on the track */
+.terms .lang button.zh { font-family: "DFKai-SB", "標楷體", "BiauKaiTC", "BiauKai", "Kaiti TC", serif; }
+.terms .lang button.en { font-family: "Times New Roman", "Liberation Serif", Times, serif; }
+.terms .lang button:hover { color: var(--ink); }
+.terms .lang button.on { background: var(--surface); color: var(--ink); }
+.terms .lang button:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .terms .lang button { transition: none; } }
+.terms .agree { margin-top: 16px; display: flex; gap: var(--s3); align-items: center; }
+
+/* ---------------------------------------------------------------- toast and dialog: 8px panels, one soft shadow at most */
+#toast { position: fixed; bottom: 24px; left: calc(50% + 104px); transform: translateX(-50%); background: var(--ink); color: var(--paper);
+  padding: var(--s3) var(--s4); border-radius: var(--r-panel); font-size: var(--fs-s); display: none; max-width: 70%; z-index: 10; }
+dialog { border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--surface); color: var(--ink); max-width: 480px; padding: var(--s6);
+  box-shadow: 0 12px 32px -16px rgba(0, 0, 0, .3); }
+dialog h3 { margin: 0 0 8px; font-size: var(--fs-xl); font-weight: 600; }
+dialog::backdrop { background: rgba(23, 19, 31, .45); }
+dialog .buttons { display: flex; gap: var(--s2); justify-content: flex-end; margin-top: 20px; }
+dialog p { white-space: pre-line; margin: 0; }
+@media (prefers-reduced-motion: no-preference) { dialog[open] { animation: rise .18s var(--ease); } }
+@keyframes rise { from { transform: translateY(6px); opacity: 0; } }
+
+/* ---------------------------------------------------------------- Windows VM and Android phone */
+#vm > h3, #android .card h3 { font-size: var(--fs-m); margin: var(--s10) 0 var(--s1); }
+#vm .list, #android .list { margin-top: var(--s3); }
+/* rows say what they are: one 28px column for the app's own tiles and the Lucide marks alike, so text lines up */
+#vm .item > .icon, #android .item > .icon { box-sizing: content-box; padding: 0 6px; }
+#vm .item.pad { padding-left: 40px; }
+.item > img.app-icon { width: 28px; height: 28px; flex: none; }
+#vm .item .sub.mono { font-family: var(--mono); font-size: var(--fs-xs); }
+#vm input[type=number] { width: 72px; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+#vm progress { width: 120px; height: 4px; }
+#android > .row:has(+ .opening), #android > .row.has-opening { margin-bottom: var(--s1); }
+#android > .row h1.page-name { margin: 0; }
+/* phones: a hairline section each; the drawing shows mode and link */
+#android .card { margin: var(--s8) 0 0; }
+#android .card > .row { gap: var(--s4); align-items: center; }
+#android .card > .row > .phone-art { color: var(--muted); line-height: 0; }
+#android .card h2 { font-size: var(--fs-l); font-weight: 600; margin-bottom: var(--s2); }
+#android .card > .row .dim { font-size: var(--fs-s); }
+#android .card > .row .perm { margin-bottom: var(--s1); }
+#android .card .list { margin-top: var(--s4); }
+
+/* ---------------------------------------------------------------- ink: only the wordmark, the opening strip's figures
+   and state mark, and the person's name are rendered; the rest of the page stays flat. Healthy figures and the
+   wordmark in brand purple, deviations in their own hue, quiet figures in a neutral ink; the glow through filter,
+   since a text-shadow would show through the clear fill */
+:is(nav .app .word, .fig > .fig-num, .badge .who .name:not(.chip)) { -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+nav .app .word { background-image: var(--fx-ink-rail); filter: var(--fx-glow); }
+.fig:not(.calm, .warn, .bad) > .fig-num { background-image: var(--fx-ink); filter: var(--fx-glow); }
+.fig.calm > .fig-num { background-image: var(--fx-ink-name); }
+.fig.warn > .fig-num { background-image: var(--fx-ink-amber); }
+.fig.bad > .fig-num { background-image: var(--fx-ink-red); }
+.badge .who .name:not(.chip) { background-image: var(--fx-ink-name); }
+.strip[data-tone="ok"] > .state-mark > .icon { filter: var(--fx-glow); }
+/* the two surfaces that are objects, the selected sidebar item and the page's one primary button: a lit top edge and
+   a hairline of contact, as a real key would have; nothing else gains a shadow */
+:is(nav button.on, button.primary) {
+  background-image: linear-gradient(180deg, rgb(255 255 255 / .07), rgb(255 255 255 / 0) 50%, rgb(0 0 0 / .05));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .22), inset 0 -1px 0 rgb(0 0 0 / .10), 0 1px 1px rgb(20 12 40 / .30); }
+/* asked for more contrast, or a forced palette: everything flat again */
+@media (prefers-contrast: more), (forced-colors: active) {
+  :is(nav .app .word, .fig-num, .badge .who .name, .state-mark > .icon, nav button.on, button.primary) {
+    text-shadow: none !important; filter: none !important; background-image: none !important; box-shadow: none !important;
+    -webkit-text-fill-color: currentColor !important; }
+}
+
+/* ---------------------------------------------------------------- below 700px the sidebar is its icons; the words
+   move to the tooltip */
+@media (max-width: 700px) {
+  nav { width: 56px; padding: var(--s4) var(--s2); }
+  nav .app { font-size: 15px; line-height: 20px; padding: 0 0 var(--s4); text-align: center; }
+  nav .app .tagline, nav #ver { display: none; }
+  nav button { font-size: 0; justify-content: center; padding: 0; gap: 0; }
+  nav button .os { display: none; }
+  nav button .icon { width: 20px; height: 20px; }
+  .page { padding: var(--s6) var(--s4) var(--s10) calc(var(--s4) + 30px); }
+  #toast { left: calc(50% + 28px); }
+}

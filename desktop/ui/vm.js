@@ -88,48 +88,63 @@ async function refreshVm() {
     e.append(el("h2", null, "No Windows VM on this computer yet"), el("p", null, "Creating one from here is the next step of aIwalk System Setup."));
     return page.append(e);
   }
-  page.append(el("h2", null, vm.running ? "Windows is running" : "Windows is off"),
-    el("div", "dim", `${vm.ram} memory, ${vm.cpus} CPU cores, ${vm.disk} disk`));
+  // the page opens with on or off (what it is asked first, so it keeps its word) and the VM's size
+  const gb = v => String(v).replace(/^(\d+)G$/, "$1 GB"), lead = v => (/^(\d+)/.exec(String(v)) || [, v])[1];
+  const used = s.disk_used_gb ? Math.round(s.disk_used_gb) : null;
+  const size = [`${gb(vm.ram)} memory, ${vm.cpus} CPU cores, ${gb(vm.disk)} disk` + (used ? `, ${used} GB of it used.` : ".")];
+  const figures = [{ icon: "memory-stick", num: lead(vm.ram), unit: "GB", tip: `${gb(vm.ram)} memory` },
+    { icon: "cpu", num: vm.cpus, unit: "cores", tip: `${vm.cpus} CPU cores` },
+    { icon: "hard-drive", num: lead(vm.disk), unit: "GB", tip: `${gb(vm.disk)} disk` + (used ? `, ${used} GB of it used` : "") }];
+  setOpening(page, vm.running ? ["ok", "Windows is running.", size, [{ icon: "power", text: "Running", tip: "Windows is running" }, ...figures]]
+    : ["off", "Windows is off.", [...size, " Open Windows starts it."], [{ icon: "power", text: "Off", tone: "calm", tip: "Windows is off: Open Windows starts it" }, ...figures]]);
 
+  // the two acts are the app's own shortcut icons, as the desktop shows them
+  const appIcon = (row, name) => { const i = el("img", "app-icon"); i.src = `icons/${name}.svg`; i.alt = ""; i.width = i.height = 28; row.prepend(i); return row; };
   const actions = el("div", "list");
-  actions.append(item("Open Windows", "Opens the Windows desktop in a window" + (vm.running ? "" : ", starting it first (1–2 minutes)"),
-    e => vmAction("open", {}, e.currentTarget)));
-  if (vm.running) actions.append(item("Shut down Windows", "Frees its memory; takes up to 2 minutes", e => vmAction("stop", {}, e.currentTarget)));
+  actions.append(appIcon(item("Open Windows", "Opens the Windows desktop in a window" + (vm.running ? "" : ", starting it first (1–2 minutes)"),
+    e => vmAction("open", {}, e.currentTarget)), "windows-open"));
+  if (vm.running) actions.append(appIcon(item("Shut down Windows", "Frees its memory; takes up to 2 minutes", e => vmAction("stop", {}, e.currentTarget)), "windows-stop"));
   page.append(actions);
 
   page.append(el("h3", null, "Settings"));
   const settings = el("div", "list");
-  const pw = el("button", "small ghost", "Change password");
+  const pw = iconButton("key-round", "Change password", "small ghost", true);
   pw.onclick = async () => { const p = await askPassword(""); if (p) vmAction("password", { password: p }, pw); };
   settings.append(
-    item("Card reader", "Pass the USB card reader (health-insurance / citizen certificate) to Windows. Windows will not start while it is on and the reader is unplugged.", null,
+    kind(item("Card reader", "Pass the USB card reader (health-insurance / citizen certificate) to Windows. Windows will not start while it is on and the reader is unplugged.", null,
       switchBox(vm.card_reader, async (on, box) => {
         if (!await whileOff(vm.running, "Card reader changes")) { box.checked = !on; return; }
         vmAction("card", { on });
-      })),
-    item("Windows account", vm.user, null, pw),
-    item("VM folder", vm.compose.replace(/\/[^/]*$/, ""), null));
+      })), "credit-card"),
+    kind(item("Windows account", chip(vm.user), null, pw), "user-round"),
+    kind(item("VM folder", vm.compose.replace(/\/[^/]*$/, ""), null), "folder"));
+  settings.lastChild.querySelector(".sub").classList.add("mono");
   page.append(settings);
 
-  page.append(el("h3", null, "Shortcuts"), el("div", "sub", "Added to the desktop and the app menu"));
-  const shortcuts = el("div", "list");
-  s.shortcuts.forEach(([key, name, comment, on]) =>
-    shortcuts.append(item(name, comment, null, switchBox(on, v => vmAction("shortcut", { key, on: v })))));
+  // a heading and what it means, behind its info mark
+  const heading = (text, says) => { const h = el("h3", null, text); h.append(info(says)); return h; };
+  page.append(heading("Shortcuts", "Added to the desktop and the app menu"));
+  const shortcuts = el("div", "list"), SHORTCUT_ICON = { open: "windows-open", stop: "windows-stop" };
+  s.shortcuts.forEach(([key, name, comment, on]) => {
+    const r = item(name, comment, null, switchBox(on, v => vmAction("shortcut", { key, on: v })));
+    shortcuts.append(SHORTCUT_ICON[key] ? appIcon(r, SHORTCUT_ICON[key]) : r);
+  });
   page.append(shortcuts);
 
-  page.append(el("h3", null, "Resources"), el("div", "sub", "Applied while Windows is off"));
+  page.append(heading("Resources", "Applied while Windows is off"));
   const res = el("div", "list"), num = t => parseInt(String(t).replace(/\D/g, "")) || 0;
   const now = { RAM_SIZE: num(vm.ram), CPU_CORES: num(vm.cpus), DISK_SIZE: num(vm.disk) };
   const apply = el("button", "small", "Apply"); apply.disabled = true;
   const inputs = {};
   // leave the host at least 4 GB; the disk can only grow (Windows cannot shrink it)
-  [["RAM_SIZE", "Memory (GB)", `This computer has ${s.host_gb} GB`, 2, Math.max(s.host_gb - 4, 2)],
-   ["CPU_CORES", "CPU cores", `This computer has ${s.host_cpus}`, 1, s.host_cpus],
-   ["DISK_SIZE", "Disk size (GB)", "Can only grow", now.DISK_SIZE || 32, 1024]].forEach(([k, title, sub, lo, hi]) => {
+  [["RAM_SIZE", "Memory (GB)", `This computer has ${s.host_gb} GB`, 2, Math.max(s.host_gb - 4, 2), "memory-stick"],
+   ["CPU_CORES", "CPU cores", `This computer has ${s.host_cpus}`, 1, s.host_cpus, "cpu"],
+   ["DISK_SIZE", "Disk size (GB)", "Can only grow", now.DISK_SIZE || 32, 1024, "hard-drive"]].forEach(([k, title, sub, lo, hi, name]) => {
     const n = el("input"); n.type = "number"; n.min = lo; n.max = hi; n.value = now[k] || lo;
+    n.setAttribute("aria-label", title);
     n.oninput = () => apply.disabled = !Object.entries(inputs).some(([key, i]) => +i.value !== now[key]);
     inputs[k] = n;
-    res.append(item(title, sub, null, n));
+    res.append(kind(item(title, sub, null, n), name));
   });
   apply.onclick = async () => {
     const values = {};
@@ -139,7 +154,9 @@ async function refreshVm() {
     }
     if (await whileOff(vm.running, "Memory, CPU and disk changes")) vmAction("resources", { values }, apply);
   };
-  res.append(item("Apply changes", null, null, apply));
+  const applyRow = item("Apply changes", null, null, apply);
+  applyRow.classList.add("pad");   // no icon of its own: its text lines up with the rows above
+  res.append(applyRow);
 
   const bar = el("progress"); bar.id = "clean-bar"; bar.max = 1; bar.hidden = !cleaning;
   const clean = el("button", "small", "Clean up"); clean.hidden = !!cleaning;
@@ -149,8 +166,8 @@ async function refreshVm() {
     await vmAction("clean");
     cleaning = null;
   };
-  const cleanRow = item("Clean up space", (s.disk_used_gb ? `The disk takes ${Math.round(s.disk_used_gb)} GB on this computer. ` : "") +
-    "Removes Office and PowerPoint caches, crash dumps, temp files and the recycle bin inside Windows, then gives the space back.", null, bar, clean);
+  const cleanRow = kind(item("Clean up space", (s.disk_used_gb ? `The disk takes ${Math.round(s.disk_used_gb)} GB on this computer. ` : "") +
+    "Removes Office and PowerPoint caches, crash dumps, temp files and the recycle bin inside Windows, then gives the space back.", null, bar, clean), "trash-2");
   cleanRow.querySelector(".sub").id = "clean-sub";
   res.append(cleanRow);
   page.append(res);

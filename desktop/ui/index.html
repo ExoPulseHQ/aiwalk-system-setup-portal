@@ -3,269 +3,18 @@
 <head>
 <meta charset="utf-8">
 <title>aIwalk System Setup</title>
-<style>
-  @font-face { font-family: "Atkinson"; src: url(fonts/atkinson-400.woff2) format("woff2"); font-weight: 400; }
-  @font-face { font-family: "Atkinson"; src: url(fonts/atkinson-700.woff2) format("woff2"); font-weight: 700; }
-  :root {
-    --paper: #F6F4FA; --surface: #FFFFFF; --ink: #231C33; --muted: #6E6680; --line: #E2DCEC;
-    --purple: #8C54D9; --orange: #F5843C; --peach: #F9C29B; --rail: #231C33; --rail-ink: #E9E4F2;
-    --tint: color-mix(in srgb, var(--purple) 9%, transparent);
-    color-scheme: light;
-  }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-    --paper: #17131F; --surface: #211B2C; --ink: #EEEAF5; --muted: #A79FB8; --line: #342C42;
-    --rail: #100D16; --rail-ink: #D9D2E6; --tint: color-mix(in srgb, var(--purple) 18%, transparent); color-scheme: dark;
-  } }
-  * { box-sizing: border-box; }
-  body { margin: 0; display: flex; height: 100vh; overflow: hidden; background: var(--paper); color: var(--ink);
-         font: 15px/1.5 "Atkinson", system-ui, sans-serif; }
-  :focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
-
-  /* sidebar */
-  nav { width: 208px; flex: none; background: var(--rail); color: var(--rail-ink); padding: 20px 12px; display: flex; flex-direction: column; gap: 2px; }
-  nav .app { font-weight: 700; font-size: 17px; padding: 0 12px 20px; letter-spacing: .01em; }
-  nav .app span { display: block; font-weight: 400; font-size: 13px; opacity: .65; }
-  nav button { all: unset; font-family: inherit; cursor: pointer; padding: 9px 12px; border-radius: 8px; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
-  nav button:hover { background: rgba(255,255,255,.06); }
-  nav button[hidden] { display: none; }
-  nav button.on { background: var(--purple); color: #fff; font-weight: 700; }
-  nav .os { font-size: 11px; opacity: .55; }
-  nav .gap { flex: 1; }
-  nav #ver { padding: 10px 12px 0; font-size: 12.5px; opacity: .6; }
-  nav button.update { background: var(--purple); color: #fff; font-weight: 700; justify-content: center; margin-top: 6px; }
-  nav button.update:hover { background: var(--purple); filter: brightness(1.1); }
-  .who-connect { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line, rgba(127,127,127,.2)); }
-  .who-connect .tag { margin-left: 6px; }
-  .who-connect .tag.extra { background: var(--purple); color: #fff; }
-  .who-connect select { margin-top: 8px; }
-  .pr .spec { grid-template-columns: 170px 1fr; }
-  .pr .tag { display: inline-block; margin: 0 6px 4px 0; }
-  .pr .tag.extra { background: var(--purple); color: #fff; }
-  .pr .specs select { justify-self: start; }
-
-  main { flex: 1; overflow-y: auto; }
-  .page { max-width: 760px; padding: 32px 32px 64px; }
-  h1 { font-size: 26px; line-height: 1.2; margin: 0 0 4px; }
-  h2 { font-size: 19px; margin: 0; }
-  h3 { font-size: 15px; margin: 28px 0 8px; }
-  .dim, .sub { color: var(--muted); }
-  .sub { font-size: 13.5px; }
-  .lede { color: var(--muted); margin: 0 0 24px; max-width: 62ch; }
-  code, .cmd { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 13px; }
-
-  button { font: inherit; font-weight: 700; padding: 7px 16px; border-radius: 8px; border: 0; background: var(--purple); color: #fff; cursor: pointer; }
-  button:hover { filter: brightness(1.08); }
-  button:disabled { opacity: .45; cursor: default; filter: none; }
-  button.small { padding: 4px 12px; font-size: 13.5px; }
-  button.ghost { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
-  select, input { font: inherit; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
-  input[type=number] { width: 84px; }
-  .switch { appearance: none; width: 38px; height: 22px; border-radius: 999px; background: var(--line); position: relative; cursor: pointer; flex: none; margin: 0; }
-  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
-  .switch:checked { background: var(--purple); }
-  .switch:checked::after { left: 19px; }
-  .switch:disabled { opacity: .5; }
-  @media (prefers-reduced-motion: no-preference) { .switch::after { transition: left .15s; } }
-  progress { width: 140px; accent-color: var(--purple); }
-
-  /* the identity badge: the one card on the page */
-  .badge { display: grid; grid-template-columns: 6px 64px 1fr; gap: 0 18px; align-items: center; background: var(--surface);
-           border-radius: 14px; box-shadow: 0 1px 0 var(--line), 0 8px 24px -16px rgba(35,28,51,.35); overflow: hidden; margin: 8px 0 32px; }
-  .badge .band { align-self: stretch; background: linear-gradient(var(--purple), var(--orange)); }
-  .badge .face { align-self: start; margin-top: 22px !important; width: 64px; height: 64px; border-radius: 50%; background: var(--tint); color: var(--purple); display: grid; place-items: center;
-                 font-weight: 700; font-size: 24px; margin: 18px 0; }
-  .badge .who { padding: 18px 0; }
-  .badge .who .name { font-size: 20px; font-weight: 700; }
-  .badge .methods { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-  .badge .actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); margin-right: 20px; }
-  .badge .actions select { margin-right: auto; }
-  /* machine rows: two small meters, specs open on click */
-  .meters { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 6px; }
-  .meters:empty { display: none; }
-  .meter-mini { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .meter-mini .k { width: 28px; }
-  .meter-mini .v { width: 32px; text-align: right; color: var(--ink); }
-  .meter-mini .track { width: 72px; height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
-  .meter-mini i { display: block; height: 100%; background: var(--purple); border-radius: inherit; }
-  .meter-mini i.hot { background: var(--orange); }
-  @media (prefers-reduced-motion: no-preference) { .meter-mini i { transition: width .4s ease-out; } }
-  .specs { padding: 4px 4px 14px 18px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; }
-  .spec { display: grid; grid-template-columns: 96px 1fr; gap: 12px; font-size: 13.5px; }
-  .spec .k { color: var(--muted); }
-  .desktops { margin-top: 10px; display: grid; gap: 6px; }
-  .desktops > .k { color: var(--muted); font-size: 13.5px; }
-  .desk { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13.5px; }
-  .desk > span:first-child { min-width: 170px; font-family: ui-monospace, monospace; font-size: 13px; }
-  .warn { color: var(--orange); font-size: 13.5px; margin: 6px 0 0; }
-  .claude-line { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
-  .claude-line .label { color: var(--muted); font-size: 14px; width: 92px; flex: none; }
-  .claude-line .sub { overflow-wrap: anywhere; }
-  .method { border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 700; }
-  .m-account { background: var(--orange); color: #231C33; }
-  .m-temporary { background: var(--peach); color: #231C33; }
-  .m-key { background: var(--purple); color: #fff; }
-  .m-off { box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); font-weight: 400; }
-
-  /* sections */
-  .section { padding: 4px 0 8px; border-top: 1px solid var(--line); margin-top: 24px; }
-  .section > header { display: flex; align-items: baseline; gap: 12px; padding-top: 20px; flex-wrap: wrap; }
-  .section > header .grow { flex: 1; }
-
-  /* vaults fold; the summary keeps name, place and access visible */
-  details.vault > summary { list-style: none; cursor: pointer; }
-  details.vault > summary::-webkit-details-marker { display: none; }
-  details.vault > summary header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding-top: 20px; }
-  details.vault > summary header .grow { flex: 1; }
-  details.vault > summary h2::before { content: ""; display: inline-block; width: 8px; height: 8px; margin: 0 12px 3px 2px;
-    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); }
-  details.vault[open] > summary h2::before { transform: rotate(45deg); margin-bottom: 5px; }
-  @media (prefers-reduced-motion: no-preference) { details.vault > summary h2::before { transition: transform .15s; } }
-  details.vault > summary:focus-visible { outline: 2px solid var(--purple); outline-offset: 4px; border-radius: 6px; }
-  .vault-body { padding-bottom: 8px; }
-  .view-as { justify-content: space-between; flex-wrap: wrap; margin-bottom: 6px; }
-  .ask { padding: 8px 0; }
-  .ask p:first-child { margin: 8px 0 12px; }
-  /* the access tree, drawn with connectors */
-  .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
-  .tree ul { margin-left: 11px; padding-left: 18px; border-left: 2px solid var(--line); }
-  .tree li { position: relative; }
-  .tree ul > li::before { content: ""; position: absolute; left: -18px; top: 20px; width: 14px; border-top: 2px solid var(--line); }
-  .tree ul > li:last-child::after { content: ""; position: absolute; left: -20px; top: 21px; bottom: 0; border-left: 2px solid var(--paper); }
-  .node { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 4px 0; }
-  .node .title { font-weight: 700; }
-  .node.group > .title { font-size: 15.5px; }
-  .node .where { flex: 1; color: var(--muted); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .perm { border-radius: 6px; padding: 2px 10px; font-weight: 700; font-size: 13px; min-width: 84px; text-align: center; flex: none; white-space: nowrap; }
-  .p4 { background: var(--purple); color: #fff; }
-  .p3, .p2 { background: var(--orange); color: #231C33; }
-  .p1 { background: var(--peach); color: #231C33; }
-  .p0 { box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); font-weight: 400; background-image: repeating-linear-gradient(135deg, transparent 0 5px, var(--line) 5px 6px); }
-  .perm.checking { display: inline-flex; justify-content: center; align-items: center; color: var(--muted); }
-  .perm.edit { cursor: pointer; }
-  .perm.edit:hover { outline: 2px solid var(--purple); outline-offset: 2px; }
-  /* invite: one column, a field per line; layers as tiles to tap */
-  /* a panel that grows out of its section when asked for: no room and no focus while closed (0fr to 1fr is the one
-     way CSS animates to a content's own height) */
-  .drawer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .24s cubic-bezier(.2, .7, .2, 1); }
-  .drawer.open { grid-template-rows: 1fr; }
-  .drawer-in { overflow: hidden; min-height: 0; }
-  .drawer.open .drawer-in { overflow: visible; transition: overflow 0s .24s; }
-  @media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
-  .invite { display: flex; flex-direction: column; gap: 14px; margin: 4px 0 20px; padding: 18px 20px 16px; border-radius: 12px;
-            background: var(--surface); border: 1px solid var(--line); border-top: 2px solid var(--purple); }
-  .invite .who { font-size: 16px; padding: 10px 12px; border-radius: 10px; }
-  .invite .field { display: grid; grid-template-columns: 88px 1fr; gap: 12px; align-items: center; }
-  .invite .field.top { align-items: start; }
-  .invite .field.top .label { padding-top: 10px; }
-  .invite .label { color: var(--muted); font-size: 14px; }
-  .invite .foot { display: flex; justify-content: flex-end; }
-  .invite > .sub { margin: -4px 0 0 100px; }
-  .segmented { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--line); width: max-content; }
-  .segmented button { background: transparent; color: var(--muted); padding: 5px 18px; border-radius: 8px; font-weight: 700; }
-  .segmented button[aria-checked="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px rgba(35,28,51,.2); }
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
-  .tile { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 10px 34px;
-          border-radius: 10px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); position: relative; font-family: inherit; }
-  .tile::before { content: ""; position: absolute; left: 12px; top: 13px; width: 14px; height: 14px; border-radius: 4px; box-shadow: inset 0 0 0 1.5px var(--muted); }
-  .tile:hover { box-shadow: inset 0 0 0 1px var(--purple); }
-  .tile:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
-  .tile[aria-pressed="true"] { background: var(--tint); box-shadow: inset 0 0 0 2px var(--purple); }
-  .tile[aria-pressed="true"]::before { background: var(--purple); box-shadow: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.2l2.6 2.6L11 4.4' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
-  .tile:disabled { cursor: default; opacity: .45; }
-  .tile-title { font-weight: 700; font-size: 14.5px; }
-  .tile-sub { color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
-  @media (max-width: 560px) { .invite .field { grid-template-columns: 1fr; } .invite > .sub { margin-left: 0; } }
-  .access-list { max-height: 60vh; overflow-y: auto; margin-top: 12px; min-width: 380px; }
-  .pending { box-shadow: inset 0 0 0 1px var(--orange); color: var(--orange); font-weight: 400; }
-  .req { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .tag { font-size: 13px; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); border-radius: 6px; padding: 1px 8px; }
-
-  /* plain lists (phone, VM, requests, teams) */
-  .card { margin: 0 0 28px; }
-  .row { display: flex; gap: 14px; align-items: center; }
-  .detail { flex: 1; color: var(--muted); }
-  .list { border-top: 1px solid var(--line); margin: 12px 0; }
-  .item { display: flex; gap: 14px; align-items: center; padding: 12px 4px; border-bottom: 1px solid var(--line); }
-  .item .text { flex: 1; min-width: 0; }
-  .item .title { font-weight: 700; }
-  .quiet { color: var(--muted); padding: 16px 0 0; margin: 0; }
-  .item.click { cursor: pointer; border-radius: 6px; }
-  .item.click:hover { background: var(--tint); }
-  /* where a vault lives on this computer: text on top, buttons on their own line so a long path never hides them */
-  .place { padding: 12px 4px; border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); margin: 12px 0; }
-  .place .title { font-weight: 700; }
-  .place .path { overflow-wrap: anywhere; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 13px; }
-  .place .buttons { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-top: 10px; }
-  .place .cmd { overflow-wrap: anywhere; }
-  /* waiting: one line across the top while the app waits on GitHub or a long task, in the badge's band colours */
-  #topline { position: sticky; top: 0; height: 3px; margin-bottom: -3px; z-index: 5; overflow: hidden; visibility: hidden; }
-  #topline.on { visibility: visible; }
-  #topline::before { content: ""; position: absolute; inset: 0; width: 40%; background: linear-gradient(90deg, transparent, var(--purple), var(--orange), transparent); }
-  @media (prefers-reduced-motion: no-preference) { #topline.on::before { animation: sweep 1.3s ease-in-out infinite; } }
-  @media (prefers-reduced-motion: reduce) { #topline.on::before { width: 100%; animation: breathe 2s ease-in-out infinite; } }
-  @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-  @keyframes breathe { 50% { opacity: .35; } }
-  /* how many of the machines are signed in: a ring that fills clockwise, --p in percent */
-  .ring { --p: 0; width: 14px; height: 14px; border-radius: 50%; display: inline-block; vertical-align: -2px; flex: none;
-          background: conic-gradient(var(--purple) calc(var(--p) * 1%), var(--line) 0);
-          -webkit-mask: radial-gradient(farthest-side, transparent 52%, #000 54%); mask: radial-gradient(farthest-side, transparent 52%, #000 54%); }
-  .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; vertical-align: -2px; flex: none; }
-  @media (prefers-reduced-motion: no-preference) { .spinner { animation: turn .8s linear infinite; } }
-  @media (prefers-reduced-motion: reduce) { .spinner { animation: breathe 1.6s ease-in-out infinite; } }
-  @keyframes turn { to { transform: rotate(360deg); } }
-  button.working { display: inline-flex; gap: 8px; align-items: center; opacity: 1; }
-  .item.busy { pointer-events: none; }
-  .item.busy .title { color: var(--purple); }
-  .stage { display: flex; flex-direction: column; gap: 8px; max-width: 420px; padding: 8px 0; }
-  .stage .line { display: flex; gap: 10px; align-items: center; color: var(--muted); }
-  .meter { height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
-  .meter > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--purple), var(--orange)); border-radius: inherit; }
-  @media (prefers-reduced-motion: no-preference) { .meter > i { transition: width .35s ease-out; } }
-  .banner { background: var(--peach); color: #231C33; padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; }
-  .empty { padding: 48px 0; max-width: 56ch; }
-  .terms { max-width: 70ch; }
-  .terms .text { max-height: 52vh; overflow-y: auto; padding: 4px 20px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
-  /* a formal text: Times New Roman for Latin, 標楷體 for Chinese (DFKai-SB on Windows, BiauKai / Kaiti TC on macOS) */
-  .terms .text { font-family: "Times New Roman", "Liberation Serif", Times, "DFKai-SB", "標楷體", "BiauKaiTC", "BiauKai", "Kaiti TC", serif; font-size: 17px; }
-  .terms .text h2 { font-size: 19px; margin: 18px 0 8px; }
-  .terms .text li { margin: 6px 0; line-height: 1.6; }
-  /* language switch: one track, the chosen copy's segment raised; each label set in the face its copy is read in */
-  .terms .lang { display: flex; width: max-content; margin: 0 0 12px auto; padding: 3px; border-radius: 999px; background: var(--line); }
-  .terms .lang:empty { display: none; }
-  .terms .lang button { all: unset; cursor: pointer; padding: 4px 18px 5px; border-radius: 999px; font-size: 16px; line-height: 1.4; color: var(--muted); transition: background .15s, color .15s; }
-  .terms .lang button.zh { font-family: "DFKai-SB", "標楷體", "BiauKaiTC", "BiauKai", "Kaiti TC", serif; }
-  .terms .lang button.en { font-family: "Times New Roman", "Liberation Serif", Times, serif; }
-  .terms .lang button:hover { color: var(--ink); }
-  .terms .lang button.on { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(20, 12, 36, .28); }
-  .terms .lang button:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
-  @media (prefers-reduced-motion: reduce) { .terms .lang button { transition: none; } }
-  .terms .agree { margin-top: 16px; display: flex; gap: 12px; align-items: center; }
-  .empty h2 { margin-bottom: 8px; }
-
-  #toast { position: fixed; bottom: 24px; left: calc(50% + 104px); transform: translateX(-50%); background: var(--ink); color: var(--paper);
-           padding: 10px 18px; border-radius: 10px; display: none; max-width: 70%; z-index: 10; }
-  dialog { border: 0; border-radius: 14px; background: var(--surface); color: var(--ink); max-width: 480px; padding: 24px;
-           box-shadow: 0 24px 48px -12px rgba(0,0,0,.35); }
-  dialog h3 { margin: 0 0 8px; font-size: 18px; }
-  dialog::backdrop { background: rgba(23,19,31,.45); }
-  dialog .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-  dialog p { white-space: pre-line; margin: 0; }
-  @media (prefers-reduced-motion: no-preference) { dialog[open] { animation: rise .16s ease-out; } }
-  @keyframes rise { from { transform: translateY(6px); opacity: 0; } }
-  @media (max-width: 700px) { nav { width: 64px; } nav .app span, nav .os { display: none; } .page { padding: 20px 16px; } }
-</style>
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
 <nav>
-  <div class="app">aIwalk<span>System Setup</span></div>
-  <button data-page="team">Team access</button>
-  <button data-page="machines">Machines</button>
-  <button data-page="people" hidden>People</button>
-  <button data-page="android" class="linux">Android phone <span class="os">Linux</span></button>
-  <button data-page="vm" class="linux">Windows VM <span class="os">Linux</span></button>
+  <div class="app"><span class="word">aIwalk</span><span class="tagline">System Setup</span></div>
+  <button data-page="team" data-icon="key-round">Team access</button>
+  <button data-page="machines" data-icon="server">Machines</button>
+  <button data-page="people" data-icon="users-round" hidden>People</button>
+  <button data-page="android" data-icon="smartphone" class="linux">Android phone <span class="os">Linux</span></button>
+  <button data-page="vm" data-icon="app-window" class="linux">Windows VM <span class="os">Linux</span></button>
   <div class="gap"></div>
-  <button data-page="terms">Terms</button>
+  <button data-page="terms" data-icon="scroll-text">Terms</button>
   <div id="ver"></div>
 </nav>
 <main>
@@ -279,6 +28,8 @@
 </main>
 <div id="toast"></div>
 <dialog id="dialog"></dialog>
+<div id="tip" role="tooltip" hidden></div>
+<script src="icons.js"></script>
 <script>
 const listen = window.__TAURI__.event.listen;
 // Every call to the app's backend shows the top line while it runs, except the quiet background checks.
@@ -341,16 +92,141 @@ function ask(title, body, buttons, extra) {
   });
 }
 
-// One row in a list: title, subtitle, and whatever controls go on the right.
+// One row in a list: title, subtitle, and whatever controls go on the right. Title and subtitle are text or a node.
 function item(title, sub, onclick, ...right) {
   const r = el("div", "item" + (onclick ? " click" : ""));
-  const t = el("div", "text");
-  t.append(el("div", "title", title));
-  if (sub) t.append(el("div", "sub", sub));
+  const t = el("div", "text"), head = el("div", "title");
+  head.append(...[title].flat());
+  t.append(head);
+  if (sub) { const s = el("div", "sub"); s.append(sub); if (sub instanceof Element && sub.classList.contains("chip")) s.classList.add("has-chip"); t.append(s); }
   r.append(t, ...right);
   if (onclick) r.onclick = onclick;
   return r;
 }
+
+// ---------------------------------------------------------------- the visual vocabulary (app.css, DESIGN.md)
+// An icon from icons.js: decoration beside its words, so hidden from assistive tech; the words or an aria-label name it.
+function icon(name) {
+  if (!ICONS[name]) throw new Error(`no icon ${name} in icons.js`);
+  const i = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  i.setAttribute("viewBox", "0 0 24 24"); i.setAttribute("aria-hidden", "true"); i.setAttribute("focusable", "false");
+  i.setAttribute("class", "icon"); i.dataset.icon = name; i.innerHTML = ICONS[name];
+  return i;
+}
+// A row that says what it is: its icon first, in a column of its own.
+const kind = (row, name) => { row.prepend(icon(name)); return row; };
+// The identity chip, for a login or a machine name; `tip` says what else there is to know (the person's name).
+function chip(text, tip, cls = "") {
+  const c = el("span", "chip" + (cls ? " " + cls : ""), text);
+  if (tip) c.dataset.tip = tip;
+  return c;
+}
+// A button with an icon: words beside it, or (iconOnly) the words as its accessible name and tooltip only.
+function iconButton(name, words, cls = "small ghost", iconOnly = false) {
+  const b = el("button", cls + (iconOnly ? " icon-only" : ""));
+  b.append(icon(name));
+  if (iconOnly) { b.setAttribute("aria-label", words); b.dataset.tip = words; } else b.append(words);
+  return b;
+}
+// A state, level or tag shown as its glyph: the word stays for assistive tech, the tooltip says it in full. Focusable,
+// so the tooltip also opens from the keyboard.
+function glyph(cls, name, word, tip) {
+  const g = el("span", cls + " glyph");
+  g.append(icon(name), el("span", "sr", word));
+  g.dataset.tip = tip; g.tabIndex = 0;
+  return g;
+}
+// An explanation behind a small info mark, appended to the heading or label it explains.
+function info(text) {
+  const b = el("button", "info"); b.type = "button";
+  b.dataset.tip = text; b.setAttribute("aria-label", text);
+  b.append(icon("info"));
+  return b;
+}
+// A state chip's content: an icon, then its words; `lead` is said to assistive tech and the tooltip but not shown.
+function stateText(node, name, text, lead) {
+  node.replaceChildren(...(name ? [icon(name)] : []), ...(lead ? [el("span", "sr", lead)] : []), text);
+  if (lead) node.dataset.tip = lead + text; else delete node.dataset.tip;
+  return node;
+}
+
+// The page's opening strip, under its name: [tone, sentence, detail, items], or null to have none. The sentence and
+// detail are what a screen reader hears; each item is focusable and named by its tooltip.
+// item: {icon, num, unit, chips: [login], text, tone: warn | bad | act | calm, tip}
+function setOpening(page, got) {
+  const old = page.querySelector(".opening"), h1 = page.querySelector("h1");
+  if (h1) h1.classList.toggle("page-name", !!got);
+  if (!got) { if (old) old.remove(); return; }
+  const [tone, sentence, detail, items] = got;
+  const box = el("div", "opening"); box.setAttribute("role", "status");
+  const strip = el("div", "strip"); strip.dataset.tone = tone;
+  const m = el("span", "state-mark"); m.setAttribute("aria-hidden", "true");
+  m.append(icon({ ok: "circle-check", warn: "circle-alert", bad: "circle-x", wait: "circle-dashed", off: "power" }[tone]));
+  strip.append(m, el("span", "sr", [sentence, ...detail].join(" ")));
+  items.forEach(({ icon: name, num, unit, chips = [], text, tone: t, tip }) => {
+    const it = el("span", "fig" + (t ? " " + t : ""));
+    it.tabIndex = 0; it.dataset.tip = tip; it.setAttribute("role", "img"); it.setAttribute("aria-label", tip);
+    if (name) it.append(icon(name));
+    if (num !== undefined) it.append(el("span", "fig-num", String(num)));
+    if (unit) it.append(el("span", "fig-unit", unit));
+    chips.forEach(l => it.append(chip(l)));
+    if (text) it.append(el("span", "fig-text", text));
+    strip.append(it);
+  });
+  box.append(strip);
+  // after the page name; where the name shares a row with a button, after that row
+  const at = h1 && h1.parentNode.classList.contains("row") ? h1.parentNode : h1;
+  if (old) old.replaceWith(box); else if (at) at.after(box); else page.prepend(box);
+}
+const plural = (k, one, many = one + "s") => `${k} ${k === 1 ? one : many}`;
+
+// One primary (purple) button per page: the first button made a candidate with data-primary, else the first button
+// that is not secondary (ghost), outside a folded drawer, the language switch, the segmented control and the tiles.
+// Pages that act through their rows (Windows VM, Android phone) have none. Called after redraws that change buttons.
+const NO_PRIMARY = new Set(["vm", "android"]);
+function pickPrimary(page) {
+  if (!page) return;
+  const all = [...page.querySelectorAll("button")];
+  const live = all.filter(b => !b.closest(".lang, .segmented, .drawer:not(.open)") && !b.matches(".tile, .info, .x, .perm") && (!b.disabled || b.classList.contains("working")));
+  const pick = NO_PRIMARY.has(page.id) ? null : live.find(b => b.dataset.primary) || live.find(b => !b.classList.contains("ghost"));
+  all.forEach(b => b.classList.toggle("primary", b === pick));
+}
+
+// The one tooltip: on hover after 120 ms, at once on keyboard focus, gone on Escape, on leaving, or when its element
+// goes. Anything with data-tip has one; data-tip-narrow only while the sidebar is its icons (under 700px).
+const tipBox = document.getElementById("tip");
+let tipFor = null, tipTimer = 0;
+function showTip(t) {
+  clearTimeout(tipTimer);
+  if (!t.isConnected || (t.dataset.tipNarrow && innerWidth > 700)) return hideTip();
+  tipFor = t;
+  tipBox.textContent = t.dataset.tip; tipBox.hidden = false;
+  if (t.getAttribute("aria-label") !== t.dataset.tip) t.setAttribute("aria-describedby", "tip");
+  const r = t.getBoundingClientRect(), w = tipBox.offsetWidth, h = tipBox.offsetHeight;
+  const below = r.bottom + 6 + h <= innerHeight - 8;
+  tipBox.style.top = `${below ? r.bottom + 6 : r.top - h - 6}px`;
+  tipBox.style.left = `${Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8))}px`;
+}
+function hideTip() {
+  clearTimeout(tipTimer);
+  if (tipFor) tipFor.removeAttribute("aria-describedby");
+  tipFor = null; tipBox.hidden = true;
+}
+const tipOf = e => e.target instanceof Element ? e.target.closest("[data-tip]") : null;
+document.addEventListener("pointerover", e => {
+  const t = tipOf(e);
+  if (t === tipFor) return;
+  clearTimeout(tipTimer);
+  if (!t) return hideTip();
+  tipTimer = setTimeout(() => showTip(t), 120);
+});
+document.addEventListener("pointerleave", hideTip);
+document.addEventListener("focusin", e => { const t = tipOf(e); t ? showTip(t) : hideTip(); });
+document.addEventListener("focusout", hideTip);
+document.addEventListener("keydown", e => { if (e.key === "Escape") hideTip(); });
+// focusing an element scrolls it into view: follow it rather than drop the tooltip; a redraw that took it away hides it
+document.addEventListener("scroll", () => { if (tipFor) showTip(tipFor); }, true);
+document.addEventListener("click", () => setTimeout(() => { if (tipFor && !tipFor.isConnected) hideTip(); }), true);
 
 function switchBox(on, onchange) {
   const s = el("input", "switch"); s.type = "checkbox"; s.checked = on;
@@ -367,7 +243,16 @@ function go(name) {
   document.querySelectorAll(".page").forEach(p => p.hidden = p.id !== name);
   pages[name]();
 }
-document.querySelectorAll("nav button").forEach(b => b.onclick = () => go(b.dataset.page));
+// the sidebar: its icons, and its words as a tooltip for when it narrows to those icons
+function navLabel(b, words, count) {
+  b.replaceChildren(icon(b.dataset.icon), words, ...(count ? [el("span", "os", count)] : []));
+  b.dataset.tip = words + (/^\d+$/.test(count || "") ? `, ${count} waiting` : "");
+}
+document.querySelectorAll("nav button").forEach(b => {
+  b.dataset.tipNarrow = 1;
+  navLabel(b, b.firstChild.textContent.trim(), (b.querySelector(".os") || {}).textContent);
+  b.onclick = () => go(b.dataset.page);
+});
 
 // This version, and one button to the newest release when there is one (the bundled gh downloads it).
 async function showVersion() {
@@ -376,7 +261,9 @@ async function showVersion() {
   ver.textContent = `Version ${u.current}`;
   if (!u.newer) return;
   if (!u.can) { ver.textContent += `. ${u.latest} is out: install it from the Releases page.`; return; }
-  const b = el("button", "update", `Update to ${u.latest}`);
+  const b = el("button", "update");
+  b.append(icon("arrow-down-to-line"), `Update to ${u.latest}`);
+  b.dataset.tip = `Update to ${u.latest}`; b.dataset.tipNarrow = 1;
   b.onclick = async () => {
     try { toast(await working(b, `Downloading ${u.latest}`, () => invoke("update_install", { tag: u.latest }))); }
     catch (e) { toast(e); }
