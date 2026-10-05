@@ -23,6 +23,7 @@ mod guardcli;
 mod hooks;
 mod login;
 mod machines;
+mod vncshim;
 mod ptycli;
 mod secrets;
 mod sessioncli;
@@ -573,6 +574,12 @@ fn main() {
         let body = a.get(2).map(|b| serde_json::from_str(b).expect("the body must be JSON"));
         match github::send(&a[0], &a[1], body) { Ok(v) => println!("{v}"), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }
         return;
+    }
+    // --vnc-front PORT: a password prompt in front of the desktop forwarded to 127.0.0.1:PORT (what a Mac's viewer is
+    // given); prints the port to use and stays until stopped
+    if let Some(i) = std::env::args().position(|a| a == "--vnc-front") {
+        let p: u16 = std::env::args().nth(i + 1).and_then(|p| p.parse().ok()).expect("--vnc-front PORT");
+        match vncshim::front(p) { Ok(q) => { println!("{q}"); loop { std::thread::sleep(std::time::Duration::from_secs(3600)) } } Err(e) => { eprintln!("{e}"); std::process::exit(1) } }
     }
     // --my-machines: the listed machines that let this computer's sign-in through, without the browser; reads only
     if std::env::args().any(|a| a == "--my-machines") {
