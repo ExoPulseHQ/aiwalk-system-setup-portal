@@ -397,8 +397,10 @@ pub fn open_url(url: &str) {
     let _ = crate::cmd("xdg-open").arg(url).spawn();
     #[cfg(target_os = "macos")]
     let _ = crate::cmd("open").arg(url).spawn();
+    // not `cmd /c start`: cmd reads every & in the address as the end of the command, so a sign-in address arrived
+    // at the browser cut off after its first parameter ("Invalid redirect URL" from Cloudflare Access)
     #[cfg(windows)]
-    let _ = crate::cmd("cmd").args(["/c", "start", "", url]).spawn();
+    let _ = crate::cmd("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
 }
 
 /// Signs in with GitHub: emits "gh-code" with the one-time code and opens the page to enter it on; true once
