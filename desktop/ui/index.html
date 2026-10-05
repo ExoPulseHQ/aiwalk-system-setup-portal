@@ -70,6 +70,8 @@ function stage(text) {
 // start a terminal for the SSH button; a phone build answers "android" or "ios" and shows only the line to copy.
 let OS = null;
 const canOpenTerminal = () => ["linux", "macos", "windows"].includes(OS);
+// A phone runs no programs: no git, vault downloads, Claude Code, desktops, host tools or app updates there.
+const onPhone = () => ["android", "ios"].includes(OS);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 let toastTimer;
@@ -265,7 +267,7 @@ async function showVersion() {
   const ver = document.getElementById("ver");
   const u = await invoke("update_state");
   ver.textContent = `Version ${u.current}`;
-  if (!u.newer) return;
+  if (!u.newer || onPhone()) return;   // releases are for computers
   if (!u.can) { ver.textContent += `. ${u.latest} is out: install it from the Releases page.`; return; }
   const b = el("button", "update");
   b.append(icon("arrow-down-to-line"), `Update to ${u.latest}`);

@@ -404,7 +404,13 @@ details.vault > summary:focus-visible { outline: 2px solid var(--purple); outlin
 .tile:disabled { cursor: default; opacity: .45; }
 .tile-title { font-weight: 500; font-size: var(--fs-m); }
 .tile-sub { color: var(--muted); font-size: var(--fs-xs); font-family: var(--mono); overflow-wrap: anywhere; }
-@media (max-width: 560px) { .invite .field { grid-template-columns: 1fr; } .invite > .sub { margin-left: 0; } }
+@media (max-width: 560px) { .invite .field { grid-template-columns: minmax(0, 1fr); } .invite > .sub { margin-left: 0; }
+  /* a phone: the role choice and the layer tiles wrap instead of pushing the page sideways */
+  .invite .segmented { width: auto; flex-wrap: wrap; } .tiles { grid-template-columns: minmax(0, 1fr); }
+  /* a long name or email in a row's chip ends in an ellipsis instead of widening the page */
+  .item .title.chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: block; line-height: 24px; }
+  /* a row with a field to type in: its words take a line of their own, the field and its button share the next */
+  .item:has(> input) { flex-wrap: wrap; } .item:has(> input) > .text { flex-basis: 100%; } .item > input { flex: 1; min-width: 0; } }
 
 /* ---------------------------------------------------------------- terms: the text keeps its faces on purpose (Times
    New Roman, 標楷體 for Chinese: DFKai-SB on Windows, BiauKai / Kaiti TC on macOS, each language label in its copy's

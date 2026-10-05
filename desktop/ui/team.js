@@ -85,7 +85,7 @@ function badge(s) {
     way("temporary", "Temporary credential", "m-temporary", "circle-alert", "clock"),
     glyph("method m-off", "key-round", "Security key", "Security key: another way to sign in, not in use"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, labLine(s), claudeLine());
+  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine()]));
   const out = iconButton("log-out", "Sign out of GitHub", "ghost small", true);
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -546,7 +546,7 @@ function machinesSection(machines, org, user, guest) {
   // what this computer still needs: the ssh aliases (the sign-in itself is step 2 on the badge)
   async function showHelp(state) {
     help.replaceChildren();
-    const ssh = await invoke("ssh_status", { machines });
+    const ssh = onPhone() ? null : await invoke("ssh_status", { machines });
     if (ssh === "missing") {
       const b = el("button", "small", "Set up connections");
       b.onclick = async () => {
@@ -600,8 +600,8 @@ function machinesSection(machines, org, user, guest) {
       if (diskLow[host]) { const w = el("p", "warn"); w.append(icon("circle-alert"), `Disk almost full: ${gb(s.disk_free_gb)} left.`); specs[host].append(w); }
       if (guest && !sshAcct[host]) sshAcct[host] = ((s.desktops || []).find(d => d.kind !== "rdp") || {}).user || null;
       if (sshRows[host]) { specs[host].append(sshRows[host]); paintSsh(host); }
-      if (s.host_tools) specs[host].append(hostTools(byHost[host], s.host_tools));
-      if ((s.desktops || []).length) specs[host].append(desktopList(byHost[host], s.desktops, open));
+      if (s.host_tools && !onPhone()) specs[host].append(hostTools(byHost[host], s.host_tools));
+      if ((s.desktops || []).length && !onPhone()) specs[host].append(desktopList(byHost[host], s.desktops, open));
       // a cluster reached through this machine (rooster through horse) comes in the same answer
       if (s.cluster) hosts.filter(x => x.via === host).forEach(x => clusterView(x.host, s.cluster));
     }
@@ -801,7 +801,7 @@ function vaultSection(v, user, viewAs, orgs) {
   const body = el("div", "vault-body");
   sec.append(body);
   if (!v.permission) { if (here) body.append(downloadRow(v)); body.append(askForVault(v, orgs)); return sec; }
-  body.append(downloadRow(v));
+  if (!onPhone()) body.append(downloadRow(v));
   const a = v.access;
   if (!a) {
     // one repo, not split: what counts is the permission on the repo itself
@@ -954,7 +954,7 @@ const chosen = {};
 
 async function refreshLocal() {
   const s = lastTeam;
-  if (s) local = await invoke("vault_local", { repos: s.vaults.map(v => v.repo) });
+  if (s && !onPhone()) local = await invoke("vault_local", { repos: s.vaults.map(v => v.repo) });
 }
 
 function obsidianNotice() {
@@ -1282,8 +1282,10 @@ async function loadTeam(viewAs) {
   const first = !page.querySelector(".badge");
   const progress = stage("Reading your access from GitHub");
   if (first) page.replaceChildren(el("h1", null, "Team access"), progress);
-  const t = await invoke("tools");
-  if (!t.git) return page.replaceChildren(missingTools(t));
+  if (!onPhone()) {
+    const t = await invoke("tools");
+    if (!t.git) return page.replaceChildren(missingTools(t));
+  }
   // the team's terms come first, once per version: two quick questions to GitHub, before the long read of access
   if (!termsOk() || !termsNow) { progress.set(null, "Reading the team's terms"); termsNow = await invoke("terms_state"); }
   if (termsNow && termsNow.pending) return page.replaceChildren(invitationView(termsNow));

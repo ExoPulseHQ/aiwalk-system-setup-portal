@@ -35,6 +35,14 @@ fn through(tunnel: &str) -> Option<Vec<String>> {
 fn state(tunnel: Option<&str>) -> &'static str {
     let Some(t) = tunnel else { return "no-tunnel" };
     if crate::access::token(t).is_err() { return "sign-in" }
+    // a phone has no ssh to knock with: the machine's status page, behind the same Access application, answers instead
+    #[cfg(target_os = "android")]
+    return match crate::access::get(&format!("https://{}/", t.replacen("ssh-", "status-", 1))) {
+        Ok(_) => "up",
+        Err(e) if e.contains("did not accept the sign-in") => "refused",
+        Err(_) => "down",
+    };
+    #[allow(unreachable_code)]
     let Some(app) = app() else { return "down" };
     let (_, out) = sh("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", &format!("ProxyCommand=\"{}\" --ssh-proxy %h", app.replace('%', "%%")), &format!("probe@{t}"), "true"], 30);

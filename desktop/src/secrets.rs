@@ -41,7 +41,28 @@ mod imp {
     pub fn forget(key: &str) { if let Ok(e) = entry(key) { let _ = e.delete_credential(); } }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+// ponytail: Android keeps each secret as a file (mode 600) in the app's private data folder, which other apps cannot
+// read but a rooted phone can; backups are switched off in the manifest. Upgrade: encrypt these files with a key held
+// in the Android Keystore (a small Kotlin plugin), behind these same three functions.
+#[cfg(target_os = "android")]
+mod imp {
+    use std::path::PathBuf;
+    /// The file for `key` ("github", "cloudflare:token"); None for an odd key or before the app knows its folder.
+    fn file(key: &str) -> Option<PathBuf> {
+        let home = crate::home();
+        let ok = !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b));
+        (ok && home.is_absolute()).then(|| home.join("secrets").join(key))
+    }
+    pub fn load(key: &str) -> Option<String> { std::fs::read_to_string(file(key)?).ok() }
+    pub fn save(key: &str, secret: &str) -> Result<(), String> {
+        let f = file(key).ok_or("the app's private folder is not known yet")?;
+        std::fs::create_dir_all(f.parent().unwrap()).map_err(|e| e.to_string())?;
+        crate::access::write_private(&f, secret.as_bytes())
+    }
+    pub fn forget(key: &str) { if let Some(f) = file(key) { let _ = std::fs::remove_file(f); } }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows, target_os = "android")))]
 mod imp {
     pub fn load(_: &str) -> Option<String> { None }
     pub fn save(_: &str, _: &str) -> Result<(), String> { Err("this system has no keyring this app knows".into()) }
