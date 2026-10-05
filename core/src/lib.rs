@@ -1,6 +1,7 @@
 //! Logic shared by every platform. Nothing here runs a process or touches the network:
 //! callers fetch the JSON (desktop through `gh api`, Android over HTTPS) and pass it in.
 
+pub mod deck;
 pub mod exo_repos;
 pub mod root_guard;
 pub mod session;

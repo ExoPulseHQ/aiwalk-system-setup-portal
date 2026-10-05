@@ -1171,6 +1171,7 @@ dependencies = [
 name = "exo-core"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide 0.8.9",
  "serde",
  "serde_json",
 ]

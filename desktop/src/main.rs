@@ -17,6 +17,7 @@ mod access;
 mod admin;
 mod claude;
 mod cloudflare;
+mod deckcli;
 mod github;
 mod guardcli;
 mod hooks;
@@ -429,6 +430,8 @@ fn main() {
         Some("hook") if std::env::args().nth(2).as_deref() == Some("root-only-guard") => std::process::exit(guardcli::hook(&std::env::args().skip(2).collect::<Vec<_>>())),
         Some("hook") => std::process::exit(hooks::main(&std::env::args().skip(2).collect::<Vec<_>>())),
         Some("guard") => std::process::exit(guardcli::guard(&std::env::args().skip(2).collect::<Vec<_>>())),
+        // `deck pdf <source.html>`: scripts/html-deck-to-pdf.py with the installed Chrome or Edge in place of Playwright
+        Some("deck") => std::process::exit(deckcli::main(&std::env::args().skip(2).collect::<Vec<_>>())),
         // git asks this for the github.com password (login.rs sets it as the credential helper)
         Some("git-credential") => std::process::exit(login::credential(&std::env::args().skip(2).collect::<Vec<_>>())),
         // `github token`: the signed-in account's token on stdout, for the vault plugin (what `gh auth token` was)
@@ -520,7 +523,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "hook": true, "github": true, "repos": true, "hooks": hooks::NAMES }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "github": true, "repos": true, "hooks": hooks::NAMES }));
         return;
     }
     // --cf-selfcheck: token on stdin; see cloudflare::selfcheck
