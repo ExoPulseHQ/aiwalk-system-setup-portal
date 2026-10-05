@@ -58,8 +58,12 @@ function whoLine(people, order, pick, label) {
   if (pick) {
     const wrap = el("span", "who-add"), b = iconButton("user-plus", pick.options[0].text, "small ghost add", true);
     pick.hidden = true;
-    b.onclick = e => { e.stopPropagation(); pick.hidden = false; b.hidden = true; pick.focus(); try { pick.showPicker(); } catch {} };
-    pick.addEventListener("blur", () => { if (!pick.value) { pick.hidden = true; b.hidden = false; } });
+    // closed by a press anywhere else or by Escape, not by losing focus: the app's own window (WebKitGTK) takes
+    // focus away from a select the moment its list opens, so closing on blur made the picker vanish as it was used
+    const close = () => { pick.hidden = true; b.hidden = false; document.removeEventListener("pointerdown", away, true); };
+    const away = e => { if (!wrap.contains(e.target)) close(); };
+    b.onclick = e => { e.stopPropagation(); pick.hidden = false; b.hidden = true; pick.focus(); document.addEventListener("pointerdown", away, true); try { pick.showPicker(); } catch {} };
+    pick.addEventListener("keydown", e => { if (e.key === "Escape") { close(); b.focus(); } });
     wrap.append(b, pick); line.append(wrap);
   }
   return line;
