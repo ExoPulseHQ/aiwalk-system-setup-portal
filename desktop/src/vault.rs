@@ -81,7 +81,7 @@ pub type Progress<'a> = &'a dyn Fn(f32, &str);
 
 /// How one submodule fared.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Got { Ok, Lazy, Skipped }
+pub enum Got { Ok, Lazy, Skipped, Conflict }
 
 /// One line per submodule, as scripts/exo_repos.py prints them.
 pub fn row(path: &str, got: Got) -> String {
@@ -89,6 +89,7 @@ pub fn row(path: &str, got: Got) -> String {
         Got::Ok => format!("ok      {path}"),
         Got::Lazy => format!("ok      {path}  (on demand: PDFs not downloaded)"),
         Got::Skipped => format!("skipped {path}  (no access or unreachable)"),
+        Got::Conflict => format!("CONFLICT {path}  (your changes there and the team's do not fit together: finish the merge in that folder)"),
     }
 }
 
@@ -139,7 +140,12 @@ fn update_each(tree: &Path, remote: bool, extra: &[(&str, &str)], from: f32, pro
             args.extend(["--", &path]);
             let r = run(tree, &args, extra);
             if remote && !first { mark_frozen(tree, &path, r.as_ref().err().map(String::as_str)) }
-            if r.is_ok() { Got::Ok } else { Got::Skipped }   // an unreadable folder stays an empty directory
+            match &r {
+                Ok(_) => Got::Ok,
+                // git stopped on the person's own work in that folder: said as that, never as "no access"
+                Err(e) if ["CONFLICT", "Automatic merge failed", "local changes", "would be overwritten"].iter().any(|k| e.contains(k)) => Got::Conflict,
+                Err(_) => Got::Skipped,   // an unreadable folder stays an empty directory
+            }
         };
         rows.push((path, got));
     }
@@ -147,8 +153,12 @@ fn update_each(tree: &Path, remote: bool, extra: &[(&str, &str)], from: f32, pro
 }
 
 fn summary(what: &str, rows: &[(String, Got)]) -> String {
-    let ok: Vec<&str> = rows.iter().filter(|r| r.1 != Got::Skipped).map(|r| r.0.as_str()).collect();
+    let ok: Vec<&str> = rows.iter().filter(|r| r.1 != Got::Skipped && r.1 != Got::Conflict).map(|r| r.0.as_str()).collect();
     let skipped: Vec<&str> = rows.iter().filter(|r| r.1 == Got::Skipped).map(|r| r.0.as_str()).collect();
+    let clash: Vec<&str> = rows.iter().filter(|r| r.1 == Got::Conflict).map(|r| r.0.as_str()).collect();
+    if !clash.is_empty() {
+        return format!("{what}, but your changes in {} do not fit with the team's: open that folder and finish the merge there (git status shows the files)", clash.join(", "));
+    }
     match (ok.len(), skipped.len()) {
         (0, 0) => what.to_string(),
         (n, 0) => format!("{what} with {n} folders"),
@@ -160,6 +170,12 @@ fn summary(what: &str, rows: &[(String, Got)]) -> String {
 pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress) -> Result<Vec<(String, Got)>, String> {
     progress(0.0, "Connecting to GitHub");
     let parent = dest.parent().ok_or("bad folder")?;
+    // only an empty or new folder is downloaded into, and only a folder this made is taken away again when the
+    // download fails: git refuses a folder with files in it, and cleaning up after that refusal deleted the files
+    if std::fs::read_dir(dest).is_ok_and(|mut d| d.next().is_some()) {
+        return Err(format!("{} already has files in it; move them away first", dest.display()));
+    }
+    let made = !dest.exists();
     std::fs::create_dir_all(parent).map_err(|e| format!("Could not make the folder {}: {e}. Pick another folder with the folder button and download again.", parent.display()))?;
     // shallow: members need the current notes, not years of history
     let mut child = git(parent, &["clone", "--progress", "--depth", "1", url, &dest.to_string_lossy()], extra)
@@ -175,7 +191,7 @@ pub fn clone(url: &str, dest: &Path, extra: &[(&str, &str)], progress: Progress)
         }
     }
     if !child.wait().is_ok_and(|s| s.success()) {
-        let _ = std::fs::remove_dir_all(dest);
+        if made { let _ = std::fs::remove_dir_all(dest); }
         return Err(if ["not found", "Authentication", "could not read", "403"].iter().any(|k| tail.contains(k)) {
             "No access to this vault. Sign in first, or ask an owner for access.".into()
         } else {

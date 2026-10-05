@@ -153,8 +153,8 @@ fn restricted_keys(vault: &Path) -> HashSet<String> {
 /// os.walk over the vault: every file name, and a note's name without .md. Folders under .git and node_modules
 /// are left out by their path text, and a link to a folder is not followed, as os.walk does.
 fn walk_names(dir: &Path, names: &mut HashSet<String>) {
-    let s = dir.to_string_lossy();
-    if s.contains("/.git") || s.contains("/node_modules") { return }
+    // by the folder's own name, so Windows' backslashes do not let the walk into .git
+    if dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".git") || n == "node_modules") { return }
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let link = e.file_type().is_ok_and(|t| t.is_symlink());

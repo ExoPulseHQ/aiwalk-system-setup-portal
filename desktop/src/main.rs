@@ -263,6 +263,8 @@ fn read_vault(name: &'static str, repo: &'static str, about: &'static str, user:
             let query = |q: String| github::graphql(&q).unwrap_or_default();
             let mut org = org_access(&query(org_query(&v.org)));
             let owner = org.people.get(user).is_some_and(|p| p.grants.is_none());
+            // an intern is not among the members; listed as outside, their own levels are read like anyone's
+            org.people.entry(user.to_string()).or_insert_with(|| exo_core::Person { name: user.to_string(), grants: Some(Default::default()), outside: true });
             repo_grants(&mut org.people, &query(repos_query(&v.org, owner)), user);
             // owners see every team; anyone else only the teams they are in, with no one else's name, which is
             // enough to tell them which machines they may reach
@@ -316,15 +318,23 @@ fn request_access(org: String, repo: String, level: String, note: String) -> Res
 /// Grants an open request and closes it. Who gets access is the issue's author, never anything in its body.
 /// A team that grants exactly that repo at that level is used when there is one, otherwise a direct grant.
 #[tauri::command(async)]
-fn approve_request(org: String, number: u64) -> Result<(), String> {
+fn approve_request(org: String, number: u64, repo: Option<String>, level: Option<String>) -> Result<(), String> {
+    let shown = repo.zip(level);
     let issues = format!("{org}/{REQUESTS}");
     let issue = github::get(&format!("repos/{issues}/issues/{number}"))?;
     if issue["state"] != "open" { return Err("this request is already closed".into()) }
     let login = issue["user"]["login"].as_str().ok_or("request has no author")?;
     let (repo, level) = parse_request(issue["body"].as_str().unwrap_or_default()).ok_or("request body is not readable")?;
+    // the author can edit the request after the page read it: what is granted is what the owner was shown
+    if shown.as_ref().is_some_and(|s| *s != (repo.clone(), level.clone())) {
+        return Err("This request was changed after the page read it. Reload and read it again before approving.".into())
+    }
     let rank = if level == "write" { 2 } else { 1 };
-    let team = org_access(&github::graphql(&org_query(&org))?).teams.into_iter()
-        .find(|t| t.slug != "core" && t.repos.len() == 1 && t.repos[0] == (repo.clone(), rank));
+    let access = org_access(&github::graphql(&org_query(&org))?);
+    // a team is for members: putting anyone else on one invites them into the organisation
+    let member = access.people.contains_key(login);
+    let team = access.teams.into_iter()
+        .find(|t| member && t.slug != "core" && t.repos.len() == 1 && t.repos[0] == (repo.clone(), rank));
     match team {
         Some(t) => github::send("PUT", &format!("orgs/{org}/teams/{}/memberships/{login}", t.slug), Some(serde_json::json!({ "role": "member" })))?,
         None => github::send("PUT", &format!("repos/{org}/{repo}/collaborators/{login}"),

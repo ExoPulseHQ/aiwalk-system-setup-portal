@@ -15,8 +15,10 @@ function silhouette(p) {
     ? [7, 13, 19].map(r => `<path d="M ${48 - r * .707} ${106 - r * .707} A ${r} ${r} 0 0 1 ${48 + r * .707} ${106 - r * .707}" fill="none" stroke="currentColor" stroke-opacity=".7" stroke-width="2"/>`).join("") + `<circle cx="48" cy="106" r="2" fill="currentColor"/>`
     : `<line x1="48" y1="${y + bh + 2}" x2="48" y2="110" stroke="currentColor" stroke-opacity=".7" stroke-width="2"/><rect x="44" y="${y + bh + 2}" width="8" height="6" fill="currentColor" fill-opacity=".7"/>`;
   const box = el("div", "phone-art");
-  box.innerHTML = `<svg viewBox="0 0 96 112" width="72" height="84" role="img" aria-label="${p.model}, ${p.desk_on ? "desktop" : "phone"} mode, ${p.wireless ? "Wi-Fi" : "USB"}">
+  box.innerHTML = `<svg viewBox="0 0 96 112" width="72" height="84" role="img">
     <rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="7" fill-opacity=".18" stroke-width="2" style="fill:${c};stroke:${c}"/>${desk}${link}</svg>`;
+  // the model's name comes from the phone: as an attribute set by name, never as markup
+  box.firstElementChild.setAttribute("aria-label", `${p.model}, ${p.desk_on ? "desktop" : "phone"} mode, ${p.wireless ? "Wi-Fi" : "USB"}`);
   return box;
 }
 

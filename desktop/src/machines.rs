@@ -165,9 +165,16 @@ pub fn ssh_status(machines: Vec<Machine>) -> &'static str {
 pub fn ssh_setup(machines: Vec<Machine>) -> Result<String, String> {
     let app = app().ok_or("This app's own path cannot be written into an ssh config")?;
     let file = ssh_config();
-    let old = std::fs::read_to_string(&file).unwrap_or_default();
+    // the person's own file is never replaced unread: one that cannot be read, or is not text this can edit, is left
+    // exactly as it is. The copy kept beside it is made from the bytes as they are.
+    let raw = match std::fs::read(&file) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(e) => return Err(format!("{} could not be read ({e}); nothing was changed", file.display())),
+    };
+    let old = String::from_utf8(raw.clone()).map_err(|_| format!("{} is not plain UTF-8 text, so the app will not edit it; nothing was changed. Save it as UTF-8 and try again.", file.display()))?;
     std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
-    if !old.is_empty() { std::fs::write(file.with_extension("bak"), &old).map_err(|e| e.to_string())?; }
+    if !raw.is_empty() { std::fs::write(file.with_extension("bak"), &raw).map_err(|e| e.to_string())?; }
     std::fs::write(&file, with_ssh_block(&old, &ssh_block(&machines, &app))).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)); }

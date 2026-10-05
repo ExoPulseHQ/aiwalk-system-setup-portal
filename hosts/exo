@@ -126,7 +126,9 @@ def where(path):
     top = git(path, "rev-parse", "--show-toplevel")
     if not top:
         raise Refuse(f"{path} is not inside a git worktree")
-    repo = os.path.dirname(git(path, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    # not --path-format=absolute: git before 2.31 (Ubuntu 20.04) prints the flag back as if it were a path
+    common = git(path, "rev-parse", "--git-common-dir")
+    repo = os.path.dirname(os.path.abspath(os.path.join(path, common)))
     return repo, git(path, "symbolic-ref", "--short", "-q", "HEAD"), default_branch(repo), os.path.realpath(top) == os.path.realpath(repo), top
 
 

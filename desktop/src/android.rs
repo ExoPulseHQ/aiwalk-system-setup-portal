@@ -72,8 +72,8 @@ pub struct Phone {
 /// One round trip for everything that changes.
 const PROBE: &str = "getprop ro.product.model; getprop {P_FIRST}; settings get global overlay_display_devices; \
     settings get secure enabled_accessibility_services; pm path {PD} >/dev/null 2>&1 && echo yes || echo no; \
-    pidof shizuku_server >/dev/null && echo yes || echo no; ip -4 addr show wlan0 | grep -o 'inet [0-9.]*' | cut -d' ' -f2; \
-    sha256sum $(pm path {PD} 2>/dev/null | head -1 | cut -d: -f2) 2>/dev/null | cut -c1-64";
+    pidof shizuku_server >/dev/null && echo yes || echo no; echo \"$(ip -4 addr show wlan0 2>/dev/null | grep -o 'inet [0-9.]*' | cut -d' ' -f2 | head -1)\"; \
+    p=$(pm path {PD} 2>/dev/null | head -1 | cut -d: -f2); echo \"$([ -n \"$p\" ] && sha256sum \"$p\" 2>/dev/null | cut -c1-64)\"";
 
 /// Reads the probe's 8 lines; `bundled` is the SHA-256 of the PhoneDesk APK this app ships.
 pub fn parse_probe(serial: &str, out: &str, root: bool, bundled: &str) -> Phone {

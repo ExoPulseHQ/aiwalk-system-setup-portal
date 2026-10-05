@@ -16,7 +16,7 @@ MAX=8   # ponytail: fixed cap per machine, so desktops cannot eat a training run
 running() { vncserver -list 2>/dev/null | awk '$1 ~ /^:?[0-9]+$/ { sub(/^:/, "", $1); print ":" $1 }' | sort -t: -k2 -n; }
 
 # another X server (the machine's own screen, often :0 to :2) owns that display number
-taken() { ss -xl 2>/dev/null | grep -q "@/tmp/.X11-unix/X$1 "; }
+taken() { local all; all=$(ss -xl 2>/dev/null) || true; grep -q "@/tmp/.X11-unix/X$1 " <<<"$all"; }
 
 case "${1:-}" in
   list) running ;;

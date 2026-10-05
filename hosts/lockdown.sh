@@ -32,10 +32,10 @@ PEERS=$(for ip in $MACHINES; do case " $SELF " in *" $ip "*) ;; *) echo -n "$ip 
 # every rule that opens a port to everyone: "[ n] 2222/tcp   ALLOW IN   Anywhere" and their v6 twins. A list of
 # known ports left the unknown ones open (2222 on goat, 8080 on monkey); behind the tunnel nothing needs to be.
 open_rules() {
-  ufw status numbered | awk -F'[][]' '/ALLOW IN/ && /Anywhere/ && !/ from / { print $2 + 0 }'
+  ufw status numbered | awk -F'[][]' '/ALLOW IN +Anywhere( \(v6\))? *(#.*)?$/ { print $2 + 0 }'
 }
 open_names() {
-  ufw status numbered | awk -F'[][]' '/ALLOW IN/ && /Anywhere/ && !/ from / { split($3, f, " "); print f[1] }' | sort -u | paste -sd' '
+  ufw status numbered | awk -F'[][]' '/ALLOW IN +Anywhere( \(v6\))? *(#.*)?$/ { split($3, f, " "); print f[1] }' | sort -u | paste -sd' '
 }
 
 echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered | sed '1,4d'

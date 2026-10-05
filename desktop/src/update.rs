@@ -44,8 +44,15 @@ pub fn update_state() -> serde_json::Value {
 #[tauri::command(async)]
 pub fn update_install(app: tauri::AppHandle, tag: String) -> Result<String, String> {
     let pattern = pattern().ok_or("This copy was not installed from a release; install the new one from the Releases page")?;
-    let dir = std::env::temp_dir().join(format!("aiwalk-setup-{tag}"));
-    let _ = std::fs::remove_dir_all(&dir);
+    // a new folder only this person can open: in the shared temp folder a name someone else could make first would
+    // let them swap the installer before it is run (on Linux, as root)
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("aiwalk-setup-{tag}-{}-{nanos}", std::process::id()));
+    #[allow(unused_mut)]
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    { use std::os::unix::fs::DirBuilderExt; b.mode(0o700); }
+    b.create(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let file = crate::github::download_asset(REPO, &tag, pattern, &dir).map_err(|e| format!("Could not download {tag}: {e}"))?;
     let f = file.to_string_lossy().into_owned();
     match kind() {

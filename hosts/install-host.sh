@@ -14,13 +14,28 @@ TOKEN=$(cat)
 HOME_DIR=$(getent passwd "$ACCOUNT" | cut -d: -f6)
 
 install -m 755 "$DIR/cloudflared" /usr/local/bin/cloudflared
-if [ -f /etc/systemd/system/cloudflared.service ]; then
+UNIT=/etc/systemd/system/cloudflared.service
+if [ -f "$UNIT" ]; then
+  # not touched on a machine already behind the tunnel: restarting cloudflared cuts the very connection this runs
+  # over, before it could put the old unit back. Its token is moved out of the command line by hand, at the screen.
   echo "cloudflared service already installed; left as it is"
+  grep -q -- ' --token ' "$UNIT" && echo "NOTE: the tunnel token is in cloudflared's command line here, readable by every account (ps)"
 else
   /usr/local/bin/cloudflared service install "$TOKEN"
+  # the token out of the command line, where every account on the machine could read it (ps), into a file only root
+  # reads. The old unit comes back if cloudflared does not start with the new one: the tunnel is the only way in.
+  if grep -q -- ' --token ' "$UNIT"; then
+    T=$(sed -n 's/.* --token \([^ ]*\).*/\1/p' "$UNIT" | head -1)
+    install -d -m 700 /etc/cloudflared
+    ( umask 077; printf 'TUNNEL_TOKEN=%s\n' "$T" > /etc/cloudflared/token.env )
+    cp -p "$UNIT" "$UNIT.bak"
+    sed -i -e 's/ --token [^ ]*//' -e '/^\[Service\]/a EnvironmentFile=/etc/cloudflared/token.env' "$UNIT"
+    systemctl daemon-reload; systemctl restart cloudflared; sleep 5
+    if systemctl is-active --quiet cloudflared; then rm -f "$UNIT.bak"; echo "tunnel token moved out of the command line"
+    else mv "$UNIT.bak" "$UNIT"; systemctl daemon-reload; systemctl restart cloudflared; echo "WARNING: cloudflared did not start from the token file; the old unit is back and the token is still in its command line"; fi
+  fi
 fi
-chmod 600 /etc/systemd/system/cloudflared.service   # the token is inside; 644 by default
-
+chmod 600 "$UNIT"
 install -o "$ACCOUNT" -g "$ACCOUNT" -m 755 -D "$DIR/exo-desktop" "$HOME_DIR/.local/bin/exo-desktop"
 install -o "$ACCOUNT" -g "$ACCOUNT" -m 755 -D "$DIR/exo-status.py" "$HOME_DIR/.local/bin/exo-status.py"
 # the machine's side of the vault plugin's Sync code page; python3 >= 3.8 and git are all it needs

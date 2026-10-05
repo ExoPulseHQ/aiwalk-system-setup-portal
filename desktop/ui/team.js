@@ -122,6 +122,9 @@ function badge(s) {
 // here next to step 1, shows whom Cloudflare knows, and is redone whenever the GitHub account changes.
 function labLine(s) {
   const tunnels = myTunnels(s);
+  // let in machine by machine (an intern, a guest): machines are asked without the browser, and one that says no
+  // stays without a sign-in, so nothing is retried on its own for it
+  const quietOne = !!s.guest || outsider((s.vaults.find(v => v.access) || {}).access, s.user);
   const line = el("div", "claude-line");
   // shown with no machine to sign in to as well: the sign-in is then how Cloudflare gets to know the person, so an
   // owner can let them in without asking for their email
@@ -140,7 +143,7 @@ function labLine(s) {
     show(0, tunnels.length, "");
     state.className = "method m-off"; state.replaceChildren(ring, count);
     const stop = await listen("lab-progress", e => show(...e.payload));
-    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: outsider((s.vaults.find(v => v.access) || {}).access, s.user) })); }
+    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: quietOne })); }
     catch (e) { msg.textContent = e; }
     stop();
     window.dispatchEvent(new Event("lab-signed-in"));
@@ -172,7 +175,7 @@ function labLine(s) {
       return;
     }
     // a machine added or split off since the last sign-in: the team sign-in covers it without the browser
-    if (id.missing && !topped) { topped = true; const b = el("button", "small", "Finish signing in"); b.dataset.primary = 1; line.append(b); return step2(b); }
+    if (id.missing && !topped && !quietOne) { topped = true; const b = el("button", "small", "Finish signing in"); b.dataset.primary = 1; line.append(b); return step2(b); }
     state.className = "method m-key"; stateText(state, "check", id.email, "Signed in as ");
     todo("Machines", false);
     msg.textContent = `until ${until}, ` + (id.matches ? `same person as @${s.user}` : `not checked against @${s.user}: this GitHub sign-in predates the email check, sign out and in once`);
@@ -295,6 +298,7 @@ async function accessDialog(a, repo) {
     return r;
   };
   Object.entries(a.people).sort(([, x], [, y]) => x.name.localeCompare(y.name)).forEach(([login, p]) => {
+    if (p.outside) return;   // interns have their own rows below; a member's row could put them on a team
     if (p.grants === null) {
       const r = el("div", "item"), text = el("div", "text");
       text.append(el("div", "title", p.name === login ? login : p.name), el("div", "sub", login));
@@ -688,7 +692,7 @@ function requestsSection(a) {
         e.stopPropagation();
         const others = [...b.parentElement.querySelectorAll("button")].filter(x => x !== b);
         others.forEach(x => x.disabled = true);
-        try { await working(b, cmd === "approve_request" ? "Approving" : "Declining", () => invoke(cmd, { org: a.org, number: r.number })); toast(cmd === "approve_request" ? `${r.author} now has ${r.level} on ${r.repo}` : "Request declined"); await loadTeam(); }
+        try { await working(b, cmd === "approve_request" ? "Approving" : "Declining", () => invoke(cmd, cmd === "approve_request" ? { org: a.org, number: r.number, repo: r.repo, level: r.level } : { org: a.org, number: r.number })); toast(cmd === "approve_request" ? `${r.author} now has ${r.level} on ${r.repo}` : "Request declined"); await loadTeam(); }
         catch (err) { msg.textContent = `GitHub refused: ${err}`; others.forEach(x => x.disabled = false); }
       };
       return b;
@@ -1214,7 +1218,7 @@ function prSection(org, user, machines) {
         const p = { login: l, name: name(l), why: [g], rm };
         seen.set(l, p); people.push(p);
       }));
-      const others = Object.keys(org.people).filter(l => !r.merge.includes(l)).sort((a, b) => name(a).localeCompare(name(b)));
+      const others = Object.keys(org.people).filter(l => !org.people[l].outside && !r.merge.includes(l)).sort((a, b) => name(a).localeCompare(name(b)));
       let pick = null;
       if (owner && others.length) {
         pick = el("select");
@@ -1259,7 +1263,7 @@ async function loadTeam(viewAs) {
   // owners get a page of their own for the organisation; its entry in the sidebar carries the count of open requests
   const peopleNav = document.querySelector('nav [data-page="people"]');
   peopleNav.hidden = !org;   // everyone in the organisation sees People; only owners get the count of open requests
-  if (owner && org) navLabel(peopleNav, "People", org.requests.length ? String(org.requests.length) : null);
+  navLabel(peopleNav, "People", owner && org && org.requests.length ? String(org.requests.length) : null);
   // a guest: no documents to show, the machines are on their own page
   if (guestOnly(s)) {
     const toMachines = el("button", null, "Go to Machines"); toMachines.onclick = () => go("machines");
@@ -1448,6 +1452,7 @@ function guestMachinesPage(page, s) {
     askedMine = s.user;
     invoke("my_machines").then(found => {
       const have = keptMachines(s.user), add = found.filter(([h]) => !have.some(([k]) => k === h));
+      if (!found.length) askedMine = "";   // nothing yet (not signed in to Cloudflare, or let in nowhere): ask again later
       if (!add.length) return;
       keepMachines(s.user, [...have, ...add]);
       toast(`${add.map(([h]) => h).join(", ")} added: an owner let you in`);
@@ -1514,7 +1519,10 @@ function cloudflareSection() {
     const st = await invoke("cf_state");
     if (st.connected) {
       const forget = iconButton("unplug", "Disconnect");
-      forget.onclick = async () => { await invoke("cf_forget"); paint(); };
+      forget.onclick = async () => {
+        if (await ask("Disconnect Cloudflare on this computer?", "The token and the team key are forgotten here. The token cannot be shown again: without a shared copy, a new one has to be made in Cloudflare.", [["cancel", "Cancel"], ["go", "Disconnect", true]]) !== "go") return;
+        await invoke("cf_forget"); paint();
+      };
       const renew = el("button", "small ghost", "Renew");
       renew.dataset.tip = "Cloudflare gives the token a new value; the old one stops working at once";
       renew.onclick = async () => {
@@ -1603,7 +1611,7 @@ function connectRule(host, machines, org) {
 // Whether GitHub teams rule `user` out of `host`. Teams judge members only: someone who is not in the organisation
 // (an intern) is let in to machines one by one by email, which Cloudflare alone knows, so they are never ruled out
 // here; their sign-in asks each machine quietly instead.
-const outsider = (org, user) => !!org && !org.people[user];
+const outsider = (org, user) => !!org && (!org.people[user] || !!org.people[user].outside);
 const ruledOut = (org, host, machines, user) => !!org && !outsider(org, user) && !connectRule(host, machines, org).may(user);
 
 // A guest's machines: the names an owner gave them, kept on this computer per GitHub account in localStorage
@@ -1707,6 +1715,8 @@ function whoCanConnect(host, machines, org, user, guestsP) {
       k.append(info(why));
       const v = via(user);
       if (v.length || extra.has(user)) box.append(el("p", "sub", v.length ? `You can connect, through ${v.join(", ")}.` : "You can connect: an owner added you."));
+      // someone who is not a member is let in by email, which only Cloudflare knows: the row's own state says it
+      else if (outsider(org, user)) box.append(el("p", "sub", "An owner lets you in to a machine by your email. The mark on its row says whether this one does."));
       else { const p = el("p", "ask-line"); p.append(icon("lock"), "You can't connect to this machine. Ask an owner: write access to one of its code repos, or an extra place here."); box.append(p); }
       return;
     }
@@ -1718,8 +1728,10 @@ function whoCanConnect(host, machines, org, user, guestsP) {
         rm: extra.has(l) ? { tip: `Remove ${l}'s ${via(l).length ? "extra " : ""}access to ${host}`, run: b => change(l, false, b) } : null }));
     // people let in by email: the address is all Cloudflare knows, so it is what the chip shows
     (g.guests[host] || []).forEach(e => people.push({ login: e.length > 26 ? `${e.slice(0, 25)}…` : e, name: e, why: [GUEST],
-      rm: { tip: `Remove ${e}'s access to ${host}`, run: b => changeGuest(e, false, b) } }));
-    const others = Object.keys(org.people).filter(l => !via(l).length && !extra.has(l)).sort((a, b) => name(a).localeCompare(name(b)));
+      rm: { tip: `Remove ${e}'s access to ${host}`, run: async b => {
+        if (await ask(`Take ${e} out of ${host}?`, "Their Cloudflare sign-in is ended on every machine at once; they sign in again for the ones they keep.", [["cancel", "Cancel"], ["go", "Take out", true]]) === "go") changeGuest(e, false, b);
+      } } }));
+    const others = Object.keys(org.people).filter(l => !org.people[l].outside && !via(l).length && !extra.has(l)).sort((a, b) => name(a).localeCompare(name(b)));
     let pick = null;
     if (others.length || g.interns.length || g.cf) {
       pick = el("select");

@@ -25,14 +25,18 @@ cat > /usr/local/bin/exo-principal <<'SH'
 # signed a certificate for, and Cloudflare signs only for people this machine's Access policy lets through.
 printf "%s\n" "${1%%@*}"
 SH
-chown root:root /usr/local/bin/exo-principal /etc/ssh/exo_access_ca.pub
-chmod 755 /usr/local/bin/exo-principal; chmod 644 /etc/ssh/exo_access_ca.pub
+# no principal at all, for every other account: without this, sshd's own rule lets a certificate in to the account
+# its principal names, and the principal is the part of the person's email before "@" (root@..., eddlai@...)
+: > /etc/ssh/exo_no_principals
+chown root:root /usr/local/bin/exo-principal /etc/ssh/exo_access_ca.pub /etc/ssh/exo_no_principals
+chmod 755 /usr/local/bin/exo-principal; chmod 644 /etc/ssh/exo_access_ca.pub /etc/ssh/exo_no_principals
 
 [ -f "$CONF" ] && cp -p "$CONF" "$CONF.bak"
 cat > "$CONF" <<CONF
 # aIwalk System Setup: people sign in to the shared account with a short-lived certificate from this machine's
 # Cloudflare Access application, so the log names the person. Keys in authorized_keys keep working beside it.
 TrustedUserCAKeys /etc/ssh/exo_access_ca.pub
+AuthorizedPrincipalsFile /etc/ssh/exo_no_principals
 Match User $ACCOUNT
     AuthorizedPrincipalsCommand /usr/local/bin/exo-principal %i
     AuthorizedPrincipalsCommandUser nobody
@@ -43,5 +47,9 @@ if ! sshd -t; then
   echo "sshd refused the new configuration; the old one is back and nothing was reloaded."; exit 1
 fi
 rm -f "$CONF.bak"
+# sshd keeps the first value it reads: say so when another file's AuthorizedPrincipalsFile wins over the empty one
+T=$(sshd -T -C "user=root,host=localhost,addr=127.0.0.1" 2>/dev/null) || true
+grep -qi '^authorizedprincipalsfile /etc/ssh/exo_no_principals' <<<"$T" \
+  || echo "WARNING: another setting names AuthorizedPrincipalsFile first, so a certificate could still open an account other than $ACCOUNT. Check: sshd -T | grep -i principals"
 systemctl reload ssh 2>/dev/null || systemctl reload sshd
 echo "Done: certificates signed by this machine's Cloudflare application are accepted for $ACCOUNT."
