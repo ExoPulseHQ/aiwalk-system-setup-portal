@@ -390,7 +390,11 @@ pub fn close_all() {
 /// Mac). RDP: Windows' own Remote Desktop; elsewhere whatever opens rdp:// (Windows App on a Mac, Remmina on Linux).
 #[tauri::command]
 pub fn open_viewer(port: u16, kind: Option<String>) {
-    if kind.as_deref() != Some("rdp") { return crate::open_url(&format!("vnc://127.0.0.1:{port}")) }
+    // macOS Screen Sharing cannot connect to a desktop that asks for no password at all, so the desktops also offer
+    // a fixed one (hosts/exo-desktop) and the Mac is handed it; it is no secret, the SSH connection is the lock
+    if kind.as_deref() != Some("rdp") {
+        return crate::open_url(&format!("vnc://{}127.0.0.1:{port}", if cfg!(target_os = "macos") { ":aiwalk@" } else { "" }))
+    }
     if cfg!(windows) { let _ = crate::cmd("mstsc").arg(format!("/v:127.0.0.1:{port}")).spawn(); }
     else if cfg!(target_os = "macos") { crate::open_url(&format!("rdp://full%20address=s:127.0.0.1:{port}")) }
     else { crate::open_url(&format!("rdp://127.0.0.1:{port}")) }
