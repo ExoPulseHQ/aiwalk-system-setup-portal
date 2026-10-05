@@ -580,6 +580,13 @@ fn main() {
         println!("{}", serde_json::to_string_pretty(&read_access(&|_, _, _| {})).unwrap());
         return;
     }
+    // every command and flag has returned by here; anything still on the command line is a word this program does
+    // not know (`aiwalk-setup help`), and opening the window for it left a shell hanging. macOS passes -psn_… to
+    // an app started from Finder.
+    if let Some(word) = std::env::args().nth(1).filter(|a| !a.starts_with("-psn")) {
+        eprintln!("aiwalk-setup: unknown command {word}\ncommands: vault, session, pty, deck, hook, guard, github token, git-credential (see `aiwalk-setup --can`); no argument opens the app");
+        std::process::exit(2);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(handlers())

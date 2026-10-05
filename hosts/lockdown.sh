@@ -3,13 +3,18 @@
 # other services listen on 127.0.0.1 and are forwarded over SSH through the tunnel. Registered lab machines may still
 # SSH to each other directly (the admins' fallback when Cloudflare is down).
 #
-#   sudo bash lockdown.sh [account]  prints the plan, asks, then applies and checks; account owns the desktops (ntk)
+#   sudo bash lockdown.sh [account] [--yes]   prints the plan, asks, then applies and checks; account owns the
+#                                             desktops (ntk). --yes applies without asking, for a scripted run:
+#                                             an answer piped on stdin can be eaten by sudo's password prompt.
+#   Exit: 0 applied, 3 nothing changed (answered no), 1 could not start.
 #
 # Registered machines are the lab hosts in System/vault_rules.json `machines`; their addresses come from
 # Secrets/Compute_Repo_Access_Registry.md §1b. This machine's own address is left out automatically.
 set -euo pipefail
 MACHINES="120.126.83.20 120.126.83.112 120.126.83.1 120.126.83.67 120.126.83.76 120.126.83.143 120.126.83.28"
-VNC_USER=${1:-ntk}
+YES=no; ACCOUNT_ARG=
+for a in "$@"; do case "$a" in --yes) YES=yes ;; -*) echo "unknown option $a"; exit 1 ;; *) ACCOUNT_ARG=$a ;; esac; done
+VNC_USER=${ACCOUNT_ARG:-ntk}
 VNC_CONFIG=/home/$VNC_USER/.vnc/config
 VNC_SERVICE=gpu-free-vnc.service
 VNC_LAUNCHER=/usr/local/bin/gpu-free-vnc   # starts the boot-time desktops; its own "-localhost no" beats ~/.vnc/config
@@ -55,8 +60,8 @@ echo "    The firewall is off now, so its stored rules cannot be listed yet; it 
 echo "    opens a port to everyone is then removed (they are printed as they go)."
 fi
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
-read -rp "Apply? [y/N] " answer
-[ "$answer" = y ] || { echo "Nothing changed."; exit 0; }
+if [ $YES = yes ]; then answer=y; else read -rp "Apply? [y/N] " answer; fi
+[ "$answer" = y ] || { echo "Nothing changed."; exit 3; }
 
 chmod 600 /etc/systemd/system/cloudflared.service
 systemctl daemon-reload
