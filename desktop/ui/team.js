@@ -178,6 +178,9 @@ function labLine(s) {
     if (id.missing && !topped && !quietOne) { topped = true; const b = el("button", "small", "Finish signing in"); b.dataset.primary = 1; line.append(b); return step2(b); }
     state.className = "method m-key"; stateText(state, "check", id.email, "Signed in as ");
     todo("Machines", false);
+    if (quietOne) {   // the way to ask the machines again after an owner lets this person in to one more
+      const b = el("button", "small", "Check my machines"); b.onclick = () => step2(b); line.append(b);
+    }
     msg.textContent = `until ${until}, ` + (id.matches ? `same person as @${s.user}` : `not checked against @${s.user}: this GitHub sign-in predates the email check, sign out and in once`);
   };
   paint();
@@ -500,6 +503,9 @@ function machinesSection(machines, org, user, guest) {
     Object.entries(pills).forEach(([h, p]) => { look[h] = "checking"; p.className = "perm checking"; p.removeAttribute("tabindex"); delete p.dataset.tip; p.replaceChildren(el("span", "spinner")); });
     paintOpening();
     const targets = [...new Map(hosts.map(m => [way(m).host, way(m).tunnel || null])).entries()];
+    // someone let in machine by machine: an owner may have let them in since the last look, so each machine is asked
+    // again (without the browser) before its state is read; without this a new permission never showed
+    if (outsider(org, user)) await invoke("access_login", { tunnels: targets.map(([, t]) => t).filter(Boolean), quiet: true }).catch(() => {});
     const state = await working(again, "Checking", () => invoke("reachable", { machines: targets }));
     for (const h of Object.keys(state)) if (live.has(h)) state[h] = "up";
     lastState = state;
