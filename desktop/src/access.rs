@@ -354,6 +354,14 @@ fn exchange(host: &str, app: &App) -> Result<(), String> {
 
 /// Makes sure this computer holds a token for `host`: the one kept, else the team sign-in traded for one, else the
 /// browser. Ok(true) when a browser was needed.
+/// `sign_in` without ever opening the browser: whether this computer holds, or the team sign-in kept here can be
+/// traded for, `host`'s token. For someone let in to machines one by one (an intern, a guest), where asking the
+/// browser about a machine that does not let them in would only show a refusal.
+pub fn sign_in_quiet(host: &str) -> bool {
+    let Ok(host) = team_host(host) else { return false };
+    token(&host).is_ok() || app_info(&host).is_ok_and(|a| exchange(&host, &a).is_ok())
+}
+
 pub fn sign_in(host: &str) -> Result<bool, String> {
     let host = team_host(host)?;
     if token(&host).is_ok() { return Ok(false) }

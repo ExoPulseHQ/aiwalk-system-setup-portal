@@ -140,7 +140,7 @@ function labLine(s) {
     show(0, tunnels.length, "");
     state.className = "method m-off"; state.replaceChildren(ring, count);
     const stop = await listen("lab-progress", e => show(...e.payload));
-    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels })); }
+    try { await working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: outsider((s.vaults.find(v => v.access) || {}).access, s.user) })); }
     catch (e) { msg.textContent = e; }
     stop();
     window.dispatchEvent(new Event("lab-signed-in"));
@@ -499,7 +499,8 @@ function machinesSection(machines, org, user, guest) {
     const state = await working(again, "Checking", () => invoke("reachable", { machines: targets }));
     for (const h of Object.keys(state)) if (live.has(h)) state[h] = "up";
     lastState = state;
-    hosts.forEach(m => setLook(m.host, org && !connectRule(way(m).host, machines, org).may(user) ? "none" : state[way(m).host]));
+    // for someone who is not a member, a machine with no sign-in after signing in is one that does not let them in
+    hosts.forEach(m => setLook(m.host, ruledOut(org, way(m).host, machines, user) || (outsider(org, user) && state[way(m).host] === "sign-in") ? "none" : state[way(m).host]));
     paintOpening();
     await showHelp(state);
   };
@@ -1326,7 +1327,7 @@ function paintTeamOpening() {
       : ["ok", "Signed in as a guest.", detail, items]);
   }
   const org = (s.vaults.find(v => v.access) || {}).access, machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
-  const reach = [...new Set(machines.filter(m => m.tunnel).map(m => m.host))].filter(h => !org || connectRule(h, machines, org).may(s.user));
+  const reach = [...new Set(machines.filter(m => m.tunnel).map(m => m.host))].filter(h => !ruledOut(org, h, machines, s.user));
   const here = s.vaults.filter(v => local.copies[v.repo]).length;
   const detail = [`Signed in as ${s.user}. ${plural(here, "vault")} on this computer, ${plural(reach.length, "machine")} within reach.`];
   const items = [{ icon: "check", chips: [s.user], tip: `Signed in as ${s.user}` },
@@ -1581,6 +1582,12 @@ function connectRule(host, machines, org) {
   return { teamsFor, team, via, extra, may: login => via(login).length > 0 || extra(login) };
 }
 
+// Whether GitHub teams rule `user` out of `host`. Teams judge members only: someone who is not in the organisation
+// (an intern) is let in to machines one by one by email, which Cloudflare alone knows, so they are never ruled out
+// here; their sign-in asks each machine quietly instead.
+const outsider = (org, user) => !!org && !org.people[user];
+const ruledOut = (org, host, machines, user) => !!org && !outsider(org, user) && !connectRule(host, machines, org).may(user);
+
 // A guest's machines: the names an owner gave them, kept on this computer per GitHub account in localStorage
 // ("guest-machines:<login>", a JSON list of [name, tunnel]). Nothing else lists them: a guest reads no vault.
 const keptKey = login => `guest-machines:${login}`;
@@ -1602,7 +1609,7 @@ function myTunnels(s) {
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   const org = (s.vaults.find(v => v.access) || {}).access;
   const hosts = [...new Map(machines.filter(m => m.tunnel).map(m => [m.host, m.tunnel])).entries()];
-  return hosts.filter(([h]) => !org || connectRule(h, machines, org).may(s.user)).map(([, t]) => t);
+  return hosts.filter(([h]) => !ruledOut(org, h, machines, s.user)).map(([, t]) => t);
 }
 
 // Owners: {cf, guests: {host: [email]}, interns}. Guests and interns need the Cloudflare token on this computer;
@@ -1653,7 +1660,7 @@ async function askGuest(host) {
 // After a guest is let in: what to send them, with a Copy button. The app sends no email.
 function tellGuest(who, host, intern) {
   // an intern has accepted already and reads the shared notes, so the machine is on their Machines page by itself
-  const text = intern ? `${host} is now on the Machines page of aIwalk System Setup. Sign in there when it asks.`
+  const text = intern ? `In aIwalk System Setup, finish signing in on Team access, then open Machines: ${host} is there. If it is not listed, type ${host} under Add a machine.`
     : `Accept the GitHub invitation, install aIwalk System Setup, sign in with GitHub, open Machines, add the machine named ${host}.`;
   const box = el("p"), copy = iconButton("copy", "Copy the instructions", "small ghost", true);
   copy.style.marginLeft = "8px";

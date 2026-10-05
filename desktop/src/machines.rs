@@ -78,7 +78,7 @@ pub fn find_machine(name: String) -> Result<String, String> {
 
 /// Signs this computer in to Cloudflare Access for `tunnel`: a browser opens for the GitHub sign-in.
 #[tauri::command(async)]
-pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>) -> Result<String, String> {
+pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<bool>) -> Result<String, String> {
     use tauri::Emitter;
     let name = |t: &str| t.split('.').next().unwrap_or(t).trim_start_matches("ssh-").to_string();
     // "lab-progress": (machines done, machines in all, the one being signed in to now)
@@ -90,6 +90,19 @@ pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>) -> Result<Strin
     // first of all, and for someone no machine lets in yet the only step: Cloudflare gets to know the person
     let enrolled = crate::access::sign_in(crate::access::ENROLL);
     if tunnels.is_empty() { return enrolled.map(|_| "Signed in: an owner can now let you in to a machine".into()) }
+    // someone who is not a member: which machines let them in is known to Cloudflare alone, so each is asked without
+    // the browser, and one that says no is simply not theirs
+    if quiet == Some(true) {
+        enrolled?;
+        let n = tunnels.iter().enumerate().filter(|(i, t)| {
+            tell(*i, &name(t));
+            let ok = crate::access::sign_in_quiet(t);
+            if ok { crate::access::sign_in_quiet(&t.replacen("ssh-", "status-", 1)); }
+            ok
+        }).count();
+        tell(tunnels.len(), "");
+        return Ok(if n == 0 { "Signed in. No machine lets you in yet: ask an owner".into() } else { format!("Signed in: {n} of the machines let you in") });
+    }
     for (i, tunnel) in tunnels.iter().enumerate() {
         tell(i, &name(tunnel));
         if crate::access::sign_in(tunnel).is_err() { failed.push(name(tunnel)); continue }
