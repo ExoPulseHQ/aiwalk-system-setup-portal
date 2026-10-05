@@ -123,7 +123,8 @@ function badge(s) {
 function labLine(s) {
   const tunnels = myTunnels(s);
   const line = el("div", "claude-line");
-  if (!tunnels.length) return line;
+  // shown with no machine to sign in to as well: the sign-in is then how Cloudflare gets to know the person, so an
+  // owner can let them in without asking for their email
   let topped = false;
   const state = el("span", "method m-off"), msg = el("span", "sub");
   line.append(lineLabel("Machines", "server"), state, msg);

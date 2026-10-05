@@ -15,6 +15,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ponytail: one team; move both to vault_rules.json when a second Access organisation appears
 pub(crate) const ZONE: &str = ".aiwalkcorp.com";
+/// The Access application with no machine behind it, open to anyone who signs in with GitHub. Signing in to it is
+/// how Cloudflare comes to know a person (their email, their GitHub number) before any machine lets them in, so an
+/// owner's app can read the address a machine will know them by instead of asking for it.
+pub(crate) const ENROLL: &str = "enroll.aiwalkcorp.com";
 const TEAM: &str = "aiwalkcorp.cloudflareaccess.com";
 
 fn dir() -> PathBuf { home().join(".cloudflared") }

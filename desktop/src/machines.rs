@@ -87,6 +87,9 @@ pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>) -> Result<Strin
     // team sign-in it leaves here is traded for the others' tokens without one. Only machines the person may reach
     // are passed in: for any other, the browser would open on a refusal and this would wait.
     let mut failed = vec![];
+    // first of all, and for someone no machine lets in yet the only step: Cloudflare gets to know the person
+    let enrolled = crate::access::sign_in(crate::access::ENROLL);
+    if tunnels.is_empty() { return enrolled.map(|_| "Signed in: an owner can now let you in to a machine".into()) }
     for (i, tunnel) in tunnels.iter().enumerate() {
         tell(i, &name(tunnel));
         if crate::access::sign_in(tunnel).is_err() { failed.push(name(tunnel)); continue }
@@ -429,7 +432,7 @@ pub fn forget_access() {
 pub fn lab_identity(tunnels: Vec<String>) -> Option<serde_json::Value> {
     let tokens: Vec<Option<String>> = tunnels.iter().map(|t| crate::access::token(t).ok()).collect();
     let missing = tokens.iter().filter(|t| t.is_none()).count();
-    let jwt = tokens.into_iter().flatten().next()?;
+    let jwt = tokens.into_iter().flatten().next().or_else(|| crate::access::token(crate::access::ENROLL).ok())?;
     let payload = jwt.trim().split('.').nth(1)?;
     let claims: serde_json::Value = serde_json::from_slice(&base64url(payload)?).ok()?;
     let email = claims["email"].as_str().unwrap_or_default().to_lowercase();

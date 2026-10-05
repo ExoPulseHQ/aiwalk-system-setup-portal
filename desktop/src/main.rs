@@ -564,6 +564,11 @@ fn main() {
         match github::send(&a[0], &a[1], body) { Ok(v) => println!("{v}"), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }
         return;
     }
+    // --email-of LOGIN: the address a machine would know that GitHub account by (Cloudflare's, else the public one)
+    if let Some(i) = std::env::args().position(|a| a == "--email-of") {
+        match admin::public_email(std::env::args().nth(i + 1).expect("--email-of LOGIN")) { Some(e) => println!("{e}"), None => { eprintln!("not known"); std::process::exit(1) } }
+        return;
+    }
     // --people ORG: what the People list gets (members, invitations, interns); reads only
     if let Some(i) = std::env::args().position(|a| a == "--people") {
         match admin::org_people(std::env::args().nth(i + 1).expect("--people ORG")) { Ok(p) => println!("{}", serde_json::to_string_pretty(&p).unwrap()), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }

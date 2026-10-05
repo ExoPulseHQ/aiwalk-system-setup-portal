@@ -182,7 +182,21 @@ pub fn machine_guest(host: String, email: String, add: bool) -> Result<String, S
 /// The public email on `login`'s GitHub profile, to start from when asking for the one they sign in with.
 #[tauri::command(async)]
 pub fn public_email(login: String) -> Option<String> {
-    github::get(&format!("users/{login}")).ok()?["email"].as_str().map(String::from)
+    let user = github::get(&format!("users/{login}")).ok()?;
+    enrolled_email(user["id"].as_u64()?).or_else(|| user["email"].as_str().map(String::from))
+}
+
+/// The email Cloudflare Access knows the GitHub account numbered `github_id` by, once that person has signed in to
+/// any of the team's Access applications (access::ENROLL is the one everyone may). It is the very address a
+/// machine's email rule is matched against, so it cannot be the wrong one of their addresses.
+fn enrolled_email(github_id: u64) -> Option<String> {
+    // ponytail: one page of people (100) and one request each for their identity; keep a login -> email note on the
+    // application when the team outgrows that
+    let users = crate::cloudflare::api("GET", "access/users?per_page=100", None).ok()?;
+    users.as_array()?.iter().filter_map(|u| u["id"].as_str()).find_map(|id| {
+        let who = crate::cloudflare::api("GET", &format!("access/users/{id}/last_seen_identity"), None).ok()?;
+        (who["idp"]["type"] == "github" && who["id"].as_u64() == Some(github_id)).then(|| who["email"].as_str().map(str::to_lowercase))?
+    })
 }
 
 #[derive(Serialize)]
