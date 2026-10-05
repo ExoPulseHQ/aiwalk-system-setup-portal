@@ -189,6 +189,61 @@ pub fn public_email(login: String) -> Option<String> {
 /// The email Cloudflare Access knows the GitHub account numbered `github_id` by, once that person has signed in to
 /// any of the team's Access applications (access::ENROLL is the one everyone may). It is the very address a
 /// machine's email rule is matched against, so it cannot be the wrong one of their addresses.
+/// Everyone Cloudflare Access has seen sign in with GitHub: their GitHub number and the email it knows them by.
+fn enrolled() -> Vec<(u64, String)> {
+    let Ok(users) = crate::cloudflare::api("GET", "access/users?per_page=100", None) else { return vec![] };
+    users.as_array().into_iter().flatten().filter_map(|u| u["id"].as_str()).filter_map(|id| {
+        let who = crate::cloudflare::api("GET", &format!("access/users/{id}/last_seen_identity"), None).ok()?;
+        (who["idp"]["type"] == "github").then(|| Some((who["id"].as_u64()?, who["email"].as_str()?.to_lowercase())))?
+    }).collect()
+}
+
+/// The emails a host's allow policy keeps out whatever else lets them in (its `exclude` list).
+fn kept_out(policy: &serde_json::Value) -> Vec<String> {
+    policy["exclude"].as_array().into_iter().flatten().filter_map(|r| r["email"]["email"].as_str().map(str::to_lowercase)).collect()
+}
+
+/// Each host's members kept out one by one, as GitHub logins among `logins`. A member reaches a machine through a
+/// GitHub team, which a machine cannot take a single person out of; the policy's exclude list can, by the email
+/// Cloudflare knows them by. Nothing is looked up when no machine keeps anyone out, which is the usual case.
+#[tauri::command(async)]
+pub fn machine_blocks(hosts: Vec<String>, logins: Vec<String>) -> std::collections::BTreeMap<String, Vec<String>> {
+    let Ok(apps) = crate::cloudflare::api("GET", "access/apps", None) else { return Default::default() };
+    let out: Vec<(String, Vec<String>)> = apps.as_array().into_iter().flatten()
+        .filter_map(|a| { let h = a["name"].as_str().filter(|n| hosts.iter().any(|h| h == n))?; Some((h.to_string(), kept_out(allow_policy(a)?))) })
+        .filter(|(_, e)| !e.is_empty()).collect();
+    if out.is_empty() { return Default::default() }
+    let known = enrolled();
+    let who: Vec<(String, String)> = logins.iter().filter_map(|l| {
+        let id = github::get(&format!("users/{l}")).ok()?["id"].as_u64()?;
+        Some((l.clone(), known.iter().find(|(i, _)| *i == id)?.1.clone()))
+    }).collect();
+    out.into_iter().map(|(h, emails)| (h, who.iter().filter(|(_, e)| emails.contains(e)).map(|(l, _)| l.clone()).collect())).collect()
+}
+
+/// Keeps one member out of `host`, or lets them back in: an email rule in the exclude list of the host's allow
+/// policy. Their teams and every other machine are untouched. Keeping out also ends their Access sessions at once.
+#[tauri::command(async)]
+pub fn machine_block(host: String, login: String, add: bool) -> Result<String, String> {
+    let id = github::get(&format!("users/{login}"))?["id"].as_u64().ok_or("GitHub does not know that account")?;
+    let email = enrolled_email(id).ok_or(format!("{login} has never signed in to the machines, so Cloudflare has no address to keep out. Take them off the team instead, or try again after their first sign-in."))?;
+    let apps = crate::cloudflare::api("GET", "access/apps", None)?;
+    let app = apps.as_array().into_iter().flatten().find(|a| a["name"] == host.as_str()).ok_or(format!("{host} has no Cloudflare Access application"))?;
+    let policy = allow_policy(app).ok_or(format!("{host}'s Access application has no allow policy"))?;
+    let exclude = policy["exclude"].as_array().cloned().unwrap_or_default();
+    let new = with_guest(&exclude, &email, add);
+    if new != exclude {
+        let (app_id, pid) = (app["id"].as_str().unwrap_or_default(), policy["id"].as_str().unwrap_or_default());
+        let mut body = policy_update(policy, policy["include"].as_array().cloned().unwrap_or_default());
+        body["exclude"] = serde_json::Value::Array(new);
+        crate::cloudflare::api("PUT", &format!("access/apps/{app_id}/policies/{pid}"), Some(body))?;
+    }
+    if !add { return Ok(format!("{login} may connect to {host} again")) }
+    let ended = crate::cloudflare::api("POST", "access/organizations/revoke_user", Some(serde_json::json!({ "email": email })));
+    Ok(format!("{login} is kept out of {host}.{}", if ended.is_ok() { " Their sign-in to the machines is ended; they sign in again for the others." }
+        else { " Their sign-in could not be ended; it runs out by itself within 24 hours." }))
+}
+
 fn enrolled_email(github_id: u64) -> Option<String> {
     // ponytail: one page of people (100) and one request each for their identity; keep a login -> email note on the
     // application when the team outgrows that

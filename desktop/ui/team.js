@@ -384,7 +384,7 @@ function machinesSection(machines, org, user, guest) {
   const hosts = [...new Map(machines.map(m => [m.host, m])).values()];
   const byHost = Object.fromEntries(hosts.map(m => [m.host, m]));
   // owners: the people let in by email (interns), read once for all machines
-  const guests = org && (org.people[user] || {}).grants === null ? machineGuests(org.org, hosts.map(m => m.host)) : null;
+  const guests = org && (org.people[user] || {}).grants === null ? machineGuests(org.org, hosts.map(m => m.host), Object.keys(org.people).filter(l => !org.people[l].outside)) : null;
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
   const list = el("div", "list"), pills = {}, meters = {}, specs = {}, signIns = {}, blocks = {};
   // ssh per machine: the heading's button (only where this computer can start a terminal), the copyable line in the
@@ -1700,12 +1700,13 @@ function myTunnels(s) {
 
 // Owners: {cf, guests: {host: [email]}, interns}. Guests and interns need the Cloudflare token on this computer;
 // without it cf is false and both are empty. Interns are reused from the People page when it read them.
-async function machineGuests(org, hosts) {
+async function machineGuests(org, hosts, logins) {
   const st = await invoke("cf_state").catch(() => ({}));
-  if (!st.connected) return { cf: false, guests: {}, interns: [] };
-  const [guests, interns] = await Promise.all([invoke("machine_guests", { hosts }).catch(() => ({})),
-    internsNow.length ? internsNow : invoke("org_people", { org }).then(p => (internsNow = p.interns || []), () => [])]);
-  return { cf: true, guests, interns };
+  if (!st.connected) return { cf: false, guests: {}, interns: [], blocked: {} };
+  const [guests, interns, blocked] = await Promise.all([invoke("machine_guests", { hosts }).catch(() => ({})),
+    internsNow.length ? internsNow : invoke("org_people", { org }).then(p => (internsNow = p.interns || []), () => []),
+    invoke("machine_blocks", { hosts, logins: logins || [] }).catch(() => ({}))]);
+  return { cf: true, guests, interns, blocked };
 }
 
 // Owners: the email an intern signs in to GitHub with, started from their public one. null when cancelled.
@@ -1763,8 +1764,8 @@ function whoCanConnect(host, machines, org, user, guestsP) {
   const extraSlug = `machine-${host}`;
   // why people may connect, said once behind the label's info mark; the line's group labels say who
   const why = `Members of ${teamsFor.join(", ")} can connect, and anyone an owner adds by hand.`;
-  const HAND = "added by hand", GUEST = "by email";
-  let g = { cf: null, guests: {}, interns: [] };   // cf null: not known yet
+  const HAND = "added by hand", GUEST = "by email", OUT = "kept out";
+  let g = { cf: null, guests: {}, interns: [], blocked: {} };   // cf null: not known yet
   const paint = () => {
     const extra = new Set(team(extraSlug).members);
     const head = el("div", "row"), k = el("span", "k", "Who can connect");
@@ -1782,10 +1783,20 @@ function whoCanConnect(host, machines, org, user, guestsP) {
     }
     k.append(info(`${why} Changes reach the machine at that person's next sign-in, within 24 hours.${g.cf === false ? " Interns can be added once Cloudflare is connected on this computer." : ""}`));
     const name = l => org.people[l].name;
+    // a member who is here through a team cannot be taken off this one machine by the team; they are kept out by
+    // name instead (Cloudflare's exclude list), shown apart, and let back in from there. Not oneself: an owner who
+    // kept themselves out would need another owner to undo it.
+    const out = new Set((g.blocked || {})[host] || []);
+    const keepOut = l => ({ tip: `Keep ${l} out of ${host}`, run: async b => {
+      if (await ask(`Keep ${l} out of ${host}?`, `${l} stays on their teams and on every other machine. Their Cloudflare sign-in is ended everywhere at once; they sign in again for the machines they keep.`, [["cancel", "Cancel"], ["go", "Keep out", true]]) === "go") block(l, true, b);
+    } });
     const people = Object.keys(org.people).sort((a, b) => name(a).localeCompare(name(b)))
       .filter(l => via(l).length || extra.has(l))
-      .map(l => ({ login: l, name: name(l), why: [...via(l), ...(extra.has(l) ? [HAND] : [])],
-        rm: extra.has(l) ? { tip: `Remove ${l}'s ${via(l).length ? "extra " : ""}access to ${host}`, run: b => change(l, false, b) } : null }));
+      .map(l => out.has(l)
+        ? { login: l, name: name(l), why: [OUT], rm: { tip: `Let ${l} connect to ${host} again`, run: b => block(l, false, b) } }
+        : { login: l, name: name(l), why: [...via(l), ...(extra.has(l) ? [HAND] : [])],
+            rm: extra.has(l) ? { tip: `Remove ${l}'s ${via(l).length ? "extra " : ""}access to ${host}`, run: b => change(l, false, b) }
+              : g.cf && l !== user ? keepOut(l) : null });
     // people let in by email: the address is all Cloudflare knows, so it is what the chip shows
     (g.guests[host] || []).forEach(e => people.push({ login: e.length > 26 ? `${e.slice(0, 25)}…` : e, name: e, why: [GUEST],
       rm: { tip: `Remove ${e}'s access to ${host}`, run: async b => {
@@ -1809,8 +1820,16 @@ function whoCanConnect(host, machines, org, user, guestsP) {
         if (await changeGuest(email, true, pick)) tellGuest(login, host, true);
       };
     }
-    box.append(whoLine(people, [...teamsFor, HAND, GUEST], pick, `Who can connect to ${host}`));
+    box.append(whoLine(people, [...teamsFor, HAND, GUEST, OUT], pick, `Who can connect to ${host}`));
   };
+  async function block(login, add, ctl) {
+    try {
+      toast(await working(ctl, add ? "Keeping out" : "Letting in", () => invoke("machine_block", { host, login, add })));
+      const now = ((g.blocked || {})[host] || []).filter(x => x !== login);
+      g.blocked = { ...(g.blocked || {}), [host]: add ? [...now, login] : now };
+    } catch (e) { toast(`Could not change ${host}: ${e}`); }
+    paint();
+  }
   async function change(login, add, ctl) {
     try {
       toast(await working(ctl, add ? "Adding" : "Removing", () => invoke("machine_extra", { org: org.org, host, login, add })));

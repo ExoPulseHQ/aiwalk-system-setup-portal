@@ -143,6 +143,8 @@ window.__fixtures = (scenario, os) => {
     // people let in by email (interns); the backend reads them only with the Cloudflare token, so owners only
     // kit-moss and lou-gray are guests (tied by public email), the other two addresses belong to nobody known here
     machine_guests: owner ? { dragon: ["ivy.tam.visiting@example-university.edu", "kit@example.net"], horse: ["kit@example.net", "lou.gray@example.net", "old.visitor@example.org"] } : {},
+    machine_blocks: owner ? { tiger: ["amy-chen"] } : {},
+    machine_block: a => a.add ? `${a.login} is kept out of ${a.host}. Their sign-in to the machines is ended; they sign in again for the others.` : `${a.login} may connect to ${a.host} again`,
     machine_guest: a => a.add ? `${a.email} may now connect to ${a.host}` : `${a.email} can no longer connect to ${a.host}. Their sign-in to the machines is ended.`,
     public_email: a => ({ "ivy-tam": "ivy.tam@example.com", "kit-moss": "kit@example.net", "lou-gray": "lou.gray@example.net", "max-hale": "max@example.net" })[a.login] || none,
     pr_permissions: prRows, merge_right: ok("Done"),
