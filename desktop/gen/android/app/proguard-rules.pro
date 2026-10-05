@@ -19,3 +19,8 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# MainActivity.Files is called by name from the page (window.aiwalkFiles); the release build must keep its methods
+-keepclassmembers class com.aiwalk.setup.MainActivity$Files {
+   @android.webkit.JavascriptInterface public *;
+}

@@ -812,7 +812,7 @@ function vaultSection(v, user, viewAs, orgs) {
   const head = el("header");
   const here = local.copies[v.repo];
   head.append(el("h2", null, v.name),
-    here ? glyph("tag", "monitor-check", "On this computer", "On this computer: a copy of this vault is here")
+    here ? glyph("tag", "monitor-check", onPhone() ? "On this phone" : "On this computer", `${onPhone() ? "On this phone" : "On this computer"}: a copy of this vault is here`)
          : glyph("tag", "cloud", "Not downloaded", "Not downloaded: it stays on GitHub until you download it"),
     pill(Math.min(v.permission, 4), "worded"), el("span", "grow"));
   summary.append(head);
@@ -820,7 +820,7 @@ function vaultSection(v, user, viewAs, orgs) {
   const body = el("div", "vault-body");
   sec.append(body);
   if (!v.permission) { if (here) body.append(downloadRow(v)); body.append(askForVault(v, orgs)); return sec; }
-  if (!onPhone()) body.append(downloadRow(v));
+  body.append(downloadRow(v));
   const a = v.access;
   if (!a) {
     // one repo, not split: what counts is the permission on the repo itself
@@ -904,6 +904,7 @@ listen("vault-progress", e => {
 });
 
 function downloadRow(v) {
+  if (onPhone()) return phoneRow(v);
   const path = local.copies[v.repo];
   const msg = el("span", "sub");
   // a long git job: the button says what it is doing and a stage box under the text follows its steps
@@ -971,9 +972,61 @@ function downloadRow(v) {
 }
 const chosen = {};
 
+// The phone's copy: always Documents/aIwalk/<repo> in shared storage, the only kind of folder Obsidian for Android
+// opens (phonegit.rs). No folder picker and no "use a copy" there; Android asks for "All files access" first.
+function phoneRow(v) {
+  const path = local.copies[v.repo];
+  const box = el("div", "place"), text = el("div", "text"), msg = el("span", "sub"), buttons = el("div", "buttons");
+  const run = (b, label, work) => async () => {
+    msg.textContent = "";
+    stages[v.repo] = stage(label);
+    text.append(stages[v.repo]);
+    try { toast(await working(b, label, work)); } catch (e) { msg.textContent = e; }
+    delete stages[v.repo];
+    await refreshLocal(); loadTeam();
+  };
+  const folder = `Documents/aIwalk/${v.repo.split("/").pop()}`;
+  if (path) {
+    const update = iconButton("arrow-down-to-line", "Get latest", "small");
+    update.dataset.primary = 1;
+    update.onclick = run(update, "Getting the latest", () => invoke("vault_update", { repo: v.repo, path }));
+    const title = el("div", "title", "On this phone");
+    title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}.`));
+    text.append(title, el("div", "sub path", path), msg);
+    buttons.append(update);
+  } else if (!v.permission) {
+    return el("span");
+  } else if (!filesOk()) {
+    const allow = el("button", "small", "Allow");
+    allow.onclick = () => { if (window.aiwalkFiles) window.aiwalkFiles.ask(); else msg.textContent = "This phone did not offer the setting. Allow All files access for this app in Android's settings."; };
+    text.append(el("div", "title", "Not on this phone yet"),
+      el("div", "sub", `Android asks first: allow this app to keep files in ${folder}, so Obsidian can open the notes.`), msg);
+    buttons.append(allow);
+  } else {
+    const get = el("button", "small", "Download");
+    get.onclick = run(get, "Downloading", () => invoke("vault_download", { repo: v.repo }));
+    const sub = el("div", "sub");
+    sub.append("Goes to ", el("span", "cmd", folder), ". Large files such as papers stay on GitHub for now.");
+    text.append(el("div", "title", "Not on this phone yet"), sub, msg);
+    buttons.append(get);
+  }
+  if (stages[v.repo]) text.append(stages[v.repo]);
+  box.append(text, buttons);
+  return box;
+}
+// Android 11 and later let any app add files of its own in Documents, which is what the probe in vault_local
+// tries; reading and changing what Obsidian wrote there needs "All files access", which only Android can say.
+const filesOk = () => local.writable && (!window.aiwalkFiles || window.aiwalkFiles.allowed());
+// back from Android's settings: read again whether the app may write there
+document.addEventListener("visibilitychange", async () => {
+  if (!onPhone() || document.hidden || !lastTeam || filesOk()) return;
+  await refreshLocal();
+  if (filesOk()) loadTeam();
+});
+
 async function refreshLocal() {
   const s = lastTeam;
-  if (s && !onPhone()) local = await invoke("vault_local", { repos: s.vaults.map(v => v.repo) });
+  if (s) local = await invoke("vault_local", { repos: s.vaults.map(v => v.repo) });
 }
 
 function obsidianNotice() {

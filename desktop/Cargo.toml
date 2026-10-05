@@ -9,6 +9,12 @@ description = "aIwalk System Setup, Tauri edition (desktop)"
 name = "aiwalk_setup_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# phone-git: compiles the phone's git (src/phonegit.rs) on a computer too, for its test only:
+#   cargo test -p aiwalk-setup --features phone-git phonegit
+# The computer app never enables it and keeps calling the git program.
+[features]
+phone-git = ["dep:git2"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -26,6 +32,7 @@ base64 = "0.22"
 age = { version = "0.11", features = ["armor"] }
 crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20"] }
 fancy-regex = "0.19.2"
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"], optional = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 portable-pty = "0.9"
@@ -33,6 +40,8 @@ portable-pty = "0.9"
 # Android opens web addresses (the two sign-ins) in the phone's browser through this plugin
 [target.'cfg(target_os = "android")'.dependencies]
 tauri-plugin-opener = "2"
+# a phone has no git program: the vault is downloaded and updated by libgit2 inside the app (phonegit.rs says why this one)
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
