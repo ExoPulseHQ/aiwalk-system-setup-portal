@@ -3,18 +3,21 @@
 # other services listen on 127.0.0.1 and are forwarded over SSH through the tunnel. Registered lab machines may still
 # SSH to each other directly (the admins' fallback when Cloudflare is down).
 #
-#   sudo bash lockdown.sh            prints the plan, asks, then applies and checks
+#   sudo bash lockdown.sh [account]  prints the plan, asks, then applies and checks; account owns the desktops (ntk)
 #
 # Registered machines are the lab hosts in System/vault_rules.json `machines`; their addresses come from
 # Secrets/Compute_Repo_Access_Registry.md §1b. This machine's own address is left out automatically.
 set -euo pipefail
 MACHINES="120.126.83.20 120.126.83.112 120.126.83.1 120.126.83.67 120.126.83.76 120.126.83.143 120.126.83.28 120.126.83.209 120.126.83.228"
-VNC_USER=ntk
+VNC_USER=${1:-ntk}
 VNC_CONFIG=/home/$VNC_USER/.vnc/config
 VNC_SERVICE=gpu-free-vnc.service
 VNC_LAUNCHER=/usr/local/bin/gpu-free-vnc   # starts the boot-time desktops; its own "-localhost no" beats ~/.vnc/config
 
 [ "$(id -u)" = 0 ] || { echo "Run it with sudo."; exit 1; }
+id "$VNC_USER" >/dev/null 2>&1 || { echo "There is no account called $VNC_USER here: sudo bash lockdown.sh <account>. Nothing was changed."; exit 1; }
+# a machine without the boot-time VNC desktops (a laptop that shares its screen another way) has only the firewall to close
+HAS_VNC=no; { [ -f "/etc/systemd/system/$VNC_SERVICE" ] || [ -f "/lib/systemd/system/$VNC_SERVICE" ] || [ -f "$VNC_LAUNCHER" ]; } && HAS_VNC=yes
 systemctl is-active --quiet cloudflared || { echo "cloudflared is not running. After this the tunnel is the way in, so nothing was changed."; exit 1; }
 SELF=$(hostname -I)
 PEERS=$(for ip in $MACHINES; do case " $SELF " in *" $ip "*) ;; *) echo -n "$ip ";; esac; done)
@@ -30,9 +33,13 @@ echo "== Firewall now"; ufw status verbose | sed -n '1,4p'; ufw status numbered 
 echo
 echo "== Plan"
 echo " 1. The tunnel token in the cloudflared service file becomes readable by root only."
+if [ $HAS_VNC = yes ]; then
 echo " 2. The boot-time desktops :1-:5 are started by exo-desktop: Unix socket only, no TCP port, no VNC password"
 echo "    (a systemd override for $VNC_SERVICE; the original files stay). They restart once, so anyone on them"
 echo "    is disconnected; afterwards they open from the portal's Open desktop."
+else
+echo " 2. This machine has no boot-time VNC desktops ($VNC_SERVICE): nothing to change there."
+fi
 echo " 3. SSH (22) is allowed only from: $PEERS"
 echo "    Rules that open 22, 80, 443, 3389 (RDP) or 59xx to everyone are removed (numbers: $(open_rules | sort -n | paste -sd' '))."
 echo "    New connections from anywhere else are refused; the Cloudflare tunnel is unaffected."
@@ -42,6 +49,8 @@ read -rp "Apply? [y/N] " answer
 chmod 600 /etc/systemd/system/cloudflared.service
 systemctl daemon-reload
 
+if [ $HAS_VNC = yes ]; then
+mkdir -p "$(dirname "$VNC_CONFIG")" && chown "$VNC_USER": "$(dirname "$VNC_CONFIG")"
 if grep -q '^localhost=' "$VNC_CONFIG"; then sed -i 's/^localhost=.*/localhost=yes/' "$VNC_CONFIG"; else echo localhost=yes >> "$VNC_CONFIG"; fi
 # desktops come from exo-desktop (socket, no password); the old launcher stays for reference
 mkdir -p "/etc/systemd/system/$VNC_SERVICE.d"
@@ -59,6 +68,7 @@ if [ -f "$VNC_LAUNCHER" ] && grep -q -- '-localhost no' "$VNC_LAUNCHER"; then
   cp -p "$VNC_LAUNCHER" "$VNC_LAUNCHER.bak"
   sed -i 's/-localhost no/-localhost yes/g' "$VNC_LAUNCHER"
 fi
+fi
 
 ufw default deny incoming >/dev/null
 for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'registered lab machine' >/dev/null; done
@@ -67,11 +77,13 @@ for n in $(open_rules | sort -rn); do ufw --force delete "$n" >/dev/null; done
 # a machine whose firewall was never switched on gets the rules above but would enforce none of them
 ufw --force enable >/dev/null
 
+if [ $HAS_VNC = yes ]; then
 systemctl daemon-reload
 systemctl stop "$VNC_SERVICE" || true
 for i in 1 2 3 4 5 6 7 8; do sudo -u "$VNC_USER" vncserver -kill ":$i" >/dev/null 2>&1 || true; done   # the old TCP ones
 systemctl start "$VNC_SERVICE" || echo "WARNING: $VNC_SERVICE did not start; open desktops from the portal instead (New desktop)"
 sleep 3
+fi
 
 set +e   # the check only reports; a missing socket or port must not hide the rest of it
 echo
