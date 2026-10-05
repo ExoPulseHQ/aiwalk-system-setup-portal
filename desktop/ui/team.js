@@ -1421,6 +1421,11 @@ async function loadMachines() {
   if (s.guest) return guestMachinesPage(page, s);
   const machines = s.vaults.flatMap(v => (v.access && v.access.machines) || []);
   const org = (s.vaults.find(v => v.access) || {}).access;
+  // an owner's app keeps the list of names a guest's app asks about; once per run, and quietly: it is housekeeping
+  if (!publishedMachines && org && (org.people[s.user] || {}).grants === null) {
+    publishedMachines = true;
+    invoke("publish_machines", { names: [...new Set(machines.filter(m => m.tunnel && !m.via).map(m => m.host))] }).catch(() => {});
+  }
   // coming back to the page keeps it as it was (its numbers refresh on their own); rebuild only when what it
   // shows changed: another account, other machines or other teams
   const key = JSON.stringify([s.user, machines, org && org.teams]);
@@ -1435,7 +1440,20 @@ async function loadMachines() {
 
 // A guest's Machines page: the machines they added by name, then the field to add one. Members never get it: their
 // machines come from the vault's rules.
+let publishedMachines = false, askedMine = "";
 function guestMachinesPage(page, s) {
+  // the machines that let this person in are found for them (once per run and per account); typing a name stays
+  // as the way in when the list is not there
+  if (askedMine !== s.user) {
+    askedMine = s.user;
+    invoke("my_machines").then(found => {
+      const have = keptMachines(s.user), add = found.filter(([h]) => !have.some(([k]) => k === h));
+      if (!add.length) return;
+      keepMachines(s.user, [...have, ...add]);
+      toast(`${add.map(([h]) => h).join(", ")} added: an owner let you in`);
+      page.dataset.key = ""; loadMachines(); if (lastTeam) paintTeamOpening();
+    }).catch(() => {});
+  }
   const kept = keptMachines(s.user);
   const key = JSON.stringify(["guest", s.user, kept]);
   if (page.dataset.key === key && page.querySelector(".guest-add")) return;

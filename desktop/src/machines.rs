@@ -76,6 +76,38 @@ pub fn find_machine(name: String) -> Result<String, String> {
     if crate::access::is_team_app(&tunnel)? { Ok(tunnel) } else { Err(format!("There is no machine called {}", name.trim())) }
 }
 
+// The machines' names, where a guest can read them: a guest reads no vault, so the list an owner's app keeps in the
+// requests repo (the one repo every guest is invited to, for the terms) is how their app learns which machines
+// exist. Names only; which of them let a person in is Cloudflare's to say.
+const LIST_REPO: &str = "ExoPulseHQ/exo-access-requests";
+const LIST: &str = "machines.json";
+
+/// A guest's machines without typing their names: every listed machine that lets this sign-in through, asked without
+/// the browser, as (name, tunnel). Empty before the Cloudflare sign-in, and when the list cannot be read.
+#[tauri::command(async)]
+pub fn my_machines() -> Vec<(String, String)> {
+    let Ok(text) = crate::github::raw(LIST_REPO, LIST) else { return vec![] };
+    let names: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
+    // the file is only a list of names: each becomes ssh-<name> in the team's zone or is dropped
+    names.into_iter().filter_map(|n| exo_core::machine_tunnel(&n, crate::access::ZONE).ok().map(|t| (n, t)))
+        .filter(|(_, t)| crate::access::sign_in_quiet(t)).collect()
+}
+
+/// Owners: keeps that list equal to `names`. Ok(true) when it was written, Ok(false) when it was right already.
+#[tauri::command(async)]
+pub fn publish_machines(mut names: Vec<String>) -> Result<bool, String> {
+    use base64::Engine;
+    names.sort(); names.dedup();
+    let want = serde_json::to_string(&names).map_err(|e| e.to_string())?;
+    let path = format!("repos/{LIST_REPO}/contents/{LIST}");
+    let now = crate::github::get(&path).ok();
+    if crate::github::raw(LIST_REPO, LIST).is_ok_and(|t| t.trim() == want) { return Ok(false) }
+    let mut body = serde_json::json!({ "message": "machines: the names a guest's app asks about",
+                                       "content": base64::engine::general_purpose::STANDARD.encode(&want) });
+    if let Some(sha) = now.as_ref().and_then(|v| v["sha"].as_str()) { body["sha"] = sha.into() }
+    crate::github::send("PUT", &path, Some(body)).map(|_| true)
+}
+
 /// Signs this computer in to Cloudflare Access for `tunnel`: a browser opens for the GitHub sign-in.
 #[tauri::command(async)]
 pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<bool>) -> Result<String, String> {
