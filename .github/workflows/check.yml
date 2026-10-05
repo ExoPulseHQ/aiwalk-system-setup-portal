@@ -1,0 +1,42 @@
+# Runs the tests on every desktop system on each push to main. The release workflow only builds, and most of the
+# app's command line is used by other programs (the vault plugin keeps its terminal sessions with `aiwalk-setup
+# session` in place of tmux), where a difference between systems shows up as someone's lost work, not as a crash.
+name: check
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libdbus-1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - name: The folder the bundle expects
+        shell: bash
+        run: mkdir -p desktop/tools
+      - name: Unit tests
+        run: cargo test --workspace
+      - name: Build
+        run: cargo build -p aiwalk-setup
+      - name: Sessions that outlive their client (what the vault plugin uses in place of tmux)
+        shell: bash
+        run: python3 desktop/tests/session_check.py target/debug/aiwalk-setup${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: The longer session and terminal checks
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bash desktop/tests/session_check.sh target/debug/aiwalk-setup
+          bash desktop/tests/pty_check.sh target/debug/aiwalk-setup
