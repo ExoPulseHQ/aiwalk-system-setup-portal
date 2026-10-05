@@ -486,8 +486,27 @@ fn declared(text: &str) -> BTreeSet<String> {
     out
 }
 
+/// What a note's length budget is measured in: (CJK characters U+4E00..=U+9FFF, lines as Python's splitlines counts
+/// them), the same two numbers the old `python3 -c` one-liner in the writing rules printed.
+pub fn cjk_and_lines(text: &str) -> (usize, usize) {
+    let text = text.replace("\r\n", "\n");
+    let cjk = text.chars().filter(|c| ('\u{4e00}'..='\u{9fff}').contains(c)).count();
+    let ends = |c: char| matches!(c, '\n' | '\r' | '\x0b' | '\x0c' | '\x1c'..='\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}');
+    let breaks = text.chars().filter(|&c| ends(c)).count();
+    (cjk, breaks + text.chars().last().is_some_and(|c| !ends(c)) as usize)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn length_budget_counts_like_the_python_one_liner() {
+        assert_eq!(cjk_and_lines(""), (0, 0));
+        assert_eq!(cjk_and_lines("標題 Title\n\n內文，abc。\n"), (4, 3));
+        assert_eq!(cjk_and_lines("a\r\nb\rc"), (0, 3));
+        assert_eq!(cjk_and_lines("一\u{2028}二"), (2, 2));
+        assert_eq!(cjk_and_lines("\u{3400}\u{4e00}\u{9fff}\u{a000}あ"), (2, 1));   // only the basic block counts
+    }
+
     use super::*;
 
     #[test]

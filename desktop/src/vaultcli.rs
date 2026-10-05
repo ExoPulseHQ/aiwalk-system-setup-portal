@@ -8,22 +8,27 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// The Python's docstring, which it prints for a command it does not know.
-const USAGE: &str = r#"Ship the vault: rebase on origin, sync ownership, check wikilinks, commit as the gh account, push.
+/// Printed for a command this does not know.
+const USAGE: &str = r#"The vault's tools, run in the vault's folder.
 
-The commit identity is the GitHub account `gh` is logged in as, never the local git config,
-so what the aiwalk portal's Team access module shows and what lands in history are one and the same:
+The commit identity is the GitHub account signed in to aIwalk System Setup, never the local git config, so what
+Team access shows and what lands in history are one and the same:
 
-    user.name  = <gh login>
-    user.email = <gh id>+<gh login>@users.noreply.github.com
+    user.name  = <login>
+    user.email = <id>+<login>@users.noreply.github.com
 
 Usage
-    vault_ship.py identity                 print the identity that would be used (exit 1 if gh is not logged in)
-    vault_ship.py ship -m "type(scope): message (CODE-DEV)" [paths...]
-                                           stage paths (default: all tracked changes), rebase, sync, check, commit, push
-    vault_ship.py check-author             pre-commit guard: exit 1 unless GIT_AUTHOR_* match the gh identity
-    vault_ship.py can-push <submodule>     "yes" if the gh account may push to that submodule's repo
-    vault_ship.py index                    refresh System/vault_index.json (also done on every ship)
+    aiwalk-setup vault identity                 the identity that would be used (exit 1 when nobody is signed in)
+    aiwalk-setup vault ship -m "type(scope): message (CODE-DEV)" [paths...]
+                                                stage paths (default: all tracked changes), rebase, sync, check, commit, push
+    aiwalk-setup vault check-author             exit 1 unless GIT_AUTHOR_* match the signed-in identity
+    aiwalk-setup vault can-push <submodule>     "yes" if the account may push to that submodule's repo
+    aiwalk-setup vault index                    refresh System/vault_index.json (also done on every ship)
+    aiwalk-setup vault sync-ownership [--check] [--all] [logs...]
+                                                rebuild the generated half of a primary log's ownership block
+    aiwalk-setup vault count <file>...          per file: CJK characters, lines, path (the writing rules' length budget)
+    aiwalk-setup vault manifest | owner | plan | assemble | push | clone | pull
+                                                the repo split; give one a wrong argument for its own usage
 
 Paths inside a submodule are committed and pushed in the submodule first (on its own branch), then the vault
 commits the submodule's new gitlink with the same message.
@@ -32,9 +37,8 @@ The commit is made first and then rebased onto origin/main. A conflict aborts th
 on this computer unpushed, and lists the files; merge them (an agent is good at markdown merges) and push.
 Nothing here rewrites published history or forces a push.
 "#;
-/// The repo-split commands (scripts/exo_repos.py), printed when one is given the wrong arguments. Kept apart from
-/// USAGE, which stays vault_ship.py's docstring for an unknown command.
-const REPOS_USAGE: &str = r#"The repo split (scripts/exo_repos.py), also run in the vault's folder:
+/// The repo-split commands, printed when one is given the wrong arguments.
+const REPOS_USAGE: &str = r#"The repo split, also run in the vault's folder:
     owner <path>...                        which repo owns each path
     plan [<vault>]                         split the tracked files by owner; exit 1 if any file has none
     assemble <dest>                        build the split vault at <dest>, each restricted folder a submodule; never pushes
@@ -563,6 +567,13 @@ pub fn main(a: &[String]) {
         Some("index") => println!("{}", if update_index(&vault) { "updated" } else { "unchanged" }),
         Some("check-author") => check_author(&vault),
         Some("sync-ownership") => std::process::exit(sync_cli(&vault, &a[1..])),
+        Some("count") if a.len() > 1 => {
+            for f in &a[1..] {
+                let Ok(bytes) = std::fs::read(f) else { die(&format!("\u{2717} cannot read {f}")) };
+                let (cjk, lines) = vs::cjk_and_lines(&String::from_utf8_lossy(&bytes));
+                println!("{cjk} {lines}  {f}");
+            }
+        }
         Some("manifest") => manifest(&vault),
         Some("owner") => owner_cli(&vault, &a[1..]),
         Some("plan") => std::process::exit(plan(&a.get(1).map_or(vault.clone(), |p| abs(p)))),
