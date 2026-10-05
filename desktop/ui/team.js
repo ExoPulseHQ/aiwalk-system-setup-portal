@@ -350,6 +350,10 @@ function machinesSection(machines, org, user, guest) {
   const guests = org && (org.people[user] || {}).grants === null ? machineGuests(org.org, hosts.map(m => m.host)) : null;
   const carries = h => machines.filter(m => m.host === h).map(m => m.repo).join(", ");
   const list = el("div", "list"), pills = {}, meters = {}, specs = {}, signIns = {};
+  // ssh per machine: the heading's button (only where this computer can start a terminal), the copyable line in the
+  // opened card, the account, and why the last button press failed
+  const sshBtns = {}, sshRows = {}, sshAcct = {}, sshFail = {};
+  let sshAliases = false;   // "Set up connections" is current here, so plain `ssh account@host` works as well
   const live = new Set();   // machines whose status page answered: signed in and reachable, whatever an older check said
   let lastState = null;
   const look = {}, diskLow = {};   // per host: what its state chip says, and a disk running out (for the opening strip)
@@ -373,6 +377,22 @@ function machinesSection(machines, org, user, guest) {
       rmMark = iconButton("x", `Remove ${m.host} from this list`, "small ghost row-act", true);
       rmMark.onclick = e => { e.stopPropagation(); guest.remove(m.host); };
       right.push(b);
+    }
+    // a machine with its own tunnel can be reached by ssh: members as the account the vault's rules name (else ntk),
+    // a guest as the account its desktops run as, once known
+    if (m.tunnel && !m.via) {
+      sshAcct[m.host] = m.account || (guest ? null : "ntk");
+      sshRows[m.host] = el("div", "spec hw"); sshRows[m.host].hidden = true;
+      if (canOpenTerminal()) {
+        const b = sshBtns[m.host] = iconButton("square-terminal", "", "small ghost", true); b.hidden = true;
+        b.onclick = async e => {
+          e.stopPropagation(); sshFail[m.host] = null;
+          try { toast(await working(b, "", () => invoke("open_ssh", { tunnel: m.tunnel, user: sshAcct[m.host] }))); }
+          catch (err) { sshFail[m.host] = String(err); }
+          paintSsh(m.host);
+        };
+        right.push(b);
+      }
     }
     const row = kind(item(m.host, [m.note, carries(m.host) && `Carries ${carries(m.host)}`].filter(Boolean).join(". ") || null, null, ...right, p, ...(rmMark ? [rmMark] : [])), "server");
     row.classList.add("machine", "click");
@@ -405,7 +425,32 @@ function machinesSection(machines, org, user, guest) {
     } else { p.removeAttribute("tabindex"); delete p.dataset.tip; p.replaceChildren(icon(name), word); }
     if (signIns[host]) signIns[host].hidden = key !== "sign-in";
     if (guest && key === "refused") refusedNote(host, false);
+    paintSsh(host);
   };
+  // The heading's SSH button and the card's line to copy, for a machine the person may reach now (up, or a sign-in
+  // away: the command signs in first). The line is also where a failed button press lands, its sentence above it.
+  function paintSsh(host) {
+    const r = sshRows[host], b = sshBtns[host], acct = sshAcct[host];
+    if (!r) return;
+    const reach = look[host] === "up" || look[host] === "sign-in";
+    r.hidden = !reach;
+    if (b) {
+      b.hidden = !reach || !acct;
+      if (acct) { const words = `Open a terminal on ${host} as ${acct}`; b.setAttribute("aria-label", words); b.dataset.tip = words; }
+    }
+    if (!reach) return;
+    const line = `${sshAliases ? "ssh" : "aiwalk-setup ssh"} ${acct || "ACCOUNT"}@${host}`;
+    const k = el("span", "k"), v = el("div"), copy = iconButton("copy", `Copy ${line}`, "small ghost", true);
+    k.append(icon("square-terminal"), el("span", "sr", "SSH")); k.dataset.tip = "SSH";
+    copy.style.marginLeft = "8px";
+    copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(line).then(() => toast(`Copied ${line}`), () => toast(line)); };
+    v.append(el("span", "cmd", line), copy);
+    if (!acct) v.append(el("span", "sub", " Replace ACCOUNT with the account the owner named."));
+    r.replaceChildren(k, v);
+    // the failure sentence spans the row above the line, so the SSH mark stays level with the command
+    if (sshFail[host]) { const w = el("p", "warn"); w.style.cssText = "margin: 0; grid-column: 1 / -1"; w.append(icon("circle-alert"), sshFail[host]); r.prepend(w); }
+    if (!r.isConnected) specs[host].append(r);
+  }
   // a guest whom Access turns away: say so on the row, with the email Access knows this account by when it can tell
   const refusedNote = async (host, signIn) => {
     const line = el("p", "ask-line");
@@ -473,6 +518,7 @@ function machinesSection(machines, org, user, guest) {
     } else if (ssh === "current") {
       help.append(el("p", "sub", "Connections are set up on this computer."));
     }
+    if (sshAliases !== (ssh === "current")) { sshAliases = ssh === "current"; hosts.forEach(m => paintSsh(m.host)); }
     pickPrimary(document.getElementById("machines"));
   }
   // live numbers from each machine's status page, every 15 s while this page is on screen
@@ -511,7 +557,8 @@ function machinesSection(machines, org, user, guest) {
         r.append(label, el("span", null, v)); return r; }));
       diskLow[host] = s.disk_free_gb != null && s.disk_free_gb < 20 ? `disk almost full, ${gb(s.disk_free_gb)} left` : null;
       if (diskLow[host]) { const w = el("p", "warn"); w.append(icon("circle-alert"), `Disk almost full: ${gb(s.disk_free_gb)} left.`); specs[host].append(w); }
-      if (guest) specs[host].append(sshLine(host, s.desktops || []));
+      if (guest && !sshAcct[host]) sshAcct[host] = ((s.desktops || []).find(d => d.kind !== "rdp") || {}).user || null;
+      if (sshRows[host]) { specs[host].append(sshRows[host]); paintSsh(host); }
       if (s.host_tools) specs[host].append(hostTools(byHost[host], s.host_tools));
       if ((s.desktops || []).length) specs[host].append(desktopList(byHost[host], s.desktops, open));
       // a cluster reached through this machine (rooster through horse) comes in the same answer
@@ -538,21 +585,6 @@ function machinesSection(machines, org, user, guest) {
       };
       r.append(b, msg);
     }
-    return r;
-  }
-  // A guest's way in by ssh: no vault rules name the machine's account, so it is the one its desktops run as, or a
-  // placeholder to replace with the account the owner named. Works once connections are set up on this computer.
-  function sshLine(host, desktops) {
-    const account = (desktops.find(d => d.kind !== "rdp") || {}).user;
-    const line = `ssh ${account || "ACCOUNT"}@${host}`;
-    const r = el("div", "spec hw"), k = el("span", "k");
-    k.append(icon("square-terminal"), el("span", "sr", "SSH")); k.dataset.tip = "SSH";
-    const v = el("span"), copy = iconButton("copy", `Copy ${line}`, "small ghost", true);
-    copy.style.marginLeft = "8px";
-    copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(line).then(() => toast(`Copied ${line}`), () => toast(line)); };
-    v.append(el("span", "cmd", line), copy);
-    if (!account) v.append(el("span", "sub", " Replace ACCOUNT with the account the owner named."));
-    r.append(k, v);
     return r;
   }
   // A SLURM cluster: totals as meters, then each node and the queues. The reading is at most a minute old.

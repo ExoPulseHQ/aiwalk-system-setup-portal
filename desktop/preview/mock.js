@@ -1,5 +1,5 @@
 // Stands in for the Tauri backend in a browser. Read by index.html before its own scripts.
-// Query: as=owner|member|signedout|terms|guest|invited, page=team|machines|people|terms|android|vm, theme=light|dark, os=linux|windows|macos
+// Query: as=owner|member|signedout|terms|guest|invited, page=team|machines|people|terms|android|vm, theme=light|dark, os=linux|windows|macos|android, ssh=fail
 (() => {
   const q = new URLSearchParams(location.search);
   const scenario = q.get("as") || "owner", os = q.get("os") || "linux";

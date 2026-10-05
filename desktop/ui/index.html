@@ -66,6 +66,10 @@ function stage(text) {
   box.set = (f, t) => { if (t) words.textContent = t; if (f != null) { meter.hidden = false; fill.style.width = `${Math.round(f * 100)}%`; } };
   return box;
 }
+// The operating system the backend runs on (the `platform` command): a computer ("linux", "macos", "windows") can
+// start a terminal for the SSH button; a phone build answers "android" or "ios" and shows only the line to copy.
+let OS = null;
+const canOpenTerminal = () => ["linux", "macos", "windows"].includes(OS);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
 let toastTimer;
@@ -278,6 +282,7 @@ async function showVersion() {
 <script src="vm.js"></script>
 <script>
 invoke("platform").then(os => {
+  OS = os;
   // the phone and VM modules need a Linux computer
   if (os !== "linux") document.querySelectorAll("nav .linux").forEach(b => b.remove());
   invoke("start_page").then(p => go(p && pages[p] ? p : "team"), () => go("team"));

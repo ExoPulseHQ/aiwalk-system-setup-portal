@@ -424,19 +424,43 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine,
+    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 #[cfg(not(target_os = "linux"))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine,
+    tauri::generate_handler![platform, start_page, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
 
+/// Windows: the release build is a GUI program, so a console it is started from is not given to it. A command-line
+/// use (any argument) with a standard handle missing attaches to the parent's console, when there is one, and takes
+/// it for the missing handles, before anything is printed. Handles a caller passed in (the vault plugin's pipes, ssh's
+/// ProxyCommand, Claude's hooks) are left as they are.
+#[cfg(windows)]
+fn attach_console() {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+    use windows_sys::Win32::System::Console::{AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+    let missing = |h| { let v = unsafe { GetStdHandle(h) }; v.is_null() || v == INVALID_HANDLE_VALUE };
+    let need: Vec<_> = [(STD_INPUT_HANDLE, "CONIN$"), (STD_OUTPUT_HANDLE, "CONOUT$"), (STD_ERROR_HANDLE, "CONOUT$")]
+        .into_iter().filter(|&(h, _)| missing(h)).collect();
+    if need.is_empty() || unsafe { AttachConsole(ATTACH_PARENT_PROCESS) } == 0 { return }
+    for (h, name) in need {
+        if !missing(h) { continue }   // attaching may have filled it already
+        let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let f = unsafe { CreateFileW(wide.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, 0, null_mut()) };
+        if f != INVALID_HANDLE_VALUE { unsafe { SetStdHandle(h, f) }; }
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    if std::env::args_os().nth(1).is_some() { attach_console() }
     // `hook root-only-guard`, `guard --status|--install|--uninstall`: .claude/hooks/root_only_guard.py without Python.
     // First, before anything else: the hook runs on every tool call of every Claude session.
     match std::env::args().nth(1).as_deref() {
@@ -462,6 +486,10 @@ fn main() {
     }
     if std::env::args().nth(1).as_deref() == Some("session") {
         std::process::exit(sessioncli::main(&std::env::args().skip(2).collect::<Vec<_>>()));
+    }
+    // `ssh [options] [account@]<machine> [command]`: ssh through Cloudflare with the app's proxy and certificate
+    if std::env::args().nth(1).as_deref() == Some("ssh") {
+        std::process::exit(machines::ssh_main(&std::env::args().skip(2).collect::<Vec<_>>()));
     }
     if std::env::args().nth(1).as_deref() == Some("vault") {
         vaultcli::main(&std::env::args().skip(2).collect::<Vec<_>>());
@@ -497,6 +525,13 @@ fn main() {
         return;
     }
     // `--reach a b …` prints the connection check for those aliases or addresses
+    // `--open-ssh <tunnel> <user>`: what the SSH button does, for checking by hand
+    if std::env::args().nth(1).as_deref() == Some("--open-ssh") {
+        let a: Vec<String> = std::env::args().skip(2).collect();
+        let (Some(t), Some(u)) = (a.first(), a.get(1)) else { eprintln!("--open-ssh <tunnel> <user>"); std::process::exit(2) };
+        match machines::open_ssh(t.clone(), u.clone()) { Ok(m) => println!("{m}"), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--reach") {
         println!("{:?}", machines::reachable(std::env::args().skip(2).map(|h| { let t = h.contains('.').then(|| h.clone()); (h, t) }).collect()));
         return;
@@ -537,7 +572,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "github": true, "repos": true, "hooks": hooks::NAMES }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "ssh": true, "github": true, "repos": true, "hooks": hooks::NAMES }));
         return;
     }
     // --cf-selfcheck: token on stdin; see cloudflare::selfcheck
@@ -586,7 +621,7 @@ fn main() {
     // not know (`aiwalk-setup help`), and opening the window for it left a shell hanging. macOS passes -psn_… to
     // an app started from Finder.
     if let Some(word) = std::env::args().nth(1).filter(|a| !a.starts_with("-psn")) {
-        eprintln!("aiwalk-setup: unknown command {word}\ncommands: vault, session, pty, deck, hook, guard, github token, git-credential (see `aiwalk-setup --can`); no argument opens the app");
+        eprintln!("aiwalk-setup: unknown command {word}\ncommands: vault, session, pty, ssh, deck, hook, guard, github token, git-credential (see `aiwalk-setup --can`); no argument opens the app\nssh [ssh options] [account@]<machine> [command]: ssh to a team machine through Cloudflare, no ~/.ssh/config needed");
         std::process::exit(2);
     }
     tauri::Builder::default()

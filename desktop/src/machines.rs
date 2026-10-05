@@ -98,7 +98,7 @@ pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>) -> Result<Strin
     else { Err(format!("Sign-in was not finished for {}", failed.join(", "))) }
 }
 
-fn ssh_config() -> PathBuf { home().join(".ssh/config") }
+pub(crate) fn ssh_config() -> PathBuf { home().join(".ssh/config") }
 
 /// Whether ~/.ssh/config already holds exactly the aliases the app would write.
 #[tauri::command(async)]
@@ -124,6 +124,135 @@ pub fn ssh_setup(machines: Vec<Machine>) -> Result<String, String> {
     #[cfg(unix)]
     { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)); }
     Ok("Connections set up: ssh <account>@<machine> now goes through Cloudflare".into())
+}
+
+/// `aiwalk-setup vault ssh-setup [--check]`, run in a vault's folder: "Set up connections" from the command line, with
+/// the machines of that vault's System/vault_rules.json. --check prints what ssh_status says and writes nothing; a
+/// block already current is not written again, so config.bak keeps the file from before the first set-up.
+pub fn setup_cli(vault: &std::path::Path, check: bool) -> i32 {
+    let rules = vault.join("System/vault_rules.json");
+    let Ok(text) = std::fs::read_to_string(&rules) else { eprintln!("✗ {} not found: run this in a vault's folder", rules.display()); return 1 };
+    let machines = exo_core::machines(&text);
+    let status = ssh_status(exo_core::machines(&text));
+    if check { println!("{status}"); return 0 }
+    let file = ssh_config();
+    match status {
+        "nothing" => { println!("nothing: no machine in {} has a tunnel yet, so there is nothing to write", rules.display()); return 0 }
+        "current" => { println!("current: {} already holds the app's block", file.display()); return 0 }
+        _ => {}
+    }
+    println!("Writing the app's block into {}", file.display());
+    if std::fs::metadata(&file).is_ok_and(|m| m.len() > 0) { println!("The old file is kept as {}", file.with_extension("bak").display()) }
+    match ssh_setup(machines) { Ok(m) => { println!("{m}"); 0 } Err(e) => { eprintln!("✗ {e}"); 1 } }
+}
+
+// ---------------------------------------------------------------- ssh without ~/.ssh/config
+// `aiwalk-setup ssh` and the Machines page's SSH button. Both use the app's own proxy and a fresh certificate, the
+// way the app's own ssh calls do (through), so neither needs the block "Set up connections" writes.
+
+/// `aiwalk-setup ssh [ssh options] [account@]<machine> [command…]`. With no account: the one this folder's vault rules
+/// name for the machine, else ntk. Signs in first when this computer has no usable sign-in for the machine (the
+/// team sign-in traded silently, else the browser, which access::login announces on stderr before opening it).
+/// Unix: becomes ssh, so signals and the exit code are ssh's. Windows: waits for ssh and returns its exit code.
+pub fn ssh_main(args: &[String]) -> i32 {
+    let fail = |e: String| { eprintln!("aiwalk-setup ssh: {e}"); 2 };
+    let (opts, dest, command) = match exo_core::ssh_args(args) { Ok(x) => x, Err(e) => return fail(e) };
+    let (user, tunnel) = match exo_core::ssh_destination(&dest, crate::access::ZONE) { Ok(x) => x, Err(e) => return fail(e) };
+    let user = user.unwrap_or_else(|| exo_core::default_account(std::fs::read_to_string("System/vault_rules.json").ok().as_deref(), &tunnel));
+    if crate::access::token(&tunnel).is_err() {
+        // a name with no machine behind it is said plainly, not as a failed sign-in
+        match crate::access::is_team_app(&tunnel) {
+            Ok(true) => {}
+            Ok(false) => return fail(format!("there is no machine called {}", dest.rsplit('@').next().unwrap_or(&dest))),
+            Err(e) => { eprintln!("aiwalk-setup ssh: {e}"); return 1 }
+        }
+        eprintln!("This computer has no Cloudflare sign-in for {tunnel} yet; signing in.");
+        if let Err(e) = crate::access::sign_in(&tunnel) { eprintln!("aiwalk-setup ssh: {e}"); return 1 }
+    }
+    // the certificate is the only credential the machines take; without one ssh would only say "Permission denied"
+    if let Err(e) = crate::access::ssh_cert_if_stale(&tunnel) { eprintln!("aiwalk-setup ssh: no SSH certificate for {tunnel}: {e}"); return 1 }
+    let Some(via) = through(&tunnel) else { return fail("this app's own path cannot be used by ssh".into()) };
+    // not crate::cmd: on Windows that hides the console ssh needs. `--` ends ssh's options, so a remote command that
+    // starts with "-" stays the command
+    let mut c = std::process::Command::new("ssh");
+    c.args(via).args(["-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=accept-new"]).args(&opts)
+        .arg("--").arg(format!("{user}@{tunnel}")).args(&command);
+    #[cfg(unix)]
+    { use std::os::unix::process::CommandExt; let e = c.exec(); eprintln!("aiwalk-setup ssh: could not start ssh: {e}"); 127 }
+    #[cfg(not(unix))]
+    match c.status() { Ok(s) => s.code().unwrap_or(1), Err(e) => { eprintln!("aiwalk-setup ssh: could not start ssh: {e}"); 127 } }
+}
+
+/// The SSH button: a terminal window on this computer running `<this app> ssh <user>@<tunnel>`, so the certificate is
+/// fetched in there and the person can run the same line again later. Err with a sentence when no terminal program
+/// is found; the page then shows the line to copy.
+#[tauri::command(async)]
+pub fn open_ssh(tunnel: String, user: String) -> Result<String, String> {
+    let (_, tunnel) = exo_core::ssh_destination(&format!("{user}@{tunnel}"), crate::access::ZONE)?;
+    let app = app().ok_or("This app's own path cannot be used by ssh")?;
+    launch(&exo_core::ssh_argv(&app, &user, &tunnel))?;
+    Ok(format!("A terminal opened: ssh {user}@{}", tunnel.trim_start_matches("ssh-").split('.').next().unwrap_or(&tunnel)))
+}
+
+/// Linux: the first terminal program found (exo_core::linux_terminals), the command as separate arguments.
+#[cfg(target_os = "linux")]
+fn launch(argv: &[String]) -> Result<(), String> {
+    let env = std::env::var("TERMINAL").ok();
+    let all = exo_core::linux_terminals(env.as_deref());
+    let find = |p: &str| if p.contains('/') { Some(PathBuf::from(p)).filter(|p| p.is_file()) } else { crate::on_path(p) };
+    let Some((prog, pre)) = all.iter().find_map(|(p, pre)| find(p).map(|x| (x, pre))) else {
+        let names: Vec<String> = all.iter().map(|(p, _)| if env.as_deref().map(str::trim) == Some(p.as_str()) { format!("$TERMINAL ({p})") } else { p.clone() }).collect();
+        return Err(format!("No terminal program was found on this computer (looked for {}). Copy the command below into a terminal.", names.join(", ")));
+    };
+    let mut child = crate::cmd(&prog).args(pre).args(argv).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().map_err(|e| format!("{} did not start: {e}. Copy the command below into a terminal.", prog.display()))?;
+    std::thread::spawn(move || child.wait());   // reaped, so no zombie is left behind
+    Ok(())
+}
+
+/// macOS: Terminal runs .command files; the file removes itself as its first line.
+#[cfg(target_os = "macos")]
+fn launch(argv: &[String]) -> Result<(), String> {
+    let (_, file) = private_file("command", &exo_core::command_file(argv))?;
+    let out = crate::cmd("open").arg(&file).output().map_err(|e| e.to_string())?;
+    if out.status.success() { return Ok(()) }
+    let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    Err(format!("Terminal did not open ({}). Copy the command below into a terminal.", String::from_utf8_lossy(&out.stderr).trim()))
+}
+
+/// Windows: a .cmd file (no quoting through cmd's command line), started in its own folder by its bare name, in
+/// Windows Terminal when there is one, else a console window of its own.
+#[cfg(windows)]
+fn launch(argv: &[String]) -> Result<(), String> {
+    let (dir, file) = private_file("cmd", &exo_core::batch_file(argv)?)?;
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
+    // wt.exe is an app alias, so trying it is how to know it is there
+    if crate::cmd("wt.exe").current_dir(&dir).args(["-d", ".", "cmd.exe", "/c", &name]).spawn().is_ok() { return Ok(()) }
+    crate::cmd("cmd.exe").current_dir(&dir).args(["/c", "start", "", &name]).spawn()
+        .map(|_| ()).map_err(|e| format!("No console window could be opened ({e}). Copy the command below into a terminal."))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn launch(_: &[String]) -> Result<(), String> { Err("This device cannot open a terminal. Copy the command below.".into()) }
+
+/// A new folder only this user can open in the temp folder, holding one file `ssh.<ext>` only this user can run.
+#[cfg(any(target_os = "macos", windows))]
+fn private_file(ext: &str, text: &str) -> Result<(PathBuf, PathBuf), String> {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("aiwalk-ssh-{}-{nanos}", std::process::id()));
+    #[allow(unused_mut)]
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    { use std::os::unix::fs::DirBuilderExt; b.mode(0o700); }
+    b.create(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;   // a folder that exists already is refused
+    let file = dir.join(format!("ssh.{ext}"));
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt; o.mode(0o700); }
+    use std::io::Write;
+    o.open(&file).and_then(|mut f| f.write_all(text.as_bytes())).map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok((dir, file))
 }
 
 // ---------------------------------------------------------------- desktops through the tunnel
