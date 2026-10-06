@@ -14,7 +14,7 @@ for 5 seconds, so a page polling every 15 seconds costs a few /proc reads and on
 import json, os, shutil, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "4"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "5"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 PORT = 9101
 CACHE_SECONDS = 5
 CLUSTER = None          # ssh alias of a cluster this machine reaches, from --cluster
@@ -163,14 +163,16 @@ def answer():
             smi = ""
         disk = shutil.disk_usage("/")
         # every real disk, not only the system one: the data disks are where a machine fills up (issue #3)
-        disks = []
+        disks, seen = [], set()
         try:
             for line in read("/proc/mounts").splitlines():
                 dev, mnt, fstype = (line.split() + ["", "", ""])[:3]
                 if not dev.startswith("/dev/") or fstype in ("squashfs", "vfat", "iso9660") or mnt.startswith(("/boot", "/snap")): continue
                 try: u = shutil.disk_usage(mnt)
                 except OSError: continue
-                if u.total < 20e9 or any(d["mount"] == mnt for d in disks): continue
+                # one row per device: the same disk mounted a second time (a snap's bind mount) is not another disk
+                if u.total < 20e9 or dev in seen: continue
+                seen.add(dev)
                 disks.append({"mount": mnt, "total_gb": round(u.total / 1e9), "free_gb": round(u.free / 1e9)})
         except OSError:
             pass
