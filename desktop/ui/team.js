@@ -609,7 +609,9 @@ function machinesSection(machines, org, user, guest) {
       // hardware: [label, its icon, which of several, value]; the label is its icon, the words in its tooltip
       const d = [["Processor", "cpu", "", `${s.cpu} (${s.threads} threads)`], ["Memory", "memory-stick", "", `${s.mem_used_gb} of ${s.mem_gb} GB in use`],
         ...g.map((x, i) => ["GPU", "gpu", g.length > 1 ? String(i) : "", `${x.name}, ${x.util}% busy, ${(x.mem_used_mb / 1024).toFixed(1)} of ${Math.round(x.mem_total_mb / 1024)} GB, ${x.temp_c} °C`]),
-        ["Disk", "hard-drive", "", `${gb(s.disk_free_gb)} free of ${gb(s.disk_gb)}`], ["System", "server-cog", "", `${s.os}, up ${Math.round(s.uptime_h / 24)} days, ${s.users} signed in`]];
+        // every disk the machine reports (older host tools report the system disk alone)
+        ...((s.disks && s.disks.length ? s.disks : [{ mount: "/", free_gb: s.disk_free_gb, total_gb: s.disk_gb }])
+          .map(d => ["Disk", "hard-drive", "", `${gb(d.free_gb)} free of ${gb(d.total_gb)}${d.mount === "/" ? "" : ` at ${d.mount}`}`])), ["System", "server-cog", "", `${s.os}, up ${Math.round(s.uptime_h / 24)} days, ${s.users} signed in`]];
       specs[host].replaceChildren(...d.map(([k, name, n, v]) => {
         const r = el("div", "spec hw"), label = el("span", "k");
         label.append(icon(name), el("span", "sr", n ? `${k} ` : k), n);

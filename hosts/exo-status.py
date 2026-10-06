@@ -14,7 +14,7 @@ for 5 seconds, so a page polling every 15 seconds costs a few /proc reads and on
 import json, os, shutil, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "3"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "4"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 PORT = 9101
 CACHE_SECONDS = 5
 CLUSTER = None          # ssh alias of a cluster this machine reaches, from --cluster
@@ -162,6 +162,19 @@ def answer():
         except (OSError, subprocess.TimeoutExpired):
             smi = ""
         disk = shutil.disk_usage("/")
+        # every real disk, not only the system one: the data disks are where a machine fills up (issue #3)
+        disks = []
+        try:
+            for line in read("/proc/mounts").splitlines():
+                dev, mnt, fstype = (line.split() + ["", "", ""])[:3]
+                if not dev.startswith("/dev/") or fstype in ("squashfs", "vfat", "iso9660") or mnt.startswith(("/boot", "/snap")): continue
+                try: u = shutil.disk_usage(mnt)
+                except OSError: continue
+                if u.total < 20e9 or any(d["mount"] == mnt for d in disks): continue
+                disks.append({"mount": mnt, "total_gb": round(u.total / 1e9), "free_gb": round(u.free / 1e9)})
+        except OSError:
+            pass
+        disks.sort(key=lambda d: (d["mount"] != "/", -d["total_gb"]))
         users = subprocess.run(["who"], capture_output=True, text=True).stdout.split()
         ps = subprocess.run(["ps", "-eo", "user=,args="], capture_output=True, text=True).stdout
         try:
@@ -172,7 +185,7 @@ def answer():
                "load": [round(x, 2) for x in os.getloadavg()],
                "mem_used_gb": round((m.get("MemTotal", 0) - m.get("MemAvailable", 0)) / 1048576, 1),
                "gpus": gpus(smi),
-               "disk_gb": round(disk.total / 1e9), "disk_free_gb": round(disk.free / 1e9),
+               "disk_gb": round(disk.total / 1e9), "disk_free_gb": round(disk.free / 1e9), "disks": disks,
                "uptime_h": round(float(read("/proc/uptime").split()[0] or 0) / 3600, 1),
                "users": len(set(users[::5])) if users else 0,
                "desktops": desktops(ps) + rdp(ss, os.environ.get("USER") or os.environ.get("LOGNAME") or "ntk"), "cluster": cluster(), "tools": tools()}
