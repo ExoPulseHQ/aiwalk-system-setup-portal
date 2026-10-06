@@ -272,9 +272,22 @@ fn team_access(app: tauri::AppHandle) -> State {
 
 fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
     stage(1, 2, "Checking who is signed in");
-    let me = match github::get("user") {
+    // GitHub not answering is not being signed out. A sign-in is kept here and the first question after the app
+    // starts can fail (a phone waking its network): asked again, and if it still fails the page is told who is
+    // kept, so it says "could not reach GitHub" instead of asking the person to sign in all over again.
+    let mut me = github::get("user");
+    for _ in 0..3 {
+        match &me {
+            Err(e) if login::active().is_some() && !e.contains("(HTTP 401)") => { std::thread::sleep(std::time::Duration::from_millis(1500)); me = github::get("user"); }
+            _ => break,
+        }
+    }
+    let me = match me {
         Ok(v) => v,
-        Err(e) => return State { user: None, name: None, accounts: vec![], error: Some(e), vaults: vec![], scopes: vec![], guest: false },
+        Err(e) => {
+            let kept = if e.contains("(HTTP 401)") { vec![] } else { login::accounts() };
+            return State { user: None, name: None, accounts: kept, error: Some(e), vaults: vec![], scopes: vec![], guest: false }
+        }
     };
     let user = me["login"].as_str().unwrap_or_default().to_string();
     let name = me["name"].as_str().filter(|n| !n.is_empty()).map(String::from);

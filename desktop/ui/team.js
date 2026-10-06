@@ -1485,6 +1485,15 @@ async function loadTeam(viewAs) {
   if (!termsOk()) return page.replaceChildren(termsView(termsNow, termsNow.org, true));
   const stop = await listen("team-stage", e => { const [i, n, text] = e.payload; progress.set(i / n, text); });
   const s = lastTeam = await invoke("team_access").finally(stop);
+  // a sign-in is kept on this device and GitHub did not answer: not a reason to sign in again
+  if (!s.user && s.accounts && s.accounts.length) {
+    const box = el("div", "empty"), again = el("button", null, "Try again");
+    again.dataset.primary = 1;
+    again.onclick = () => loadTeam();
+    box.append(el("h1", null, "Could not reach GitHub"),
+      el("p", "sub", `You are still signed in as ${s.accounts.find(a => a.active)?.login || s.accounts[0].login}. ${s.error || ""}`), again);
+    return page.replaceChildren(box);
+  }
   if (!s.user) return page.replaceChildren(signInView(s.error));
   await refreshLocal();
   const owner = s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null);
