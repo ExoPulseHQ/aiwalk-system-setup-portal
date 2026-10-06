@@ -161,9 +161,14 @@ impl Stream {
 
 fn agent() -> &'static ureq::Agent {
     static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
-    // no overall timeout: a vault on a slow phone network takes minutes; a stalled connection still ends
+    // timeout_recv_body is the time allowed for the WHOLE reply, not for a pause in it: at 120 seconds (0.3.13) a
+    // phone on mobile data was cut off a fifth of the way into the book ("timeout: receive body"). A slow network
+    // gets an hour, as the installer download does.
+    // ponytail: ureq has no "nothing arrived for N seconds"; a connection that goes silent waits out the hour (or
+    // the phone's own TCP timeout). Read in a thread with a watchdog if people meet that.
+    let s = std::time::Duration::from_secs;
     AGENT.get_or_init(|| ureq::Agent::config_builder().http_status_as_error(false)
-        .timeout_connect(Some(std::time::Duration::from_secs(30))).timeout_recv_body(Some(std::time::Duration::from_secs(120)))
+        .timeout_connect(Some(s(30))).timeout_recv_response(Some(s(300))).timeout_recv_body(Some(s(3600)))
         .build().into())
 }
 

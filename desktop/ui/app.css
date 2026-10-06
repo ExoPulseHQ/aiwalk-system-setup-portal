@@ -508,7 +508,8 @@ nav .app .word { background-image: var(--fx-ink-rail); filter: var(--fx-glow); }
    A phone app, not the desktop page made narrow: the sections are a bar along the bottom where the thumb is, the
    page has the full width, nothing scrolls sideways, and what is pressed is big enough for a finger. The app draws
    under the status bar and the gesture bar, so both are kept clear. */
-html.phone body { flex-direction: column; height: 100dvh; }
+/* the status bar's height is kept clear on the body, not inside the scrolling page: scrolled text went under the clock */
+html.phone body { flex-direction: column; height: 100dvh; padding-top: max(env(safe-area-inset-top, 0px), 36px); box-sizing: border-box; }
 html.phone nav { order: 2; width: auto; flex-direction: row; align-items: stretch; gap: 2px;
   padding: 6px var(--s2) max(env(safe-area-inset-bottom, 0px), 10px); box-shadow: inset 0 1px 0 var(--rail-edge); }
 html.phone nav .app, html.phone nav .gap, html.phone nav #ver, html.phone nav button.linux { display: none; }
@@ -518,7 +519,7 @@ html.phone nav button[hidden] { display: none; }
 html.phone nav button .icon { width: 22px; height: 22px; }
 html.phone nav button.on { background: rgba(140, 84, 217, .22); color: var(--rail-ink); font-weight: 500; }
 html.phone main { overflow-x: hidden; }
-html.phone .page { max-width: none; padding: max(env(safe-area-inset-top, 0px), 36px) var(--s4) var(--s8); overflow-wrap: anywhere; }
+html.phone .page { max-width: none; padding: var(--s4) var(--s4) var(--s8); overflow-wrap: anywhere; }
 /* the state mark hangs to the left of the strip on a computer; here the strip makes room for it instead */
 html.phone .strip { padding-left: 30px; }
 html.phone .state-mark { left: 0; }
