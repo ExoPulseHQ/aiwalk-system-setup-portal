@@ -27,6 +27,13 @@
                 <!-- AndroidTV support -->
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+            <!-- aiwalk://get?path=...: the vault plugin in Obsidian asks for a paper (MainActivity.kt, team.js phoneLink) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="aiwalk" />
+            </intent-filter>
         </activity>
 
         <provider

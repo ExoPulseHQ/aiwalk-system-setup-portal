@@ -1009,7 +1009,7 @@ function phoneRow(v) {
     update.dataset.primary = 1;
     update.onclick = run(update, "Getting the latest", () => invoke("vault_update", { repo: v.repo, path }));
     const title = el("div", "title", "On this phone");
-    title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}. Papers and files over 2 MB are not on the phone until you get them with Get a file; what you send does not touch them.`));
+    title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}. Papers are not on the phone until you get them with Get a file; what you send does not touch them.`));
     text.append(title, el("div", "sub path", path), msg);
     // what changed here is shown before anything leaves the phone, and goes only when Send is pressed
     const send = iconButton("arrow-up-from-line", "Send changes", "small");
@@ -1031,17 +1031,18 @@ function phoneRow(v) {
       review.replaceChildren(list, what, go);
     };
     text.append(review);
-    // papers and files over 2 MB are left on GitHub; any of them comes to the phone by itself, to its own place
+    // papers (and, in a copy made small, files over 2 MB) are left on GitHub; any of them comes by itself, to its place
     const fetchOne = iconButton("folder-open", "Get a file", "small");
     fetchOne.onclick = async () => {
       msg.textContent = "";
-      const all = await working(fetchOne, "Looking", () => invoke("vault_left", { path })).catch(e => { msg.textContent = e; return null; });
-      if (!all) return;
+      const got = await working(fetchOne, "Looking", () => invoke("vault_left", { path })).catch(e => { msg.textContent = e; return null; });
+      if (!got) return;
+      const [all, lazy] = got, rest = all.filter(f => !lazy.some(d => f.startsWith(d + "/")));
       if (!all.length) { msg.textContent = "Every file of this vault is on the phone."; return; }
       const box = el("div", "getfile"), find = el("input"), list = el("ul", "files"), count = el("p", "sub");
       find.placeholder = "Part of a name or a folder"; find.setAttribute("aria-label", "Find a file");
-      let chosen = null;
-      const get = files => { chosen = files; document.getElementById("dialog").close("get"); };
+      let chosen = null, everything = false;
+      const get = (files, whole) => { chosen = files; everything = !!whole; document.getElementById("dialog").close("get"); };
       const draw = () => {
         const q = find.value.trim().toLowerCase(), hits = q ? all.filter(f => f.toLowerCase().includes(q)) : all;
         list.replaceChildren(...hits.slice(0, 60).map(f => {
@@ -1057,11 +1058,17 @@ function phoneRow(v) {
           every.onclick = () => get(hits);
           count.append(" ", every);
         }
+        // a copy made small, and room found since: all that was left behind except the papers, from now on too
+        if (!q && rest.length) {
+          const whole = el("button", "small", rest.length === 1 ? "Get the 1 that is not a paper" : `Get the ${rest.length} that are not papers`);
+          whole.onclick = () => get(rest, true);
+          count.append(" ", whole);
+        }
       };
       find.oninput = draw; draw();
       box.append(find, count, list);
-      await ask("Get a file", "These are on GitHub, not on this phone: papers and files over 2 MB.", [["close", "Close", true]], box);
-      if (chosen) await run(fetchOne, chosen.length === 1 ? "Getting the file" : "Getting the files", () => invoke("vault_fetch", { repo: v.repo, path, files: chosen }))();
+      await ask("Get a file", "These are on GitHub, not on this phone.", [["close", "Close", true]], box);
+      if (chosen) await run(fetchOne, chosen.length === 1 ? "Getting the file" : "Getting the files", () => invoke("vault_fetch", { repo: v.repo, path, files: chosen, everything }))();
     };
     buttons.append(update, send, fetchOne);
   } else if (!v.permission) {
@@ -1074,11 +1081,15 @@ function phoneRow(v) {
     buttons.append(allow);
   } else {
     const get = el("button", "small", "Download");
-    get.onclick = run(get, "Downloading", () => invoke("vault_download", { repo: v.repo }));
+    get.dataset.primary = 1;
+    get.onclick = run(get, "Downloading", () => invoke("vault_download", { repo: v.repo, small: false }));
+    // a phone short of room: the notes and the files up to 2 MB, the rest one at a time afterwards
+    const less = el("button", "small ghost", "Notes and small files only");
+    less.onclick = run(less, "Downloading", () => invoke("vault_download", { repo: v.repo, small: true }));
     const sub = el("div", "sub");
-    sub.append("Goes to ", el("span", "cmd", folder), ". Papers and files over 2 MB stay on GitHub, so the notes fit on a phone; Get a file brings any of them afterwards.");
+    sub.append("Goes to ", el("span", "cmd", folder), ". Download brings everything except the papers, which come one at a time with Get a file. On a phone short of room, take the notes and the files up to 2 MB only.");
     text.append(el("div", "title", "Not on this phone yet"), sub, msg);
-    buttons.append(get);
+    buttons.append(get, less);
   }
   if (stages[v.repo]) text.append(stages[v.repo]);
   box.append(text, buttons);
@@ -1093,6 +1104,42 @@ document.addEventListener("visibilitychange", async () => {
   await refreshLocal();
   if (filesOk()) loadTeam();
 });
+
+// A link opened from Obsidian by the vault plugin, which cannot fetch by itself (the sign-in is this app's):
+//   aiwalk://get?path=<path from the vault's top>[&path=...][&back=obsidian://...]
+// The file is brought to its place and Obsidian is opened again on it. Only paths git records in a copy on this
+// phone are taken (phonegit.rs fetch), and only an obsidian:// address is opened afterwards.
+let linkBusy = false;
+async function phoneLink(tries = 0) {
+  const A = window.aiwalkFiles;
+  if (!A || !A.link || linkBusy) return;   // only Android has this; which system it is may not be known yet at the first call
+  const raw = A.link();
+  if (!raw) return;
+  if (!lastTeam || !local) { if (tries < 60) setTimeout(() => phoneLink(tries + 1), 700); return; }   // still signing in or reading
+  A.linkDone();
+  let u; try { u = new URL(raw); } catch { return; }
+  const files = u.searchParams.getAll("path").filter(Boolean);
+  if (u.protocol !== "aiwalk:" || u.host !== "get" || !files.length) return;
+  await refreshLocal();   // the copies on this phone, read now: the page may not have got that far yet
+  const copies = Object.entries(local.copies || {});
+  if (!copies.length) return toast("The vault is not on this phone yet: download it on Team access first");
+  linkBusy = true;
+  let why = "";
+  for (const [repo, path] of copies) {
+    try {
+      toast(`Getting ${files[0].split("/").pop()}`);
+      toast(await invoke("vault_fetch", { repo, path, files, everything: false }));
+      const back = u.searchParams.get("back") || `obsidian://open?path=${encodeURIComponent(`${path}/${files[0]}`)}`;
+      linkBusy = false;
+      if (back.startsWith("obsidian://")) A.open(back);
+      return;
+    } catch (e) { why = e; }
+  }
+  linkBusy = false;
+  toast(`Could not get it: ${why}`);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) phoneLink(); });
+setTimeout(phoneLink, 0);   // opened by the link: after this file has finished loading
 
 async function refreshLocal() {
   const s = lastTeam;

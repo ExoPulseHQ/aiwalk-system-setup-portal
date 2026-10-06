@@ -13,10 +13,11 @@
 //! through the transport registered below on top of ureq, so TLS is the rustls (ring) the app already ships.
 //! libgit2 has no partial clone and no sparse checkout; what stands in for them is described next.
 //!
-//! Large files stay on GitHub: the whole vault is about 3 GB of files and as much again of git data, most of it pdf,
-//! pptx and docx, more than a phone has room for. libgit2 cannot ask for a clone without them, but the request it
-//! writes goes through the transport below, which adds git's own `filter blob:limit` line to it (`with_filter`) when
-//! the server offers that. The files GitHub then leaves out are kept in the index as skip-worktree entries
+//! What comes to the phone: everything except the papers, about 6 GB (3 GB of files, most of it pdf, pptx and docx,
+//! and as much again of git data). A phone without that room can take the notes and the files up to 2 MB instead,
+//! about 2 GB; the choice is made at Download and kept with the copy (`aiwalk.small` in its git config).
+//! libgit2 cannot ask for a clone without large files, but the request it writes goes through the transport below,
+//! which adds git's own `filter blob:limit` line to it (`with_filter`) when the server offers that. The files GitHub then leaves out are kept in the index as skip-worktree entries
 //! (`place`): not on the phone, not seen as deleted, and still in every commit sent from here. The on-demand
 //! folders (the papers) come the same way with a much lower limit, so only their small notes arrive. Any file left
 //! on GitHub can be brought to the phone by itself (`fetch`): its content is asked from GitHub by the id git already
@@ -79,9 +80,22 @@ impl SmartSubtransport for Https {
 /// One request: what libgit2 writes is the request body, sent at its first read; reads then come from the reply.
 struct Stream { url: String, base: String, post: bool, service: &'static str, body: Vec<u8>, reply: Option<Box<dyn Read + Send>> }
 
-/// Files larger than this stay on GitHub. At 2 MB the vault keeps every note and 3901 of its 4164 files in 0.77 GB
-/// of 3.10 (measured 2026-10-06); what stays behind is papers, slide decks, Word files and a few large figures.
+/// For a copy made small: files larger than this stay on GitHub. At 2 MB the vault keeps every note and 3901 of
+/// its 4164 files in 0.77 GB of 3.10 (measured 2026-10-06); what stays behind is slide decks, Word files, pdf and
+/// a few large figures.
 const LIMIT: &str = "blob:limit=2m";
+
+/// Whether the copy being worked on is a small one (see the top of this file). Set from the person's choice at
+/// Download, and from the copy's own record before every later fetch.
+static SMALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn small(on: bool) { SMALL.store(on, std::sync::atomic::Ordering::Relaxed) }
+
+/// Reads the choice the copy at `tree` was made with. A copy without the record (made before the choice existed)
+/// takes everything from now on; what it left behind earlier stays one tap away.
+fn recall(tree: &Path) {
+    small(Repository::open(tree).and_then(|r| r.config()).and_then(|c| c.get_bool("aiwalk.small")).unwrap_or(false))
+}
 
 /// The on-demand folders (the papers): only their notes come; every paper is one tap away (`fetch`).
 const LIMIT_ON_DEMAND: &str = "blob:limit=64k";
@@ -153,8 +167,9 @@ impl Stream {
         }
         let reply = if self.post {
             if self.service == "git-upload-pack" && FILTERS.lock().unwrap().contains(&self.base) {
-                let spec = if ON_DEMAND.lock().unwrap().contains(&self.base) { LIMIT_ON_DEMAND } else { LIMIT };
-                self.body = with_filter(&self.body, spec);
+                let spec = if ON_DEMAND.lock().unwrap().contains(&self.base) { Some(LIMIT_ON_DEMAND) }
+                    else if SMALL.load(std::sync::atomic::Ordering::Relaxed) { Some(LIMIT) } else { None };
+                if let Some(spec) = spec { self.body = with_filter(&self.body, spec) }
             }
             req.method("POST").header("Content-Type", format!("application/x-{}-request", self.service))
                 .header("Accept", format!("application/x-{}-result", self.service))
@@ -397,6 +412,8 @@ pub fn clone(url: &str, dest: &Path, progress: Progress) -> Result<Vec<(String, 
             else if no_space(e.message()) { "The phone is out of space. Free some space and download again.".into() }
             else { format!("Download failed: {}", e.message()) });
     }
+    // kept with the copy, so every later Get latest asks GitHub the same way
+    if let Ok(mut c) = Repository::open(dest).and_then(|r| r.config()) { let _ = c.set_bool("aiwalk.small", SMALL.load(std::sync::atomic::Ordering::Relaxed)); }
     let rows = each(dest, false, 0.5, progress);
     progress(1.0, "Done");
     Ok(rows)
@@ -404,6 +421,7 @@ pub fn clone(url: &str, dest: &Path, progress: Progress) -> Result<Vec<(String, 
 
 /// Moves the book forward (fast-forward only), then each readable folder, even when the book could not move.
 pub fn pull(tree: &Path, progress: Progress) -> (Result<(), String>, Vec<(String, Got)>) {
+    recall(tree);
     progress(0.0, "Getting the latest shared notes");
     let book = forward(tree, &|f| progress(f * 0.2, "Getting the latest shared notes")).map_err(|e| match e {
         NotMoved::Changed => "Could not update: you changed files here that the team changed too. Your changes are kept.".to_string(),
@@ -459,6 +477,13 @@ pub fn left(tree: &Path) -> Vec<String> {
     }
     all.sort_by_key(|p| p.to_lowercase());
     all
+}
+
+/// The folders of the vault at `tree` that are on demand (the papers), as paths from its top.
+pub fn on_demand_folders(tree: &Path) -> Vec<String> {
+    let lazy = on_demand(tree);
+    Repository::open(tree).map(|b| b.submodules().unwrap_or_default().iter()
+        .filter(|s| s.name().is_ok_and(|n| lazy.iter().any(|l| l == n))).map(|s| s.path().to_string_lossy().replace('\\', "/")).collect()).unwrap_or_default()
 }
 
 /// Brings one file left on GitHub to its place. `get(repo's address, blob id, where to write)` fetches the content.
@@ -565,6 +590,7 @@ fn send_one(dir: &Path, msg: &str, who: (&str, &str), links: &[String], f: &dyn 
 
 /// Sends every change under `tree`: each folder first, then the book with the folders that moved. Ok(what was sent).
 pub fn send(tree: &Path, msg: &str, who: (&str, &str), progress: Progress) -> Result<String, String> {
+    recall(tree);
     let book = Repository::open(tree).map_err(|e| e.message().to_string())?;
     let subs = folders(&book, tree);
     let (mut sent, mut moved, mut held, mut problems) = (0, vec![], vec![], vec![]);
@@ -620,9 +646,10 @@ pub fn vault_local(repos: Vec<String>) -> Local {
 
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
-pub fn vault_download(app: tauri::AppHandle, repo: String) -> Result<String, String> {
+pub fn vault_download(app: tauri::AppHandle, repo: String, small: bool) -> Result<String, String> {
     use tauri::Emitter;
     use_token(crate::login::active().map(|(_, t)| t));
+    self::small(small);
     let report = |f: f32, text: &str| { let _ = app.emit("vault-progress", (&repo, f, text)); };
     Ok(exo_core::exo_repos::summary("Downloaded", &clone(&format!("https://github.com/{repo}.git"), &dest(&repo), &report)?))
 }
@@ -643,14 +670,16 @@ pub fn vault_update(app: tauri::AppHandle, repo: String, path: String) -> Result
 /// The files left on GitHub for the copy at `path`, for the page to choose from.
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
-pub fn vault_left(path: String) -> Vec<String> { left(Path::new(&path)) }
+pub fn vault_left(path: String) -> (Vec<String>, Vec<String>) { (left(Path::new(&path)), on_demand_folders(Path::new(&path))) }
 
 /// Brings `files` to the phone, one after the other. Ok(what arrived); Err names the first that did not.
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
-pub fn vault_fetch(app: tauri::AppHandle, repo: String, path: String, files: Vec<String>) -> Result<String, String> {
+pub fn vault_fetch(app: tauri::AppHandle, repo: String, path: String, files: Vec<String>, everything: bool) -> Result<String, String> {
     use tauri::Emitter;
     use_token(crate::login::active().map(|(_, t)| t));
+    // asked for all that was left behind: the copy is no longer a small one, and Get latest stops leaving files out
+    if everything { if let Ok(mut c) = Repository::open(&path).and_then(|r| r.config()) { let _ = c.set_bool("aiwalk.small", false); } }
     for (i, f) in files.iter().enumerate() {
         let _ = app.emit("vault-progress", (&repo, i as f32 / files.len() as f32, format!("Getting {} ({} of {})", f.rsplit('/').next().unwrap_or(f), i + 1, files.len())));
         fetch(Path::new(&path), f, &github_blob).map_err(|e| format!("{f}: {e}{}", if i > 0 { format!(". {i} arrived before it") } else { String::new() }))?;
@@ -887,6 +916,18 @@ s.serve_forever()
         commit(&work, "paper.pdf", &large);
         commit(&work, "README.md", "book");
 
+        // a copy that takes everything: the large files come, the papers still do not
+        small(false);
+        let whole = root.join("phone-whole");
+        clone(&url("book"), &whole, &|_, _| {}).unwrap();
+        assert!(whole.join("paper.pdf").exists() && whole.join("Notes/slides.pptx").exists());
+        assert!(whole.join("Papers/README.md").exists() && !whole.join("Papers/smith2020.pdf").exists());
+        assert_eq!(left(&whole), ["Papers/smith2020.pdf"]);
+        assert_eq!(on_demand_folders(&whole), ["Papers"]);
+        assert!(pending(&whole).is_empty(), "{:?}", pending(&whole));
+
+        // the rest of this test: a small copy, as a phone short of room chooses
+        small(true);
         let phone = root.join("phone");
         clone(&url("book"), &phone, &|_, _| {}).unwrap();
         // the large files are not on the phone, nor in its git data; git knows they are left out on purpose
