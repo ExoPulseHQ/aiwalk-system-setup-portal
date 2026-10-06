@@ -49,7 +49,9 @@ fn state(tunnel: Option<&str>) -> &'static str {
     // sshd asking who we are means the whole path works; it refuses "probe", which is fine. Access turning the
     // kept sign-in away (the person was never let in, or was taken out) is not the machine being down
     if out.contains("Permission denied") || out.contains("Too many authentication failures") { "up" }
-    else if out.contains("Cloudflare refused the connection") { "refused" } else { "down" }
+    // HTTP 5xx is Cloudflare saying nothing is at the other end of the tunnel (530 after goat was restarted and its
+    // tunnel did not come back): the machine is down, and "not let in" sent people looking at their own access
+    else if out.contains("Cloudflare refused the connection") && !out.contains("(HTTP 5") { "refused" } else { "down" }
 }
 
 /// The state of each machine, checked all at once; a machine reached through another (`via`) shares its state.
