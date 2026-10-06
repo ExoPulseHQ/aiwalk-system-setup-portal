@@ -993,7 +993,7 @@ function phoneRow(v) {
     update.dataset.primary = 1;
     update.onclick = run(update, "Getting the latest", () => invoke("vault_update", { repo: v.repo, path }));
     const title = el("div", "title", "On this phone");
-    title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}.`));
+    title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}. Files over 2 MB are not on the phone; they stay on GitHub and are not touched by what you send.`));
     text.append(title, el("div", "sub path", path), msg);
     // what changed here is shown before anything leaves the phone, and goes only when Send is pressed
     const send = iconButton("arrow-up-from-line", "Send changes", "small");
@@ -1028,7 +1028,7 @@ function phoneRow(v) {
     const get = el("button", "small", "Download");
     get.onclick = run(get, "Downloading", () => invoke("vault_download", { repo: v.repo }));
     const sub = el("div", "sub");
-    sub.append("Goes to ", el("span", "cmd", folder), ". Large files such as papers stay on GitHub for now.");
+    sub.append("Goes to ", el("span", "cmd", folder), ". Files over 2 MB (papers, slide decks, Word files) stay on GitHub, so the notes fit on a phone.");
     text.append(el("div", "title", "Not on this phone yet"), sub, msg);
     buttons.append(get);
   }
