@@ -1,6 +1,10 @@
-//! The vault on a phone: download and "Get latest" without a git program, which Android does not have.
-//! Same shape as vault.rs on a computer: the book is cloned shallow, then each submodule on its own, so one the
-//! account cannot read only skips itself; the results are exo_core's `Got` rows and `summary`. No commit, no push.
+//! The vault on a phone: download, "Get latest" and "Send changes" without a git program, which Android does not
+//! have. Same shape as vault.rs on a computer: the book is cloned shallow, then each submodule on its own, so one
+//! the account cannot read only skips itself; the results are exo_core's `Got` rows and `summary`.
+//!
+//! Sending is `vault ship` cut down to what a phone needs: each folder's changes are one commit on top of the team's
+//! newest, pushed, and the book then records the folders that moved. Nothing is ever merged here: when the person
+//! and the team changed the same file, nothing is sent and their text stays, to be sorted out on a computer.
 //!
 //! Library: git2 (libgit2, compiled from source by libgit2-sys with the NDK's clang, as `ring` already is), not gix.
 //! libgit2 has every step here as one call: shallow fetch (`depth`), a checkout that refuses to overwrite the
@@ -14,7 +18,7 @@
 use exo_core::exo_repos::Got;
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use git2::transport::{self, Service, SmartSubtransport, SmartSubtransportStream, Transport};
-use git2::{AutotagOption, ErrorCode, FetchOptions, RemoteCallbacks, Repository};
+use git2::{AutotagOption, ErrorCode, FetchOptions, PushOptions, RemoteCallbacks, Repository, Signature, StatusOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Mutex, Once};
@@ -35,6 +39,9 @@ fn https() {
     // SAFETY: both run once, before any repo or remote is opened by this process (Once orders them before every use)
     ONCE.call_once(|| unsafe {
         transport::register("https", |remote| Transport::smart(remote, true, Https)).expect("https transport");
+        // the test's own server on this computer (git http-backend) speaks plain http
+        #[cfg(test)]
+        transport::register("http", |remote| Transport::smart(remote, true, Https)).expect("http transport");
         // Android's shared storage shows every file as owned by another user, so libgit2's ownership check (git's
         // safe.directory) refuses each copy there with "not owned by current user". Only this app's folders are opened.
         let _ = git2::opts::set_verify_owner_validation(false);
@@ -45,18 +52,20 @@ struct Https;
 
 impl SmartSubtransport for Https {
     fn action(&self, url: &str, action: Service) -> Result<Box<dyn SmartSubtransportStream>, git2::Error> {
-        let (post, path) = match action {
-            Service::UploadPackLs => (false, "/info/refs?service=git-upload-pack"),
-            Service::UploadPack => (true, "/git-upload-pack"),
-            _ => return Err(git2::Error::from_str("this app only downloads")),
+        let (post, service) = match action {
+            Service::UploadPackLs => (false, "git-upload-pack"),
+            Service::UploadPack => (true, "git-upload-pack"),
+            Service::ReceivePackLs => (false, "git-receive-pack"),
+            Service::ReceivePack => (true, "git-receive-pack"),
         };
-        Ok(Box::new(Stream { url: format!("{}{path}", url.trim_end_matches('/')), post, body: vec![], reply: None }))
+        let path = if post { format!("/{service}") } else { format!("/info/refs?service={service}") };
+        Ok(Box::new(Stream { url: format!("{}{path}", url.trim_end_matches('/')), post, service, body: vec![], reply: None }))
     }
     fn close(&self) -> Result<(), git2::Error> { Ok(()) }
 }
 
 /// One request: what libgit2 writes is the request body, sent at its first read; reads then come from the reply.
-struct Stream { url: String, post: bool, body: Vec<u8>, reply: Option<ureq::BodyReader<'static>> }
+struct Stream { url: String, post: bool, service: &'static str, body: Vec<u8>, reply: Option<ureq::BodyReader<'static>> }
 
 impl Write for Stream {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> { self.body.extend_from_slice(b); Ok(b.len()) }
@@ -80,8 +89,8 @@ impl Stream {
             req = req.header("Authorization", format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{t}"))));
         }
         let reply = if self.post {
-            req.method("POST").header("Content-Type", "application/x-git-upload-pack-request")
-                .header("Accept", "application/x-git-upload-pack-result")
+            req.method("POST").header("Content-Type", format!("application/x-{}-request", self.service))
+                .header("Accept", format!("application/x-{}-result", self.service))
                 .body(std::mem::take(&mut self.body)).map_err(|e| io(e.to_string())).and_then(|r| agent().run(r).map_err(|e| io(e.to_string())))
         } else {
             req.method("GET").body(()).map_err(|e| io(e.to_string())).and_then(|r| agent().run(r).map_err(|e| io(e.to_string())))
@@ -261,6 +270,114 @@ pub fn pull(tree: &Path, progress: Progress) -> (Result<(), String>, Vec<(String
     (book, rows)
 }
 
+// ---------------------------------------------------------------- send changes
+
+/// Files in `repo` that differ from its last commit: changed, new or gone. Folders that are repos of their own are
+/// left to their own turn.
+fn changed(repo: &Repository) -> Result<Vec<String>, git2::Error> {
+    let mut o = StatusOptions::new();
+    o.include_untracked(true).recurse_untracked_dirs(true).exclude_submodules(true);
+    Ok(repo.statuses(Some(&mut o))?.iter().filter_map(|e| e.path().ok().map(String::from)).filter(|p| !p.ends_with('/')).collect())
+}
+
+/// Every changed file under `tree`, the book's and each folder's, as paths from the vault's top.
+pub fn pending(tree: &Path) -> Vec<String> {
+    let Ok(book) = Repository::open(tree) else { return vec![] };
+    let mut all = changed(&book).unwrap_or_default();
+    for path in folders(&book, tree) {
+        if let Ok(r) = Repository::open(tree.join(&path)) { all.extend(changed(&r).unwrap_or_default().into_iter().map(|p| format!("{path}/{p}"))) }
+    }
+    all
+}
+
+/// The book's folders that are copies on this phone.
+fn folders(book: &Repository, tree: &Path) -> Vec<String> {
+    book.submodules().unwrap_or_default().iter().map(|s| s.path().to_string_lossy().replace('\\', "/")).filter(|p| tree.join(p).join(".git").exists()).collect()
+}
+
+/// Commits what changed in `dir` (and, for the book, the folders in `links` that just moved) on top of the team's
+/// newest and pushes it. Ok((files sent, files held back because their names look like a key)).
+fn send_one(dir: &Path, msg: &str, who: (&str, &str), links: &[String], f: &dyn Fn(f32)) -> Result<(usize, Vec<String>), String> {
+    https();
+    let say = |e: git2::Error| e.message().to_string();
+    let repo = Repository::open(dir).map_err(say)?;
+    let mut files = changed(&repo).map_err(say)?;
+    // a deletion may go (that is how a secret leaves the repo); adding or changing one may not
+    let lines: Vec<String> = files.iter().map(|p| format!("{}\t{p}", if dir.join(p).exists() { 'A' } else { 'D' })).collect();
+    let held = exo_core::vault_ship::leaks(&lines.iter().map(String::as_str).collect::<Vec<_>>(), &[]);
+    files.retain(|p| !held.contains(p));
+    if files.is_empty() && links.is_empty() { return Ok((0, held)) }
+    for attempt in 1..=2 {
+        // the team's newest first, so the commit sits on top of it and there is never anything to merge
+        forward(dir, f).map_err(|e| match e {
+            NotMoved::Changed => "you changed a file here that the team changed too. Nothing was sent and your text is kept; sort it out on a computer".to_string(),
+            NotMoved::Diverged => "this copy has a commit from another app that is not on GitHub".to_string(),
+            NotMoved::Failed(e) if no_access(&e) => "no access. Sign in again, or ask an owner for access".to_string(),
+            NotMoved::Failed(e) => say(e),
+        })?;
+        let head = repo.head().map_err(say)?;
+        let name = head.name().map_err(say)?.to_string();
+        let branch = name.strip_prefix("refs/heads/").ok_or("no branch checked out")?.to_string();
+        let parent = head.peel_to_commit().map_err(say)?;
+        let mut index = repo.index().map_err(say)?;
+        // read again from disk: forward() moved it through a handle of its own, and the copy this handle read for
+        // the list of changes is from before; a tree written from that one would drop what the team just added
+        index.read(true).map_err(say)?;
+        for p in files.iter().chain(links) {
+            if dir.join(p).exists() { index.add_path(Path::new(p)) } else { index.remove_path(Path::new(p)) }.map_err(say)?;
+        }
+        index.write().map_err(say)?;
+        let tree = repo.find_tree(index.write_tree().map_err(say)?).map_err(say)?;
+        if tree.id() == parent.tree_id() { return Ok((0, held)) }
+        let sig = Signature::now(who.0, who.1).map_err(say)?;
+        let made = repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[&parent]).map_err(say)?;
+        // a push GitHub refuses still returns Ok: what it said about the branch comes through the callback
+        let refused = std::cell::RefCell::new(None::<String>);
+        let pushed = {
+            let mut cb = RemoteCallbacks::new();
+            cb.push_update_reference(|_, status| { *refused.borrow_mut() = status.map(String::from); Ok(()) });
+            let mut o = PushOptions::new();
+            o.remote_callbacks(cb);
+            repo.find_remote("origin").and_then(|mut origin| origin.push(&[format!("refs/heads/{branch}:refs/heads/{branch}")], Some(&mut o)))
+        };
+        let problem = pushed.err().map(|e| if no_access(&e) { "you may read this folder but not change it. Ask an owner for write access".to_string() } else { say(e) })
+            .or(refused.into_inner());
+        let Some(problem) = problem else {
+            repo.reference(&format!("refs/remotes/origin/{branch}"), made, true, "aIwalk: sent").map_err(say)?;
+            return Ok((files.len(), held))
+        };
+        // not sent: the commit is taken back (the files stay as they are, still counted as changed), so the copy
+        // never holds a commit GitHub does not have. Someone pushing in between gets one more try on top of theirs.
+        repo.reference(&name, parent.id(), true, "aIwalk: not sent").map_err(say)?;
+        if attempt == 2 || problem.contains("write access") { return Err(problem) }
+    }
+    unreachable!()
+}
+
+/// Sends every change under `tree`: each folder first, then the book with the folders that moved. Ok(what was sent).
+pub fn send(tree: &Path, msg: &str, who: (&str, &str), progress: Progress) -> Result<String, String> {
+    let book = Repository::open(tree).map_err(|e| e.message().to_string())?;
+    let subs = folders(&book, tree);
+    let (mut sent, mut moved, mut held, mut problems) = (0, vec![], vec![], vec![]);
+    for (i, path) in subs.iter().enumerate() {
+        let at = |part: f32| 0.8 * (i as f32 + part) / subs.len() as f32;
+        progress(at(0.0), &format!("Sending {path}"));
+        match send_one(&tree.join(path), msg, who, &[], &|p| progress(at(p), &format!("Sending {path}"))) {
+            Ok((n, h)) => { if n > 0 { sent += n; moved.push(path.clone()) } held.extend(h.into_iter().map(|p| format!("{path}/{p}"))) }
+            Err(e) => problems.push(format!("{path}: {e}")),
+        }
+    }
+    progress(0.8, "Sending the shared notes");
+    match send_one(tree, msg, who, &moved, &|p| progress(0.8 + 0.2 * p, "Sending the shared notes")) {
+        Ok((n, h)) => { sent += n; held.extend(h) }
+        Err(e) => problems.push(format!("Shared notes: {e}")),
+    }
+    progress(1.0, "Done");
+    let mut text = match sent { 0 => "Nothing to send".to_string(), 1 => "Sent 1 file".to_string(), n => format!("Sent {n} files") };
+    if !held.is_empty() { text += &format!(". Held back, the name looks like a key or password: {}", held.join(", ")) }
+    if problems.is_empty() { Ok(text) } else { Err(format!("{}. {text}", problems.join(". "))) }
+}
+
 // ---------------------------------------------------------------- the phone's commands
 
 /// Where the vaults go: Documents/aIwalk in shared storage, the only kind of folder Obsidian for Android can open.
@@ -312,6 +429,23 @@ pub fn vault_update(app: tauri::AppHandle, repo: String, path: String) -> Result
         Err(e) => Err(format!("{e}{folders}")),
         Ok(()) => Ok(exo_core::exo_repos::summary("Up to date", &rows)),
     }
+}
+
+/// The changed files in the copy at `path`, for the page to show before anything is sent.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_changes(path: String) -> Vec<String> { pending(Path::new(&path)) }
+
+/// Sends them, as the signed-in account (GitHub's no-reply address, as on a computer).
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_send(app: tauri::AppHandle, repo: String, path: String, message: String) -> Result<String, String> {
+    use tauri::Emitter;
+    use_token(crate::login::active().map(|(_, t)| t));
+    let user = crate::github::get("user").map_err(|_| "Sign in first".to_string())?;
+    let (Some(login), Some(id)) = (user["login"].as_str(), user["id"].as_u64()) else { return Err("Sign in first".into()) };
+    let message = if message.trim().is_empty() { "docs: notes from the phone" } else { message.trim() };
+    send(Path::new(&path), message, (login, &format!("{id}+{login}@users.noreply.github.com")), &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); })
 }
 
 // ---------------------------------------------------------------- test
@@ -423,6 +557,131 @@ mod tests {
         commit(&notes_work, "a.md", "four");
         let (_, rows) = pull(&dest, &|_, _| {});
         assert!(rows.contains(&("Notes".into(), Got::Kept)), "{rows:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn out(dir: &Path, args: &[&str]) -> String {
+        String::from_utf8_lossy(&std::process::Command::new("git").current_dir(dir).args(args).output().unwrap().stdout).trim().to_string()
+    }
+
+    /// git's own server (git http-backend) behind a few lines of Python: shallow copies and pushes then go through
+    /// the same transport and the same protocol as with GitHub, which a folder (file://) does not exercise.
+    const SERVER: &str = r#"
+import http.server, os, subprocess, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        path, _, q = self.path.partition('?')
+        n = int(self.headers.get('Content-Length') or 0)
+        env = dict(os.environ, GIT_PROJECT_ROOT=sys.argv[1], GIT_HTTP_EXPORT_ALL='1', REQUEST_METHOD=self.command, PATH_INFO=path,
+                   QUERY_STRING=q, CONTENT_TYPE=self.headers.get('Content-Type', ''), CONTENT_LENGTH=str(n), REMOTE_ADDR='127.0.0.1',
+                   HTTP_CONTENT_ENCODING=self.headers.get('Content-Encoding', ''), GIT_PROTOCOL=self.headers.get('Git-Protocol', ''))
+        out = subprocess.run(['git', 'http-backend'], input=self.rfile.read(n), env=env, capture_output=True).stdout
+        head, _, body = out.partition(b'\r\n\r\n')
+        lines = [l.split(': ', 1) for l in head.decode().split('\r\n')]
+        self.send_response(int(dict(lines).get('Status', '200').split()[0]))
+        for k, v in lines:
+            if k != 'Status': self.send_header(k, v)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_POST = do_GET
+    def log_message(self, *a): pass
+s = http.server.ThreadingHTTPServer(('127.0.0.1', 0), H)
+print(s.server_address[1], flush=True)
+s.serve_forever()
+"#;
+
+    #[test]
+    fn phonegit_sends_changes_from_a_shallow_copy() {
+        use std::io::BufRead;
+        let root = std::env::temp_dir().join(format!("aiwalk-phonesend-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let srv = root.join("srv");
+        std::fs::create_dir_all(&srv).unwrap();
+        // stopped when the test ends, also by a failed assert: left running it holds the test's output open
+        struct Server(std::process::Child);
+        impl Drop for Server { fn drop(&mut self) { let _ = self.0.kill(); } }
+        let mut server = Server(std::process::Command::new("python3").args(["-c", SERVER, &srv.to_string_lossy()]).stdout(std::process::Stdio::piped()).spawn().unwrap());
+        let mut port = String::new();
+        std::io::BufReader::new(server.0.stdout.take().unwrap()).read_line(&mut port).unwrap();
+        let url = |name: &str| format!("http://127.0.0.1:{}/{name}.git", port.trim());
+        let bare = |name: &str| {
+            let dir = srv.join(format!("{name}.git"));
+            git(&root, &["init", "-q", "--bare", "-b", "main", &dir.to_string_lossy()]);
+            git(&dir, &["config", "http.receivepack", "true"]);
+            dir
+        };
+        let (notes, book) = (bare("notes"), bare("book"));
+
+        // the team's side, with a real git: two commits each, so a shallow copy really is missing history
+        let notes_work = root.join("notes-work");
+        git(&root, &["clone", "-q", &url("notes"), &notes_work.to_string_lossy()]);
+        commit(&notes_work, "a.md", "one");
+        commit(&notes_work, "b.md", "b one");
+        let work = root.join("book-work");
+        git(&root, &["clone", "-q", &url("book"), &work.to_string_lossy()]);
+        commit(&work, "old.md", "to be deleted");
+        git(&work, &["submodule", "add", "-q", "-b", "main", "--name", "notes", &url("notes"), "Notes"]);
+        commit(&work, "README.md", "book");
+
+        let phone = root.join("phone");
+        clone(&url("book"), &phone, &|_, _| {}).unwrap();
+        assert!(Repository::open(&phone).unwrap().is_shallow() && Repository::open(phone.join("Notes")).unwrap().is_shallow());
+        assert!(pending(&phone).is_empty(), "{:?}", pending(&phone));
+        let who = ("jo", "1+jo@users.noreply.github.com");
+        assert_eq!(send(&phone, "m", who, &|_, _| {}).unwrap(), "Nothing to send");
+
+        // a changed note in a folder, a new file and a deleted one in the book, and a file that looks like a key
+        std::fs::write(phone.join("Notes/a.md"), "from the phone").unwrap();
+        std::fs::write(phone.join("new.md"), "new").unwrap();
+        std::fs::remove_file(phone.join("old.md")).unwrap();
+        std::fs::write(phone.join("my-token.txt"), "x").unwrap();
+        let mut p = pending(&phone);
+        p.sort();
+        assert_eq!(p, ["Notes/a.md", "my-token.txt", "new.md", "old.md"]);
+        let said = send(&phone, "docs: from the phone", who, &|_, _| {}).unwrap();
+        println!("{said}");
+        assert!(said.starts_with("Sent 3 files") && said.contains("my-token.txt"), "{said}");
+        assert_eq!(out(&notes, &["show", "main:a.md"]), "from the phone");
+        assert_eq!(out(&book, &["show", "main:new.md"]), "new");
+        assert!(out(&book, &["ls-tree", "--name-only", "main"]).lines().all(|l| l != "old.md" && l != "my-token.txt"));
+        assert_eq!(out(&book, &["log", "-1", "--format=%an <%ae> %s", "main"]), "jo <1+jo@users.noreply.github.com> docs: from the phone");
+        // the book records the folder's new commit, and that commit is on the server
+        assert_eq!(out(&book, &["rev-parse", "main:Notes"]), out(&notes, &["rev-parse", "main"]));
+        assert_eq!(out(&notes, &["rev-list", "--count", "main"]), "3", "history on the server is whole, not cut at the shallow point");
+        assert_eq!(pending(&phone), ["my-token.txt"]);
+
+        // the team moved on in the meantime, in another file: the phone's change goes on top of theirs
+        git(&notes_work, &["pull", "-q"]);
+        commit(&notes_work, "c.md", "theirs");
+        std::fs::write(phone.join("Notes/b.md"), "b from the phone").unwrap();
+        assert!(send(&phone, "m2", who, &|_, _| {}).unwrap().starts_with("Sent 1 file"));
+        assert_eq!(out(&notes, &["show", "main:b.md"]), "b from the phone");
+        assert_eq!(out(&notes, &["show", "main:c.md"]), "theirs");
+        assert_eq!(std::fs::read_to_string(phone.join("Notes/c.md")).unwrap(), "theirs");
+
+        // the same file changed by both: nothing sent, the text kept, no commit left behind that GitHub lacks
+        git(&notes_work, &["pull", "-q"]);
+        commit(&notes_work, "a.md", "theirs again");
+        std::fs::write(phone.join("Notes/a.md"), "mine again").unwrap();
+        let before = out(&phone.join("Notes"), &["rev-parse", "HEAD"]);
+        let e = send(&phone, "m3", who, &|_, _| {}).unwrap_err();
+        println!("{e}");
+        assert!(e.contains("Notes: you changed a file here that the team changed too"), "{e}");
+        assert_eq!(std::fs::read_to_string(phone.join("Notes/a.md")).unwrap(), "mine again");
+        assert_eq!(out(&notes, &["show", "main:a.md"]), "theirs again");
+        assert_eq!(out(&phone.join("Notes"), &["rev-parse", "HEAD"]), before);
+
+        // a folder the account may read but not change: said so, and the commit is taken back
+        git(&notes, &["config", "http.receivepack", "false"]);
+        std::fs::write(phone.join("Notes/a.md"), "theirs again").unwrap();
+        std::fs::write(phone.join("Notes/d.md"), "not allowed").unwrap();
+        let e = send(&phone, "m4", who, &|_, _| {}).unwrap_err();
+        println!("{e}");
+        assert!(e.contains("write access"), "{e}");
+        assert_eq!(out(&phone.join("Notes"), &["rev-parse", "HEAD"]), out(&phone.join("Notes"), &["rev-parse", "origin/main"]));
+        assert!(pending(&phone).contains(&"Notes/d.md".to_string()));
+
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

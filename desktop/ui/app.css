@@ -526,3 +526,6 @@ html.phone #toast { left: 50%; bottom: calc(76px + env(safe-area-inset-bottom, 0
 html.phone main button, html.phone main select, html.phone main input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; }
 html.phone main button.icon-only, html.phone main button:has(> .icon:only-child) { min-width: 40px; }
 html.phone main .chip button { min-height: 0; min-width: 0; }
+/* what would be sent from the phone, shown before it goes */
+.place .review:not(:empty) { display: grid; gap: var(--s2); margin-top: var(--s3); }
+.place .review .files { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: var(--fs-s); }

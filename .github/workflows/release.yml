@@ -59,8 +59,8 @@ jobs:
             - Windows: the `.msi` or `-setup.exe`
             - macOS, Apple silicon (M1 and later): `aarch64.dmg`; Intel: `x64.dmg`
             - Linux: the `.deb` (Ubuntu, Debian) or the `.AppImage`
-            - Android phone: the `.apk` (sign-in, machines and owner tools; no vault or terminal yet). The phone asks
-              once to allow installing from this source.
+            - Android phone: the `.apk` (sign-in, machines, owner tools, and the vault: download, get latest and send
+              changes; no terminal). The phone asks once to allow installing from this source.
 
             On Windows git comes with the app; nothing else is needed. The app is not signed with a paid certificate yet:
             Windows SmartScreen asks once (More info, Run anyway). On macOS, open it once, then System Settings,

@@ -160,7 +160,7 @@ window.__fixtures = (scenario, os) => {
     vault_local: os !== "android" ? { copies: { [BOOK]: "/home/demo/Documents/aIwalk/docs-book" }, obsidian: true }
       // a phone: phone=here (a copy there), phone=denied (All files access not given yet), else not downloaded
       : { copies: q.get("phone") === "here" ? { [BOOK]: "/storage/emulated/0/Documents/aIwalk/docs-book" } : {}, obsidian: true, writable: q.get("phone") !== "denied" }, default_folder: a => `/home/demo/Documents/aIwalk/${(a.repo || "").split("/").pop()}`,
-    pick_folder: none, vault_link: ok("Linked"), vault_download: ok("Downloaded"), vault_update: ok("Up to date"), vault_open: none, obsidian_install: ok("Obsidian installed"),
+    pick_folder: none, vault_link: ok("Linked"), vault_download: ok("Downloaded"), vault_update: ok("Up to date"), vault_changes: ["L1_Sensing/Calibration_Notes.md", "System/_Management.md", "Meeting_2026_10_06.md"], vault_send: ok("Sent 3 files"), vault_open: none, obsidian_install: ok("Obsidian installed"),
     // machines
     reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, guest && h === "heron" ? "refused" : "up"])),
     find_machine: a => !/^[a-z0-9-]{1,32}$/.test((a.name || "").trim()) ? new Error("A machine's name is lower-case letters, digits and hyphens, 1 to 32 of them.")

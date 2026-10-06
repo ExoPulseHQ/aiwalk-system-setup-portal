@@ -995,7 +995,27 @@ function phoneRow(v) {
     const title = el("div", "title", "On this phone");
     title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}.`));
     text.append(title, el("div", "sub path", path), msg);
-    buttons.append(update);
+    // what changed here is shown before anything leaves the phone, and goes only when Send is pressed
+    const send = iconButton("arrow-up-from-line", "Send changes", "small");
+    const review = el("div", "review");
+    send.onclick = async () => {
+      msg.textContent = "";
+      const files = await working(send, "Looking", () => invoke("vault_changes", { path })).catch(e => { msg.textContent = e; return null; });
+      if (!files) return;
+      if (!files.length) { review.replaceChildren(); msg.textContent = "Nothing changed on this phone."; return; }
+      const list = el("ul", "files");
+      list.append(...files.slice(0, 8).map(f => el("li", "cmd", f)));
+      if (files.length > 8) list.append(el("li", "sub", `and ${files.length - 8} more`));
+      const what = el("input");
+      what.placeholder = "What changed, in a few words";
+      what.setAttribute("aria-label", "What changed");
+      const go = el("button", "small", files.length === 1 ? "Send 1 file" : `Send ${files.length} files`);
+      go.dataset.primary = 1;
+      go.onclick = run(go, "Sending", () => invoke("vault_send", { repo: v.repo, path, message: what.value }));
+      review.replaceChildren(list, what, go);
+    };
+    text.append(review);
+    buttons.append(update, send);
   } else if (!v.permission) {
     return el("span");
   } else if (!filesOk()) {
