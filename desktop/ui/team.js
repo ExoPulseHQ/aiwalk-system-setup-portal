@@ -1009,7 +1009,7 @@ function phoneRow(v) {
     update.dataset.primary = 1;
     update.onclick = run(update, "Getting the latest", () => invoke("vault_update", { repo: v.repo, path }));
     const title = el("div", "title", "On this phone");
-    title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}. Files over 2 MB are not on the phone; they stay on GitHub and are not touched by what you send.`));
+    title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}. Papers and files over 2 MB are not on the phone until you get them with Get a file; what you send does not touch them.`));
     text.append(title, el("div", "sub path", path), msg);
     // what changed here is shown before anything leaves the phone, and goes only when Send is pressed
     const send = iconButton("arrow-up-from-line", "Send changes", "small");
@@ -1031,7 +1031,39 @@ function phoneRow(v) {
       review.replaceChildren(list, what, go);
     };
     text.append(review);
-    buttons.append(update, send);
+    // papers and files over 2 MB are left on GitHub; any of them comes to the phone by itself, to its own place
+    const fetchOne = iconButton("folder-open", "Get a file", "small");
+    fetchOne.onclick = async () => {
+      msg.textContent = "";
+      const all = await working(fetchOne, "Looking", () => invoke("vault_left", { path })).catch(e => { msg.textContent = e; return null; });
+      if (!all) return;
+      if (!all.length) { msg.textContent = "Every file of this vault is on the phone."; return; }
+      const box = el("div", "getfile"), find = el("input"), list = el("ul", "files"), count = el("p", "sub");
+      find.placeholder = "Part of a name or a folder"; find.setAttribute("aria-label", "Find a file");
+      let chosen = null;
+      const get = files => { chosen = files; document.getElementById("dialog").close("get"); };
+      const draw = () => {
+        const q = find.value.trim().toLowerCase(), hits = q ? all.filter(f => f.toLowerCase().includes(q)) : all;
+        list.replaceChildren(...hits.slice(0, 60).map(f => {
+          const li = el("li"), b = el("button", "ghost small file");
+          b.append(el("span", "cmd", f.split("/").pop()), el("span", "sub", f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : ""));
+          b.onclick = () => get([f]);
+          li.append(b); return li;
+        }));
+        count.replaceChildren(hits.length > 60 ? `${hits.length} files; the first 60 are shown. Type more of the name.` : hits.length === 1 ? "1 file" : `${hits.length} files`);
+        // a whole folder at once, when the search has narrowed it to a few
+        if (q && hits.length > 1 && hits.length <= 30) {
+          const every = el("button", "small", `Get all ${hits.length}`);
+          every.onclick = () => get(hits);
+          count.append(" ", every);
+        }
+      };
+      find.oninput = draw; draw();
+      box.append(find, count, list);
+      await ask("Get a file", "These are on GitHub, not on this phone: papers and files over 2 MB.", [["close", "Close", true]], box);
+      if (chosen) await run(fetchOne, chosen.length === 1 ? "Getting the file" : "Getting the files", () => invoke("vault_fetch", { repo: v.repo, path, files: chosen }))();
+    };
+    buttons.append(update, send, fetchOne);
   } else if (!v.permission) {
     return el("span");
   } else if (!filesOk()) {
@@ -1044,7 +1076,7 @@ function phoneRow(v) {
     const get = el("button", "small", "Download");
     get.onclick = run(get, "Downloading", () => invoke("vault_download", { repo: v.repo }));
     const sub = el("div", "sub");
-    sub.append("Goes to ", el("span", "cmd", folder), ". Files over 2 MB (papers, slide decks, Word files) stay on GitHub, so the notes fit on a phone.");
+    sub.append("Goes to ", el("span", "cmd", folder), ". Papers and files over 2 MB stay on GitHub, so the notes fit on a phone; Get a file brings any of them afterwards.");
     text.append(el("div", "title", "Not on this phone yet"), sub, msg);
     buttons.append(get);
   }

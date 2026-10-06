@@ -530,3 +530,10 @@ html.phone main .chip button { min-height: 0; min-width: 0; }
 /* what would be sent from the phone, shown before it goes */
 .place .review:not(:empty) { display: grid; gap: var(--s2); margin-top: var(--s3); }
 .place .review .files { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: var(--fs-s); }
+/* the files left on GitHub, to pick one from */
+.getfile { display: grid; gap: var(--s2); }
+.getfile .files { margin: 0; padding: 0; list-style: none; max-height: 46vh; overflow-y: auto; }
+#dialog .getfile button.file { display: grid; justify-items: start; justify-content: start; align-content: center; width: 100%; text-align: left; gap: 2px; padding: var(--s2) var(--s1); height: auto;
+  border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; overflow-wrap: anywhere; }
+.getfile .sub button { margin-left: var(--s2); }
+html.phone #dialog button, html.phone #dialog select, html.phone #dialog input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; }

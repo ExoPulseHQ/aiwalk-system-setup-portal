@@ -11,13 +11,16 @@
 //! person's own changes (`CheckoutBuilder::safe`) and the submodule list; with gix, updating a work tree that is
 //! already there would be ours to write. libgit2 is built without HTTPS of its own (no OpenSSL): `https://` goes
 //! through the transport registered below on top of ureq, so TLS is the rustls (ring) the app already ships.
-//! libgit2 has no partial clone and no sparse checkout, so on-demand folders (the papers) are left for later here.
+//! libgit2 has no partial clone and no sparse checkout; what stands in for them is described next.
 //!
 //! Large files stay on GitHub: the whole vault is about 3 GB of files and as much again of git data, most of it pdf,
 //! pptx and docx, more than a phone has room for. libgit2 cannot ask for a clone without them, but the request it
 //! writes goes through the transport below, which adds git's own `filter blob:limit` line to it (`with_filter`) when
 //! the server offers that. The files GitHub then leaves out are kept in the index as skip-worktree entries
-//! (`place`): not on the phone, not seen as deleted, and still in every commit sent from here.
+//! (`place`): not on the phone, not seen as deleted, and still in every commit sent from here. The on-demand
+//! folders (the papers) come the same way with a much lower limit, so only their small notes arrive. Any file left
+//! on GitHub can be brought to the phone by itself (`fetch`): its content is asked from GitHub by the id git already
+//! holds for that path, and written in place; being what git records there, it is not a change.
 //!
 //! The computer app never compiles this file except for its test (`--features phone-git`); it keeps calling git.
 
@@ -80,20 +83,26 @@ struct Stream { url: String, base: String, post: bool, service: &'static str, bo
 /// of 3.10 (measured 2026-10-06); what stays behind is papers, slide decks, Word files and a few large figures.
 const LIMIT: &str = "blob:limit=2m";
 
+/// The on-demand folders (the papers): only their notes come; every paper is one tap away (`fetch`).
+const LIMIT_ON_DEMAND: &str = "blob:limit=64k";
+
 /// The repos (by address) whose server said it can leave large files out.
 static FILTERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The on-demand repos (by address), which get LIMIT_ON_DEMAND.
+static ON_DEMAND: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 fn pkt(line: &[u8]) -> Vec<u8> { [format!("{:04x}", line.len() + 4).as_bytes(), line].concat() }
 
 /// libgit2's upload-pack request with git's partial-clone filter added: `filter` among the first want's
 /// capabilities and a `filter <spec>` line before the first flush. `thin-pack` is taken out, so nothing arrives as
 /// a difference against a file that was left out. A request this does not understand goes out as it came.
-fn with_filter(body: &[u8]) -> Vec<u8> {
+fn with_filter(body: &[u8], spec: &str) -> Vec<u8> {
     let (mut out, mut at, mut asked, mut done) = (Vec::with_capacity(body.len() + 64), 0, false, false);
     while at + 4 <= body.len() {
         let Some(n) = std::str::from_utf8(&body[at..at + 4]).ok().and_then(|h| usize::from_str_radix(h, 16).ok()) else { return body.to_vec() };
         if n == 0 {
-            if asked && !done { out.extend(pkt(format!("filter {LIMIT}\n").as_bytes())); done = true }
+            if asked && !done { out.extend(pkt(format!("filter {spec}\n").as_bytes())); done = true }
             out.extend(b"0000");
             at += 4;
             continue
@@ -143,7 +152,10 @@ impl Stream {
             req = req.header("Authorization", format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{t}"))));
         }
         let reply = if self.post {
-            if self.service == "git-upload-pack" && FILTERS.lock().unwrap().contains(&self.base) { self.body = with_filter(&self.body) }
+            if self.service == "git-upload-pack" && FILTERS.lock().unwrap().contains(&self.base) {
+                let spec = if ON_DEMAND.lock().unwrap().contains(&self.base) { LIMIT_ON_DEMAND } else { LIMIT };
+                self.body = with_filter(&self.body, spec);
+            }
             req.method("POST").header("Content-Type", format!("application/x-{}-request", self.service))
                 .header("Accept", format!("application/x-{}-result", self.service))
                 .body(std::mem::take(&mut self.body)).map_err(|e| io(e.to_string())).and_then(|r| agent().run(r).map_err(|e| io(e.to_string())))
@@ -214,7 +226,6 @@ fn get(url: &str, dest: &Path, branch: Option<&str>, f: &dyn Fn(f32)) -> Result<
 /// Makes the files on the phone those of `new`, coming from `old` (None: a new, empty copy). Files of `new` that
 /// were left on GitHub are not written; the index holds them as skip-worktree, which is git's own way of saying
 /// "not here on purpose". Coming from `old`, a file the person changed that `new` changes too stops it (Conflict).
-// ponytail: a file that grew past the limit keeps its old, smaller text on the phone until it is deleted there.
 fn place(repo: &Repository, old: Option<&git2::Tree>, new: &git2::Tree) -> Result<(), git2::Error> {
     let odb = repo.odb()?;
     let (mut here, mut later) = (vec![], vec![]);
@@ -248,6 +259,11 @@ fn place(repo: &Repository, old: Option<&git2::Tree>, new: &git2::Tree) -> Resul
     let mut index = repo.index()?;
     index.read(true)?;
     for (path, id, mode) in later {
+        // a copy of this file's earlier version is on the phone (fetched, or from before it grew past the limit) and
+        // the person did not change it: it goes, or it would read as their change and be sent over the team's new one
+        if let (Some(was), Some(file)) = (index.get_path(Path::new(&path), 0), repo.workdir().map(|w| w.join(&path))) {
+            if was.id != id && file.is_file() && git2::Oid::hash_file(ObjectType::Blob, &file).is_ok_and(|h| h == was.id) { let _ = std::fs::remove_file(&file); }
+        }
         let zero = IndexTime::new(0, 0);
         // 0x4000 in flags: this entry has extended flags; 1 << 14 there: skip-worktree
         index.add(&IndexEntry { ctime: zero, mtime: zero, dev: 0, ino: 0, mode: mode as u32, uid: 0, gid: 0, file_size: 0, id,
@@ -330,6 +346,18 @@ fn each(tree: &Path, update: bool, from: f32, progress: Progress) -> Vec<(String
         let f = |part: f32| progress(at(part), &say);
         let dir = tree.join(path);
         let got = if lazy.contains(name) {
+            // the folder's list of files and its small notes; the papers themselves one at a time, when asked for.
+            // Only from a server that can leave files out: anything else would send all of it.
+            let base = url.trim_end_matches('/').to_string();
+            { let mut d = ON_DEMAND.lock().unwrap(); if !d.contains(&base) { d.push(base.clone()) } }
+            if dir.join(".git").exists() { if update { let _ = forward(&dir, &f); } }
+            else if empty(&dir) && !url.starts_with("file://") {
+                let made = !dir.exists();
+                if get(&url, &dir, branch.as_deref(), &f).is_err() || !FILTERS.lock().unwrap().contains(&base) {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    if !made { let _ = std::fs::create_dir_all(&dir); }
+                }
+            }
             Got::Later
         } else if dir.join(".git").exists() {
             match if update { forward(&dir, &f) } else { Ok(()) } {
@@ -416,6 +444,64 @@ pub fn pending(tree: &Path) -> Vec<String> {
 /// The book's folders that are copies on this phone.
 fn folders(book: &Repository, tree: &Path) -> Vec<String> {
     book.submodules().unwrap_or_default().iter().map(|s| s.path().to_string_lossy().replace('\\', "/")).filter(|p| tree.join(p).join(".git").exists()).collect()
+}
+
+/// The files left on GitHub: known to git at these paths (from the vault's top), not on the phone.
+pub fn left(tree: &Path) -> Vec<String> {
+    let Ok(book) = Repository::open(tree) else { return vec![] };
+    let of = |repo: &Repository, dir: &Path, prefix: &str| -> Vec<String> {
+        repo.index().map(|i| i.iter().filter(|e| e.flags_extended & (1 << 14) != 0)
+            .filter_map(|e| String::from_utf8(e.path).ok()).filter(|p| !dir.join(p).exists()).map(|p| format!("{prefix}{p}")).collect()).unwrap_or_default()
+    };
+    let mut all = of(&book, tree, "");
+    for path in folders(&book, tree) {
+        if let Ok(r) = Repository::open(tree.join(&path)) { all.extend(of(&r, &tree.join(&path), &format!("{path}/"))) }
+    }
+    all.sort_by_key(|p| p.to_lowercase());
+    all
+}
+
+/// Brings one file left on GitHub to its place. `get(repo's address, blob id, where to write)` fetches the content.
+pub fn fetch(tree: &Path, path: &str, get: &dyn Fn(&str, &str, &Path) -> Result<(), String>) -> Result<(), String> {
+    let say = |e: git2::Error| e.message().to_string();
+    let book = Repository::open(tree).map_err(say)?;
+    // the folder the path is in (the longest that matches), else the book itself
+    let mut subs = folders(&book, tree);
+    subs.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    let (dir, inner) = match subs.iter().find(|s| path.starts_with(&format!("{s}/"))) {
+        Some(s) => (tree.join(s), &path[s.len() + 1..]),
+        None => (tree.to_path_buf(), path),
+    };
+    let repo = Repository::open(&dir).map_err(say)?;
+    let entry = repo.index().map_err(say)?.get_path(Path::new(inner), 0).ok_or("git does not know this file")?;
+    let url = repo.find_remote("origin").map_err(say)?.url().unwrap_or_default().to_string();
+    let file = dir.join(inner);
+    if file.exists() { return Ok(()) }
+    if let Some(p) = file.parent() { std::fs::create_dir_all(p).map_err(|e| e.to_string())?; }
+    // written beside its place and moved in whole: a download that stops half way leaves no half file to be sent
+    let part = file.with_file_name(format!(".{}.part", file.file_name().unwrap_or_default().to_string_lossy()));
+    let done = get(&url, &entry.id.to_string(), &part)
+        .and_then(|()| git2::Oid::hash_file(ObjectType::Blob, &part).map_err(say))
+        .and_then(|h| if h == entry.id { Ok(()) } else { Err("what arrived is not the file git recorded".to_string()) })
+        .and_then(|()| std::fs::rename(&part, &file).map_err(|e| e.to_string()));
+    if done.is_err() { let _ = std::fs::remove_file(&part); }
+    done
+}
+
+/// A file's content from GitHub by its blob id, as the signed-in account.
+fn github_blob(url: &str, id: &str, to: &Path) -> Result<(), String> {
+    let (owner, repo) = exo_core::vault_ship::github_repo(url.trim_end_matches('/')).ok_or("this folder is not on GitHub")?;
+    let mut req = ureq::http::Request::builder().method("GET").uri(format!("https://api.github.com/repos/{owner}/{repo}/git/blobs/{id}"))
+        .header("Accept", "application/vnd.github.raw+json").header("User-Agent", "aiwalk-system-setup");
+    if let Some(t) = TOKEN.lock().unwrap().clone() { req = req.header("Authorization", format!("Bearer {t}")); }
+    let mut reply = agent().run(req.body(()).map_err(|e| e.to_string())?).map_err(|e| format!("GitHub did not answer: {e}"))?;
+    match reply.status().as_u16() {
+        200 => {}
+        401 | 403 | 404 => return Err("no access. Sign in again, or ask an owner for access".into()),
+        s => return Err(format!("GitHub answered HTTP {s}")),
+    }
+    let mut file = std::fs::File::create(to).map_err(|e| e.to_string())?;
+    std::io::copy(&mut reply.body_mut().as_reader(), &mut file).map(|_| ()).map_err(|e| format!("the download stopped: {e}"))
 }
 
 /// Commits what changed in `dir` (and, for the book, the folders in `links` that just moved) on top of the team's
@@ -552,6 +638,24 @@ pub fn vault_update(app: tauri::AppHandle, repo: String, path: String) -> Result
         Err(e) => Err(format!("{e}{folders}")),
         Ok(()) => Ok(exo_core::exo_repos::summary("Up to date", &rows)),
     }
+}
+
+/// The files left on GitHub for the copy at `path`, for the page to choose from.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_left(path: String) -> Vec<String> { left(Path::new(&path)) }
+
+/// Brings `files` to the phone, one after the other. Ok(what arrived); Err names the first that did not.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_fetch(app: tauri::AppHandle, repo: String, path: String, files: Vec<String>) -> Result<String, String> {
+    use tauri::Emitter;
+    use_token(crate::login::active().map(|(_, t)| t));
+    for (i, f) in files.iter().enumerate() {
+        let _ = app.emit("vault-progress", (&repo, i as f32 / files.len() as f32, format!("Getting {} ({} of {})", f.rsplit('/').next().unwrap_or(f), i + 1, files.len())));
+        fetch(Path::new(&path), f, &github_blob).map_err(|e| format!("{f}: {e}{}", if i > 0 { format!(". {i} arrived before it") } else { String::new() }))?;
+    }
+    Ok(if files.len() == 1 { format!("{} is on the phone", files[0].rsplit('/').next().unwrap_or(&files[0])) } else { format!("{} files are on the phone", files.len()) })
 }
 
 /// The changed files in the copy at `path`, for the page to show before anything is sent.
@@ -756,7 +860,11 @@ s.serve_forever()
             git(&dir, &["config", "uploadpack.allowFilter", "true"]);
             dir
         };
-        let (notes, book) = (bare("notes"), bare("book"));
+        let (notes, book, papers) = (bare("notes"), bare("book"), bare("papers"));
+        let papers_work = root.join("papers-work");
+        git(&root, &["clone", "-q", &url("papers"), &papers_work.to_string_lossy()]);
+        commit(&papers_work, "README.md", "the papers");
+        commit(&papers_work, "smith2020.pdf", &"%PDF ".repeat(40_000));   // 200 KB: over the on-demand limit
 
         // the team's side, with a real git: two commits each, so a shallow copy really is missing history
         let notes_work = root.join("notes-work");
@@ -773,6 +881,9 @@ s.serve_forever()
         git(&root, &["clone", "-q", &url("book"), &work.to_string_lossy()]);
         commit(&work, "old.md", "to be deleted");
         git(&work, &["submodule", "add", "-q", "-b", "main", "--name", "notes", &url("notes"), "Notes"]);
+        git(&work, &["submodule", "add", "-q", "-b", "main", "--name", "papers", &url("papers"), "Papers"]);
+        std::fs::create_dir_all(work.join("System")).unwrap();
+        std::fs::write(work.join("System/vault_rules.json"), r#"{"repos": {"on_demand": ["papers"]}}"#).unwrap();
         commit(&work, "paper.pdf", &large);
         commit(&work, "README.md", "book");
 
@@ -787,6 +898,25 @@ s.serve_forever()
         assert!(size(&phone) < 500 && size(&phone.join("Notes")) < 1500);
         assert!(Repository::open(&phone).unwrap().is_shallow() && Repository::open(phone.join("Notes")).unwrap().is_shallow());
         assert!(pending(&phone).is_empty(), "{:?}", pending(&phone));
+
+        // the papers: their notes are here, each paper is known and not here; one is brought by itself
+        assert!(phone.join("Papers/README.md").exists() && !phone.join("Papers/smith2020.pdf").exists());
+        assert_eq!(left(&phone), ["Notes/slides.pptx", "paper.pdf", "Papers/smith2020.pdf"]);
+        let from_server = |remote: &str, id: &str, to: &Path| -> Result<(), String> {
+            let bare = srv.join(remote.rsplit('/').next().unwrap());
+            let o = std::process::Command::new("git").current_dir(bare).args(["cat-file", "blob", id]).output().map_err(|e| e.to_string())?;
+            if !o.status.success() { return Err("no such blob".into()) }
+            std::fs::write(to, o.stdout).map_err(|e| e.to_string())
+        };
+        fetch(&phone, "Papers/smith2020.pdf", &from_server).unwrap();
+        fetch(&phone, "paper.pdf", &from_server).unwrap();
+        assert_eq!(std::fs::read_to_string(phone.join("Papers/smith2020.pdf")).unwrap().len(), 200_000);
+        assert_eq!(std::fs::read_to_string(phone.join("paper.pdf")).unwrap().len(), 3_200_000);
+        assert_eq!(left(&phone), ["Notes/slides.pptx"]);
+        assert!(pending(&phone).is_empty(), "a file brought from GitHub is not a change: {:?}", pending(&phone));
+        // a download that is not the recorded file leaves nothing behind
+        assert!(fetch(&phone, "Notes/slides.pptx", &|_, _, to| std::fs::write(to, "wrong").map_err(|e| e.to_string())).is_err());
+        assert!(!phone.join("Notes/slides.pptx").exists() && pending(&phone).is_empty());
         let who = ("jo", "1+jo@users.noreply.github.com");
         assert_eq!(send(&phone, "m", who, &|_, _| {}).unwrap(), "Nothing to send");
 
@@ -836,6 +966,13 @@ s.serve_forever()
         println!("Notes git data: {had} KB before two team commits, {} KB after", size(&phone.join("Notes")));
         assert!(size(&phone.join("Notes")) < had + 300);
         assert!(pending(&phone).iter().all(|p| p == "my-token.txt"), "{:?}", pending(&phone));
+
+        // the team replaces a paper that was brought to the phone: the old copy goes, and is not sent over theirs
+        commit(&papers_work, "smith2020.pdf", &"%PDF2 ".repeat(40_000));
+        pull(&phone, &|_, _| {});
+        assert!(!phone.join("Papers/smith2020.pdf").exists() && left(&phone).contains(&"Papers/smith2020.pdf".to_string()));
+        assert!(pending(&phone).iter().all(|p| p == "my-token.txt"), "{:?}", pending(&phone));
+        assert_eq!(out(&papers, &["rev-list", "--count", "main"]), "3", "nothing was sent to the papers");
 
         // the same file changed by both: nothing sent, the text kept, no commit left behind that GitHub lacks
         git(&notes_work, &["pull", "-q"]);
