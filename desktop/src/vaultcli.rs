@@ -322,7 +322,9 @@ fn ship_repo(vault: &Path, sub: Option<&str>, msg: &str, paths: Vec<String>, nam
     }
     let all = sh(root, &["git", "diff", "--cached", "--name-only"], true);
     let staged: Vec<String> = if paths.is_empty() { lines(&all).iter().map(|s| s.to_string()).collect() } else { vs::wanted(&lines(&all), &paths) };
-    let ahead: i64 = sh(root, &["git", "rev-list", "--count", "@{u}..HEAD"], false).parse().unwrap_or(0);
+    // counted against origin's branch, not @{u}: a detached submodule has no upstream, and @{u} then said 0 for a
+    // commit an earlier ship made but never pushed, so the vault went on to record a commit GitHub does not have
+    let ahead: i64 = sh(root, &["git", "rev-list", "--count", &format!("origin/{branch}..HEAD")], false).trim().parse().unwrap_or(0);
     if staged.is_empty() && ahead == 0 {
         if !required { println!("  nothing to commit here"); return }
         // an earlier upload (another window, another session) already took them: done, not failed
