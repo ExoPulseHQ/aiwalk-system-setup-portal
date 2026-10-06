@@ -709,7 +709,7 @@ fn main() {
     // --pr ORG REPO...: what the Pull request permissions section shows, read only
     if std::env::args().nth(1).as_deref() == Some("--pr") {
         let a: Vec<String> = std::env::args().skip(2).collect();
-        println!("{}", serde_json::to_string_pretty(&admin::pr_permissions(a[0].clone(), a[1..].to_vec())).unwrap());
+        println!("{}", serde_json::to_string_pretty(&admin::pr_permissions(a[0].clone(), a[1..].to_vec(), vec![])).unwrap());
         return;
     }
     // --download TAG PATTERN DIR: the updater's download on its own ("*_amd64.deb")

@@ -263,6 +263,8 @@ pub struct PrRepo {
     listed: bool,
     merge: Vec<String>,
     write: Vec<String>,
+    /// Who can read and no more.
+    read: Vec<String>,
     /// Members of merge-<repo>: the people an owner gave the right here, and the only ones an owner can take it from here.
     extra: Vec<String>,
 }
@@ -275,19 +277,28 @@ fn slug_of(teams: &[serde_json::Value], name: &str) -> Option<String> {
     teams.iter().find(|t| t["name"] == name).and_then(|t| t["slug"].as_str().map(String::from))
 }
 
-/// Who may merge and who may open pull requests on each of `repos`, as GitHub reports it (owners, teams and direct
-/// grants alike). A repo that is not in `org`, or that this account cannot see, is left out.
+/// Who may merge, push and read on each code repo, as GitHub reports it (owners, teams and direct grants alike).
+/// The code repos are `repos` (the ones the machines hold, first) and then every other repo of `org` this account
+/// can see that is not one of the vault's (`docs`, and anything named exo-*, the vault's own naming). A repo that
+/// is not in `org`, or that this account cannot see, is left out.
 #[tauri::command(async)]
-pub fn pr_permissions(org: String, repos: Vec<String>) -> Vec<PrRepo> {
+pub fn pr_permissions(org: String, mut repos: Vec<String>, docs: Vec<String>) -> Vec<PrRepo> {
+    let mut more: Vec<String> = github::all(&format!("orgs/{org}/repos")).unwrap_or_default().iter()
+        .filter_map(|r| r["name"].as_str().map(String::from))
+        .filter(|n| !repos.contains(n) && !docs.contains(n) && !n.starts_with("exo-")).collect();
+    more.sort_by_key(|n| n.to_lowercase());
+    repos.extend(more);
     let teams = github::all(&format!("orgs/{org}/teams")).unwrap_or_default();
     std::thread::scope(|s| {
         let jobs: Vec<_> = repos.iter().map(|repo| { let (org, teams) = (&org, &teams); s.spawn(move || {
             let mine = permissions_rank(&github::get(&format!("repos/{org}/{repo}")).ok()?["permissions"]);
             let people = github::all(&format!("repos/{org}/{repo}/collaborators?affiliation=all")).ok();
             let (merge, write) = people.as_deref().map(merge_rights).unwrap_or_default();
+            let read = people.iter().flatten().filter(|c| permissions_rank(&c["permissions"]) == 1)
+                .filter_map(|c| c["login"].as_str().map(String::from)).collect();
             let extra = slug_of(teams, &merge_team(repo)).and_then(|t| github::all(&format!("orgs/{org}/teams/{t}/members")).ok())
                 .unwrap_or_default().iter().filter_map(|m| m["login"].as_str().map(String::from)).collect();
-            Some(PrRepo { repo: repo.clone(), mine, listed: people.is_some(), merge, write, extra })
+            Some(PrRepo { repo: repo.clone(), mine, listed: people.is_some(), merge, write, read, extra })
         })}).collect();
         jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
     })

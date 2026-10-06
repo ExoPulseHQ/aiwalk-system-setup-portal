@@ -123,8 +123,8 @@ window.__fixtures = (scenario, os) => {
                   { login: "lou-gray", repos: [{ repo: "access-requests", level: "read", invite: 8201 }] }], requests: "access-requests" }
     : { members, can_edit: false, invites: [], interns: [], requests: "access-requests" };
   const prRows = owner
-    ? CODE.map(r => ({ repo: r, mine: 4, listed: true, merge: ["amy-chen", "bo-lin", ...(r === "MoCap" ? ["cy-wu"] : [])], write: Object.keys(PEOPLE).filter(l => PEOPLE[l].grants && PEOPLE[l].grants[r] === 2), extra: r === "MoCap" ? ["cy-wu"] : [] }))
-    : [{ repo: "MoCap", mine: 3, listed: true, merge: ["amy-chen", "bo-lin", "cy-wu"], write: ["fay-ng"], extra: ["cy-wu"] }, { repo: "simulator", mine: 1, listed: false, merge: [], write: [], extra: [] }];
+    ? [...CODE, "firmware"].map(r => ({ repo: r, mine: 4, listed: true, read: r === "trainer" ? ["ivy-tam"] : [], merge: ["amy-chen", "bo-lin", ...(r === "MoCap" ? ["cy-wu"] : [])], write: Object.keys(PEOPLE).filter(l => PEOPLE[l].grants && PEOPLE[l].grants[r] === 2), extra: r === "MoCap" ? ["cy-wu"] : [] }))
+    : [{ repo: "MoCap", mine: 3, listed: true, merge: ["amy-chen", "bo-lin", "cy-wu"], write: ["fay-ng"], read: [], extra: ["cy-wu"] }, { repo: "simulator", mine: 1, listed: false, merge: [], write: [], read: [], extra: [] }];
 
   // ---- phone and Windows VM (Linux pages)
   const phone = { serial: "PREVIEW0001", wireless: false, model: "Pixel 8", ip: "", root: false, desk_on: false, desk_app_on: false, phonedesk: true, phonedesk_outdated: false, shizuku: true };

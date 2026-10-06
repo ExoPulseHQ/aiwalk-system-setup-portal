@@ -305,8 +305,10 @@ function node(title, where, rank, repo, extra, group) {
 // who-can-open dialog can show them without asking GitHub again.
 let internsNow = [];
 
-// Owners: everyone's level on one repo, changed in place.
-async function accessDialog(a, repo) {
+// Owners: everyone's level on one repo, changed in place. `code` is the repo's row from pr_permissions when it is
+// a code repo: the levels then come from that row, and members can also be given the right to merge.
+async function accessDialog(a, repo, code) {
+  const codeLevel = l => !code ? null : code.merge.includes(l) ? 3 : code.write.includes(l) ? 2 : code.read.includes(l) ? 1 : 0;
   const box = el("div", "access-list");
   const msg = el("p", "sub");
   let changed = false;   // the page is read again only when something was changed here
@@ -317,12 +319,22 @@ async function accessDialog(a, repo) {
     r.append(text);
     if (tag) r.append(el("span", "tag", tag));
     const pick = el("select");
-    [["0", "No access"], ["1", "Read"], ["2", "Write"]].forEach(([v, l]) => pick.append(new Option(l, v)));
+    [["0", "No access"], ["1", "Read"], ["2", code ? "Write, opens pull requests" : "Write"]].forEach(([v, l]) => pick.append(new Option(l, v)));
+    // merging is membership of the repo's merge team, which GitHub keeps to members of the organisation
+    if (code && !tag) pick.append(new Option("Can merge", "3"));
     pick.value = String(now);
     pick.onchange = async () => {
       pick.disabled = true; msg.textContent = "";
       const spin = el("span", "spinner"); pick.before(spin);
-      try { toast(await invoke("set_access", { org: a.org, repo, login, level: +pick.value })); now = +pick.value; after(now); changed = true; }
+      try {
+        const to = +pick.value;
+        if (to === 3) toast(await invoke("merge_right", { org: a.org, repo, login, add: true }));
+        else {
+          if (now === 3 && code.extra.includes(login)) await invoke("merge_right", { org: a.org, repo, login, add: false });
+          toast(await invoke("set_access", { org: a.org, repo, login, level: to }));
+        }
+        now = to; after(now); changed = true;
+      }
       catch (e) { msg.textContent = e; pick.value = String(now); }
       spin.remove(); pick.disabled = false;
     };
@@ -337,7 +349,7 @@ async function accessDialog(a, repo) {
       r.append(text, pill(4, "plain", "Owners can open every repo"));
       return box.append(r);
     }
-    box.append(row(p.name === login ? login : p.name, login, null, Math.min(p.grants[repo] || 0, 2), login, level => { p.grants[repo] = level; }));
+    box.append(row(p.name === login ? login : p.name, login, null, codeLevel(login) ?? Math.min(p.grants[repo] || 0, 2), login, level => { p.grants[repo] = level; }));
   });
   // interns are outside the organisation: their access is per repo, given here like anyone's. The list is the
   // People page's; opened from Team access before that page was ever shown, it was empty and no intern was offered
@@ -352,8 +364,10 @@ async function accessDialog(a, repo) {
     }));
   });
   box.append(msg);
-  await ask(`Who can open ${repo}`, "Changes apply on GitHub as soon as you pick them.", [["done", "Done", true]], box);
-  if (changed) loadTeam();
+  await ask(`Who can open ${repo}`, code ? "Changes apply on GitHub as soon as you pick them. Someone outside the organisation gets an invitation to accept first."
+    : "Changes apply on GitHub as soon as you pick them.", [["done", "Done", true]], box);
+  if (changed && !code) loadTeam();
+  return changed;
 }
 
 function tree(t, grants, extra) {
@@ -1325,39 +1339,43 @@ function prSection(org, user, machines) {
   const sec = el("div", "section pr");
   const head = el("header");
   const title = el("h2");
-  title.append(icon("git-pull-request"), "Pull request permissions",
-    info("On GitHub's Free plan anyone with write can still merge on the website. Until the Team plan adds rulesets, merge rights hold by convention: a pre-push hook and this list."));
+  title.append(icon("git-pull-request"), "Code repos",
+    info("Who can merge, push and read on each code repo. On GitHub's Free plan anyone with write can still merge on the website. Until the Team plan adds rulesets, merge rights hold by convention: a pre-push hook and this list."));
   head.append(title);
   sec.append(head);
   const list = el("div", "list");
   sec.append(list);
   const owner = (org.people[user] || {}).grants === null;
   const repos = [...new Set(machines.map(m => m.repo))];
+  // the vault's own repos are the documents, shown in the tree above: everything else in the organisation is code
+  const docs = [];
+  const walk = t => { if (t.repo) docs.push(t.repo); (t.children || []).forEach(walk); };
+  ((lastTeam && lastTeam.vaults) || []).forEach(v => { docs.push(v.repo.split("/").pop()); if (v.access && v.access.tree) walk(v.access.tree); });
   const name = l => (org.people[l] || {}).name || l;
   const MINE = { 4: "You can merge", 3: "You can merge", 2: "You can open pull requests", 1: "You can read", 0: "No access" };
-  const read = () => invoke("pr_permissions", { org: org.org, repos }).then(paint, e => list.replaceChildren(el("p", "sub", `Could not read: ${e}`)));
+  const read = () => invoke("pr_permissions", { org: org.org, repos, docs }).then(paint, e => list.replaceChildren(el("p", "sub", `Could not read: ${e}`)));
   const paint = rows => {
     list.replaceChildren();
     if (!rows.length) list.append(el("p", "sub", "None of the code repos are open to you."));
     rows.forEach(r => {
-      list.append(item(r.repo, MINE[r.mine]));
+      const head = item(r.repo, MINE[r.mine]);
+      if (owner && r.listed) {
+        // everyone's level on this repo, people outside the organisation included, in one place
+        const edit = iconButton("pencil", "Change access", "small ghost");
+        edit.onclick = async () => { if (await accessDialog(org, r.repo, r)) read(); };
+        head.append(edit);
+      }
+      list.append(head);
       if (!r.listed) return;
       // one line of people: who can merge, then who opens pull requests; the extras an owner added can be removed
       const box = el("div", "specs"), people = [], seen = new Map();
-      [["can merge", r.merge], ["opens pull requests", r.write]].forEach(([g, logins]) => logins.forEach(l => {
+      [["can merge", r.merge], ["opens pull requests", r.write], ["can read", r.read || []]].forEach(([g, logins]) => logins.forEach(l => {
         if (seen.has(l)) return seen.get(l).why.push(g);
         const rm = owner && r.extra.includes(l) ? { tip: `Remove ${l}'s merge right on ${r.repo}`, run: b => change(r.repo, l, false, b) } : null;
         const p = { login: l, name: name(l), why: [g], rm };
         seen.set(l, p); people.push(p);
       }));
-      const others = Object.keys(org.people).filter(l => !org.people[l].outside && !r.merge.includes(l)).sort((a, b) => name(a).localeCompare(name(b)));
-      let pick = null;
-      if (owner && others.length) {
-        pick = el("select");
-        pick.append(new Option("Let someone merge", ""), ...others.map(l => new Option(`${name(l)} (@${l})`, l)));
-        pick.onchange = () => pick.value && change(r.repo, pick.value, true, pick);
-      }
-      box.append(whoLine(people, ["can merge", "opens pull requests"], pick, `Who can merge on ${r.repo}`));
+      box.append(whoLine(people, ["can merge", "opens pull requests", "can read"], null, `Who can open ${r.repo}`));
       list.append(box);
     });
   };
@@ -1366,7 +1384,7 @@ function prSection(org, user, machines) {
     catch (e) { toast(`Could not change ${repo}: ${e}`); }
     read();
   }
-  list.append(el("p", "sub", "Reading who can merge"));
+  list.append(el("p", "sub", "Reading the code repos"));
   read();
   return sec;
 }
