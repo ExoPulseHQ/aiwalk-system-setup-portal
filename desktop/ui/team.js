@@ -339,7 +339,9 @@ async function accessDialog(a, repo) {
     }
     box.append(row(p.name === login ? login : p.name, login, null, Math.min(p.grants[repo] || 0, 2), login, level => { p.grants[repo] = level; }));
   });
-  // interns are outside the organisation: their access is per repo, given here like anyone's
+  // interns are outside the organisation: their access is per repo, given here like anyone's. The list is the
+  // People page's; opened from Team access before that page was ever shown, it was empty and no intern was offered
+  if (!internsNow.length) await invoke("org_people", { org: a.org }).then(p => { internsNow = p.interns || []; }, () => {});
   const RANK = { admin: 2, maintain: 2, write: 2, triage: 1, read: 1 };
   internsNow.forEach(i => {
     const has = i.repos.find(r => r.repo === repo);
