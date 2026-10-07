@@ -537,3 +537,31 @@ html.phone main .chip button { min-height: 0; min-width: 0; }
   border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; overflow-wrap: anywhere; }
 .getfile .sub button { margin-left: var(--s2); }
 html.phone #dialog button, html.phone #dialog select, html.phone #dialog input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; }
+
+/* Sync vault on a phone: the team's changes to bring in, then this phone's changes to tick and upload */
+.syncv { display: grid; gap: var(--s3); max-height: 68vh; overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere; }
+.syncv .icon { width: 16px; height: 16px; flex: none; }
+.sync-who, .sync-inhead { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.sync-inhead > span { flex: 1 1 60%; min-width: 0; }
+.sync-who { color: var(--muted); font-size: var(--fs-s); }
+.sync-in { display: grid; gap: var(--s2); padding: var(--s3) 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.sync-recent { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; font-size: var(--fs-s); color: var(--muted); }
+.sync-recent label, .sync-row { display: flex; align-items: center; gap: var(--s2); }
+.sync-list { display: grid; gap: 2px; }
+.sync-inrow { display: grid; gap: 1px; padding: var(--s1) 0; }
+.sync-section { font-weight: 600; }
+.sync-head, .sync-group { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.sync-head .sub { margin-right: auto; }
+.sync-group { margin-top: var(--s3); font-weight: 500; padding-bottom: var(--s1); border-bottom: 1px solid var(--line); }
+.sync-group button { margin-left: auto; }
+.sync-row { min-height: 40px; padding: var(--s1) 0; }
+.sync-row input { flex: none; width: 20px; height: 20px; }
+.sync-row.locked { opacity: .6; }
+.sync-path { display: grid; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.sync-row > .sub { flex: none; max-width: 40%; text-align: right; }
+.sync-lab { display: block; margin-top: var(--s3); font-size: var(--fs-s); color: var(--muted); }
+.syncv textarea { width: 100%; box-sizing: border-box; min-height: 40px; padding: 9px 10px; resize: none; overflow: hidden; font: inherit;
+  font-family: var(--mono); font-size: var(--fs-s); color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 8px; }
+.syncv textarea:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+.syncv button.armed { outline: 2px solid var(--purple); }
+.sync-out { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-s); color: var(--bad, #e5484d); }

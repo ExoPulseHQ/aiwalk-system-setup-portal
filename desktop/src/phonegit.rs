@@ -446,7 +446,9 @@ fn changed(repo: &Repository) -> Result<Vec<String>, git2::Error> {
     let index = repo.index()?;
     let left = |p: &str| index.get_path(Path::new(p), 0).is_some_and(|e| e.flags_extended & (1 << 14) != 0)
         && !repo.workdir().is_some_and(|w| w.join(p).exists());
-    Ok(repo.statuses(Some(&mut o))?.iter().filter_map(|e| e.path().ok().map(String::from)).filter(|p| !p.ends_with('/') && !left(p)).collect())
+    // new files inside dot-folders (tool state, the vault's .trash) are never vault content
+    Ok(repo.statuses(Some(&mut o))?.iter().filter(|e| !(e.status().contains(git2::Status::WT_NEW) && e.path().is_ok_and(|p| p.starts_with('.'))))
+        .filter_map(|e| e.path().ok().map(String::from)).filter(|p| !p.ends_with('/') && !left(p)).collect())
 }
 
 /// Every changed file under `tree`, the book's and each folder's, as paths from the vault's top.
@@ -529,13 +531,154 @@ fn github_blob(url: &str, id: &str, to: &Path) -> Result<(), String> {
     std::io::copy(&mut reply.body_mut().as_reader(), &mut file).map(|_| ()).map_err(|e| format!("the download stopped: {e}"))
 }
 
+/// One changed file, sorted the way the vault plugin's Sync vault page sorts it on a computer (ship.ts scan).
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct Change {
+    pub path: String,
+    /// "changed", "new", "deleted", "renamed" or "conflict"
+    pub code: &'static str,
+    /// "changed", "new" (not in git yet), "empty" (a new file with nothing in it) or "held" (not to be uploaded)
+    pub group: &'static str,
+    pub why: String,
+    /// a login token or key: stays unticked whatever is pressed
+    pub locked: bool,
+    /// its size in MB when over BIG_MB, else 0: left unticked for the person to tick on purpose
+    pub big: f32,
+}
+
+/// Over this a file is left unticked: git keeps every version of a file for good.
+pub const BIG_MB: f32 = 30.0;
+
+/// ".bak", ".bak2", ".bak.md": a backup copy.
+fn backup(path: &str) -> bool {
+    path.match_indices(".bak").any(|(i, _)| { let rest = path[i + 4..].trim_start_matches(|c: char| c.is_ascii_digit()); rest.is_empty() || rest.starts_with('.') })
+}
+
+/// A new file with nothing in it (an Untitled.md never written in).
+fn blank(file: &Path) -> bool {
+    let Ok(m) = std::fs::metadata(file) else { return false };
+    m.is_file() && (m.len() == 0 || (m.len() < 4096 && std::fs::read_to_string(file).is_ok_and(|t| t.trim().is_empty())))
+}
+
+/// Every change under `tree`, the book's and each folder's, grouped. `may_push(folder's address)` says whether the
+/// account may change that folder; where it may not, the folder's changes are listed as held.
+pub fn scan(tree: &Path, may_push: &dyn Fn(&str) -> bool) -> Vec<Change> {
+    let Ok(book) = Repository::open(tree) else { return vec![] };
+    let of = |repo: &Repository, dir: &Path, prefix: &str, writable: bool| -> Vec<Change> {
+        let mut o = StatusOptions::new();
+        o.include_untracked(true).recurse_untracked_dirs(true).exclude_submodules(true);
+        let Ok(st) = repo.statuses(Some(&mut o)) else { return vec![] };
+        let index = repo.index().ok();
+        st.iter().filter_map(|e| {
+            let p = e.path().ok()?.to_string();
+            let file = dir.join(&p);
+            // a file left on GitHub is not a deletion (libgit2's status does not know skip-worktree)
+            if p.ends_with('/') || (!file.exists() && index.as_ref().and_then(|i| i.get_path(Path::new(&p), 0)).is_some_and(|x| x.flags_extended & (1 << 14) != 0)) { return None }
+            let s = e.status();
+            let fresh = s.contains(git2::Status::WT_NEW);
+            // new files inside dot-folders (tool state, Obsidian's trash) are never vault content
+            if fresh && prefix.is_empty() && p.starts_with('.') { return None }
+            let code = if s.contains(git2::Status::CONFLICTED) { "conflict" } else if fresh || s.contains(git2::Status::INDEX_NEW) { "new" }
+                else if s.intersects(git2::Status::WT_DELETED | git2::Status::INDEX_DELETED) { "deleted" }
+                else if s.intersects(git2::Status::WT_RENAMED | git2::Status::INDEX_RENAMED) { "renamed" } else { "changed" };
+            let mut c = Change { path: format!("{prefix}{p}"), code, group: if fresh { "new" } else { "changed" }, why: String::new(), locked: false, big: 0.0 };
+            if fresh && blank(&file) { c.group = "empty"; c.why = "empty file".into(); }
+            if exo_core::vault_ship::looks_secret(&p) && code != "deleted" { c.group = "held"; c.why = "looks like a login token or key".into(); c.locked = true; }
+            else if !writable { c.group = "held"; c.why = "a folder you may read but not change".into(); c.locked = true; }
+            else if backup(&p) { c.group = "held"; c.why = "backup copy".into(); }
+            if code != "deleted" && c.group != "held" {
+                let mb = std::fs::metadata(&file).map_or(0.0, |m| m.len() as f32 / 1048576.0);
+                if mb > BIG_MB { c.big = mb }
+            }
+            Some(c)
+        }).collect()
+    };
+    let mut all = of(&book, tree, "", true);
+    for path in folders(&book, tree) {
+        let Ok(r) = Repository::open(tree.join(&path)) else { continue };
+        let mut inside = of(&r, &tree.join(&path), &format!("{path}/"), true);
+        if inside.is_empty() { continue }
+        // asked only for a folder that has changes: one question to GitHub each
+        let url = r.find_remote("origin").ok().and_then(|o| o.url().ok().map(String::from)).unwrap_or_default();
+        if !may_push(&url) { inside = of(&r, &tree.join(&path), &format!("{path}/"), false) }
+        all.extend(inside);
+    }
+    all
+}
+
+/// One commit as the page lists it.
+#[derive(serde::Serialize, Debug, Clone)]
+pub struct Row { pub hash: String, pub who: String, pub when: i64, pub what: String }
+
+fn row(c: &git2::Commit) -> Row {
+    Row { hash: c.id().to_string()[..7].to_string(), who: c.author().name().unwrap_or_default().to_string(), when: c.time().seconds(),
+          what: c.summary().ok().flatten().unwrap_or_default().to_string() }
+}
+
+/// What the team pushed that this copy does not have yet (asked from GitHub now, nothing on the phone changed),
+/// and what arrived in the last two days. The shared notes only, as on a computer.
+pub fn incoming(tree: &Path, f: &dyn Fn(f32)) -> Result<(Vec<Row>, Vec<Row>), String> {
+    recall(tree);
+    https();
+    let say = |e: git2::Error| if no_access(&e) { "no access. Sign in again, or ask an owner for access".to_string() } else { e.message().to_string() };
+    let repo = Repository::open(tree).map_err(say)?;
+    let head = repo.head().map_err(say)?;
+    let (name, here) = (head.name().map_err(say)?.to_string(), head.target().ok_or("no branch checked out")?);
+    let branch = name.strip_prefix("refs/heads/").ok_or("no branch checked out")?;
+    let theirs = format!("refs/remotes/origin/{branch}");
+    {
+        let mut origin = repo.find_remote("origin").map_err(say)?;
+        let url = origin.url().unwrap_or_default().to_string();
+        origin.fetch(&[&format!("+refs/heads/{branch}:{theirs}")], Some(&mut options(&url, false, f)), None).map_err(say)?;
+    }
+    let walk = |from: git2::Oid, hide: Option<git2::Oid>, keep: &dyn Fn(&git2::Commit) -> bool| -> Vec<Row> {
+        let Ok(mut w) = repo.revwalk() else { return vec![] };
+        if w.push(from).is_err() { return vec![] }
+        if let Some(h) = hide { let _ = w.hide(h); }
+        w.flatten().filter_map(|id| repo.find_commit(id).ok()).take(200).filter(|c| keep(c)).map(|c| row(&c)).collect()
+    };
+    let new = repo.refname_to_id(&theirs).map_err(say)?;
+    let rows = if new == here { vec![] } else { walk(new, Some(here), &|_| true) };
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) - 2 * 86400;
+    let recent = walk(here, None, &|c| c.parent_count() <= 1 && c.time().seconds() >= since);
+    Ok((rows, recent))
+}
+
+/// Moves `files` (paths from the vault's top) into the vault's own trash, .trash at its top: where Obsidian puts
+/// what it deletes, so a wrong press can be undone there. Ok(how many went).
+pub fn trash(tree: &Path, files: &[String]) -> Result<usize, String> {
+    let bin = tree.join(".trash");
+    std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+    let mut n = 0;
+    for f in files {
+        if f.split('/').any(|part| part.is_empty() || part == ".." || part == ".") { return Err(format!("{f}: not a file of this vault")) }
+        let from = tree.join(f);
+        if !from.is_file() { continue }
+        let name = from.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        // a second file of the same name gets a number, as Obsidian does
+        let to = (0..1000).map(|i| if i == 0 { bin.join(&name) } else { bin.join(format!("{i} {name}")) }).find(|p| !p.exists()).ok_or("the trash is full of files with that name")?;
+        std::fs::rename(&from, &to).map_err(|e| format!("{f}: {e}"))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Today's local date, as libgit2 reckons the time zone.
+fn today() -> Option<(i64, i64, i64)> {
+    let now = Signature::now("x", "x@x").ok()?.when();
+    let off = now.offset_minutes();
+    exo_core::vault_ship::local_date(&format!("x <x@x> {} {}{:02}{:02}", now.seconds(), if off < 0 { '-' } else { '+' }, off.abs() / 60, off.abs() % 60))
+}
+
 /// Commits what changed in `dir` (and, for the book, the folders in `links` that just moved) on top of the team's
 /// newest and pushes it. Ok((files sent, files held back because their names look like a key)).
-fn send_one(dir: &Path, msg: &str, who: (&str, &str), links: &[String], f: &dyn Fn(f32)) -> Result<(usize, Vec<String>), String> {
+/// `only`, when given, are the files to send (paths inside `dir`); every other change stays on the phone.
+fn send_one(vault: &Path, dir: &Path, msg: &str, who: (&str, &str), links: &[String], only: Option<&[String]>, f: &dyn Fn(f32)) -> Result<(usize, Vec<String>), String> {
     https();
     let say = |e: git2::Error| e.message().to_string();
     let repo = Repository::open(dir).map_err(say)?;
     let mut files = changed(&repo).map_err(say)?;
+    if let Some(only) = only { files.retain(|p| only.contains(p)) }
     // a deletion may go (that is how a secret leaves the repo); adding or changing one may not
     let lines: Vec<String> = files.iter().map(|p| format!("{}\t{p}", if dir.join(p).exists() { 'A' } else { 'D' })).collect();
     let held = exo_core::vault_ship::leaks(&lines.iter().map(String::as_str).collect::<Vec<_>>(), &[]);
@@ -553,6 +696,25 @@ fn send_one(dir: &Path, msg: &str, who: (&str, &str), links: &[String], f: &dyn 
         let name = head.name().map_err(say)?.to_string();
         let branch = name.strip_prefix("refs/heads/").ok_or("no branch checked out")?.to_string();
         let parent = head.peel_to_commit().map_err(say)?;
+        if attempt == 1 {
+            // the two checks vault ship makes on a computer (vaultcheck.rs), on the team's newest. A primary log's
+            // ownership block is brought up to date; a new link that resolves to nothing stops the upload.
+            if dir == vault {
+                for p in files.iter().filter(|p| exo_core::vault_ship::is_primary(p) && dir.join(p).exists()) {
+                    if let Ok(Some(new)) = crate::vaultcheck::ownership(vault, &dir.join(p), p, &today) { let _ = crate::vaultcheck::write_text(&dir.join(p), &new); }
+                }
+            }
+            let last = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+            let before = |p: &str| last.as_ref().and_then(|t| t.get_path(Path::new(p)).ok()).and_then(|e| repo.find_blob(e.id()).ok())
+                .map(|b| String::from_utf8_lossy(b.content()).into_owned()).unwrap_or_default();
+            // a file left on GitHub exists, though it is not on the phone: a link to it is not a broken one
+            let also: std::collections::HashSet<String> = left(vault).iter().flat_map(|p| {
+                let n = p.rsplit('/').next().unwrap_or(p).to_string();
+                [n.strip_suffix(".md").map(String::from), Some(n)]
+            }).flatten().collect();
+            let bad = crate::vaultcheck::broken_links(vault, dir, &files, &before, &also)?;
+            if !bad.is_empty() { return Err(format!("these links lead to no file in the vault (a file that is not a note needs its extension): {}", bad.join("; "))) }
+        }
         let mut index = repo.index().map_err(say)?;
         // read again from disk: forward() moved it through a handle of its own, and the copy this handle read for
         // the list of changes is from before; a tree written from that one would drop what the team just added
@@ -588,8 +750,9 @@ fn send_one(dir: &Path, msg: &str, who: (&str, &str), links: &[String], f: &dyn 
     unreachable!()
 }
 
-/// Sends every change under `tree`: each folder first, then the book with the folders that moved. Ok(what was sent).
-pub fn send(tree: &Path, msg: &str, who: (&str, &str), progress: Progress) -> Result<String, String> {
+/// Sends the changes under `tree`: each folder first, then the book with the folders that moved. `only`, when
+/// given, are the files to send, as paths from the vault's top; without it, every change goes. Ok(what was sent).
+pub fn send(tree: &Path, msg: &str, who: (&str, &str), only: Option<&[String]>, progress: Progress) -> Result<String, String> {
     recall(tree);
     let book = Repository::open(tree).map_err(|e| e.message().to_string())?;
     let subs = folders(&book, tree);
@@ -597,13 +760,15 @@ pub fn send(tree: &Path, msg: &str, who: (&str, &str), progress: Progress) -> Re
     for (i, path) in subs.iter().enumerate() {
         let at = |part: f32| 0.8 * (i as f32 + part) / subs.len() as f32;
         progress(at(0.0), &format!("Sending {path}"));
-        match send_one(&tree.join(path), msg, who, &[], &|p| progress(at(p), &format!("Sending {path}"))) {
+        let inner: Option<Vec<String>> = only.map(|o| o.iter().filter_map(|f| f.strip_prefix(&format!("{path}/")).map(String::from)).collect());
+        if inner.as_ref().is_some_and(|i| i.is_empty()) { continue }
+        match send_one(tree, &tree.join(path), msg, who, &[], inner.as_deref(), &|p| progress(at(p), &format!("Sending {path}"))) {
             Ok((n, h)) => { if n > 0 { sent += n; moved.push(path.clone()) } held.extend(h.into_iter().map(|p| format!("{path}/{p}"))) }
             Err(e) => problems.push(format!("{path}: {e}")),
         }
     }
     progress(0.8, "Sending the shared notes");
-    match send_one(tree, msg, who, &moved, &|p| progress(0.8 + 0.2 * p, "Sending the shared notes")) {
+    match send_one(tree, tree, msg, who, &moved, only, &|p| progress(0.8 + 0.2 * p, "Sending the shared notes")) {
         Ok((n, h)) => { sent += n; held.extend(h) }
         Err(e) => problems.push(format!("Shared notes: {e}")),
     }
@@ -687,21 +852,39 @@ pub fn vault_fetch(app: tauri::AppHandle, repo: String, path: String, files: Vec
     Ok(if files.len() == 1 { format!("{} is on the phone", files[0].rsplit('/').next().unwrap_or(&files[0])) } else { format!("{} files are on the phone", files.len()) })
 }
 
-/// The changed files in the copy at `path`, for the page to show before anything is sent.
+/// The changes in the copy at `path`, grouped, for the page to tick from before anything is sent.
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
-pub fn vault_changes(path: String) -> Vec<String> { pending(Path::new(&path)) }
+pub fn vault_changes(path: String) -> Vec<Change> {
+    // whether the account may change a folder: GitHub's own answer for that repo
+    scan(Path::new(&path), &|url| exo_core::vault_ship::github_repo(url.trim_end_matches('/'))
+        .and_then(|(o, r)| crate::github::get(&format!("repos/{o}/{r}")).ok()).is_some_and(|v| v["permissions"]["push"] == serde_json::Value::Bool(true)))
+}
+
+/// What the team pushed that is not here yet, and what arrived lately: (not here yet, last two days).
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_incoming(path: String) -> Result<(Vec<Row>, Vec<Row>), String> {
+    use_token(crate::login::active().map(|(_, t)| t));
+    incoming(Path::new(&path), &|_| {})
+}
+
+/// Empty files to the vault's trash.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_trash(path: String, files: Vec<String>) -> Result<usize, String> { trash(Path::new(&path), &files) }
 
 /// Sends them, as the signed-in account (GitHub's no-reply address, as on a computer).
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
-pub fn vault_send(app: tauri::AppHandle, repo: String, path: String, message: String) -> Result<String, String> {
+pub fn vault_send(app: tauri::AppHandle, repo: String, path: String, message: String, files: Vec<String>) -> Result<String, String> {
     use tauri::Emitter;
     use_token(crate::login::active().map(|(_, t)| t));
     let user = crate::github::get("user").map_err(|_| "Sign in first".to_string())?;
     let (Some(login), Some(id)) = (user["login"].as_str(), user["id"].as_u64()) else { return Err("Sign in first".into()) };
-    let message = if message.trim().is_empty() { "docs: notes from the phone" } else { message.trim() };
-    send(Path::new(&path), message, (login, &format!("{id}+{login}@users.noreply.github.com")), &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); })
+    if message.trim().is_empty() { return Err("Say what changed in one line first".into()) }
+    if files.is_empty() { return Err("Tick at least one file".into()) }
+    send(Path::new(&path), message.trim(), (login, &format!("{id}+{login}@users.noreply.github.com")), Some(&files), &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); })
 }
 
 // ---------------------------------------------------------------- test
@@ -959,17 +1142,41 @@ s.serve_forever()
         assert!(fetch(&phone, "Notes/slides.pptx", &|_, _, to| std::fs::write(to, "wrong").map_err(|e| e.to_string())).is_err());
         assert!(!phone.join("Notes/slides.pptx").exists() && pending(&phone).is_empty());
         let who = ("jo", "1+jo@users.noreply.github.com");
-        assert_eq!(send(&phone, "m", who, &|_, _| {}).unwrap(), "Nothing to send");
+        assert_eq!(send(&phone, "m", who, None, &|_, _| {}).unwrap(), "Nothing to send");
 
         // a changed note in a folder, a new file and a deleted one in the book, and a file that looks like a key
         std::fs::write(phone.join("Notes/a.md"), "from the phone").unwrap();
         std::fs::write(phone.join("new.md"), "new").unwrap();
         std::fs::remove_file(phone.join("old.md")).unwrap();
         std::fs::write(phone.join("my-token.txt"), "x").unwrap();
+        // the page's list: every change, grouped the way the plugin groups it on a computer
+        std::fs::write(phone.join("Untitled.md"), " \n").unwrap();
+        std::fs::write(phone.join("draft.bak.md"), "x").unwrap();
+        std::fs::write(phone.join(".hidden-state"), "x").unwrap();
+        let ch = scan(&phone, &|_| true);
+        let of = |p: &str| ch.iter().find(|c| c.path == p).map(|c| (c.code, c.group, c.locked));
+        assert_eq!(of("Notes/a.md"), Some(("changed", "changed", false)));
+        assert_eq!(of("new.md"), Some(("new", "new", false)));
+        assert_eq!(of("old.md"), Some(("deleted", "changed", false)));
+        assert_eq!(of("my-token.txt"), Some(("new", "held", true)));
+        assert_eq!(of("Untitled.md"), Some(("new", "empty", false)));
+        assert_eq!(of("draft.bak.md"), Some(("new", "held", false)));
+        assert_eq!(of(".hidden-state"), None);
+        assert!(ch.iter().all(|c| c.big == 0.0 && c.path != "paper.pdf" && c.path != "Notes/slides.pptx"), "{ch:?}");
+        // a folder the account may read but not change: its files are held, and say why
+        let ro = scan(&phone, &|url| !url.ends_with("notes.git"));
+        assert_eq!(ro.iter().find(|c| c.path == "Notes/a.md").map(|c| (c.group, c.locked)), Some(("held", true)));
+        // the empty file goes to the vault's trash and is no longer a change
+        assert_eq!(trash(&phone, &["Untitled.md".to_string()]).unwrap(), 1);
+        assert!(phone.join(".trash/Untitled.md").exists() && trash(&phone, &["../x".to_string()]).is_err());
+        assert!(scan(&phone, &|_| true).iter().all(|c| !c.path.contains("Untitled")));
+        std::fs::remove_file(phone.join("draft.bak.md")).unwrap();
+        std::fs::remove_file(phone.join(".hidden-state")).unwrap();
+
         let mut p = pending(&phone);
         p.sort();
         assert_eq!(p, ["Notes/a.md", "my-token.txt", "new.md", "old.md"]);
-        let said = send(&phone, "docs: from the phone", who, &|_, _| {}).unwrap();
+        let said = send(&phone, "docs: from the phone", who, None, &|_, _| {}).unwrap();
         println!("{said}");
         assert!(said.starts_with("Sent 3 files") && said.contains("my-token.txt"), "{said}");
         assert_eq!(out(&notes, &["show", "main:a.md"]), "from the phone");
@@ -984,11 +1191,37 @@ s.serve_forever()
         assert_eq!(out(&book, &["cat-file", "-s", "main:paper.pdf"]), "3200000");
         assert_eq!(pending(&phone), ["my-token.txt"]);
 
+        // only what is ticked goes: the other change stays on the phone, still listed
+        std::fs::write(phone.join("new.md"), "new 2").unwrap();
+        std::fs::write(phone.join("keep.md"), "not yet").unwrap();
+        assert_eq!(send(&phone, "docs: one of two", who, Some(&["new.md".to_string()]), &|_, _| {}).unwrap(), "Sent 1 file");
+        assert_eq!(out(&book, &["show", "main:new.md"]), "new 2");
+        assert!(out(&book, &["ls-tree", "--name-only", "main"]).lines().all(|l| l != "keep.md"));
+        assert!(pending(&phone).contains(&"keep.md".to_string()));
+        std::fs::remove_file(phone.join("keep.md")).unwrap();
+        // a new link to nothing stops the upload, as on a computer; a link to a file left on GitHub is not broken
+        std::fs::write(phone.join("new.md"), "see [[No_Such_Note]], [[slides.pptx]] and [[a]]").unwrap();
+        let e = send(&phone, "docs: links", who, Some(&["new.md".to_string()]), &|_, _| {}).unwrap_err();
+        println!("{e}");
+        assert!(e.contains("new.md: [[No_Such_Note]]") && !e.contains("slides.pptx") && !e.contains("[[a]]"), "{e}");
+        assert_eq!(out(&book, &["show", "main:new.md"]), "new 2");
+        std::fs::write(phone.join("new.md"), "new 2").unwrap();
+
+        // what the team pushed is listed before anything on the phone moves; Bring in is Get latest
+        git(&work, &["pull", "-q"]);
+        commit(&work, "team.md", "from the team");
+        let (rows, recent) = incoming(&phone, &|_| {}).unwrap();
+        assert_eq!(rows.iter().map(|r| (r.who.as_str(), r.what.as_str())).collect::<Vec<_>>(), [("t", "team.md")]);
+        assert!(!phone.join("team.md").exists() && recent.iter().any(|r| r.who == "jo" && r.what == "docs: one of two"), "{recent:?}");
+        assert!(pull(&phone, &|_, _| {}).0.is_ok() && phone.join("team.md").exists());
+        let (rows, recent) = incoming(&phone, &|_| {}).unwrap();
+        assert!(rows.is_empty() && recent.iter().any(|r| r.what == "team.md"));
+
         // the team moved on in the meantime, in another file: the phone's change goes on top of theirs
         git(&notes_work, &["pull", "-q"]);
         commit(&notes_work, "c.md", "theirs");
         std::fs::write(phone.join("Notes/b.md"), "b from the phone").unwrap();
-        assert!(send(&phone, "m2", who, &|_, _| {}).unwrap().starts_with("Sent 1 file"));
+        assert!(send(&phone, "m2", who, None, &|_, _| {}).unwrap().starts_with("Sent 1 file"));
         assert_eq!(out(&notes, &["show", "main:b.md"]), "b from the phone");
         assert_eq!(out(&notes, &["show", "main:c.md"]), "theirs");
         assert_eq!(std::fs::read_to_string(phone.join("Notes/c.md")).unwrap(), "theirs");
@@ -1020,7 +1253,7 @@ s.serve_forever()
         commit(&notes_work, "a.md", "theirs again");
         std::fs::write(phone.join("Notes/a.md"), "mine again").unwrap();
         let before = out(&phone.join("Notes"), &["rev-parse", "HEAD"]);
-        let e = send(&phone, "m3", who, &|_, _| {}).unwrap_err();
+        let e = send(&phone, "m3", who, None, &|_, _| {}).unwrap_err();
         println!("{e}");
         assert!(e.contains("Notes: you changed a file here that the team changed too"), "{e}");
         assert_eq!(std::fs::read_to_string(phone.join("Notes/a.md")).unwrap(), "mine again");
@@ -1031,7 +1264,7 @@ s.serve_forever()
         git(&notes, &["config", "http.receivepack", "false"]);
         std::fs::write(phone.join("Notes/a.md"), "theirs again").unwrap();
         std::fs::write(phone.join("Notes/d.md"), "not allowed").unwrap();
-        let e = send(&phone, "m4", who, &|_, _| {}).unwrap_err();
+        let e = send(&phone, "m4", who, None, &|_, _| {}).unwrap_err();
         println!("{e}");
         assert!(e.contains("write access"), "{e}");
         assert_eq!(out(&phone.join("Notes"), &["rev-parse", "HEAD"]), out(&phone.join("Notes"), &["rev-parse", "origin/main"]));

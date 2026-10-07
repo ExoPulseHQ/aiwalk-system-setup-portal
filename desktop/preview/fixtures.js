@@ -160,7 +160,19 @@ window.__fixtures = (scenario, os) => {
     vault_local: os !== "android" ? { copies: { [BOOK]: "/home/demo/Documents/aIwalk/docs-book" }, obsidian: true }
       // a phone: phone=here (a copy there), phone=denied (All files access not given yet), else not downloaded
       : { copies: q.get("phone") === "here" ? { [BOOK]: "/storage/emulated/0/Documents/aIwalk/docs-book" } : {}, obsidian: true, writable: q.get("phone") !== "denied" }, default_folder: a => `/home/demo/Documents/aIwalk/${(a.repo || "").split("/").pop()}`,
-    pick_folder: none, vault_link: ok("Linked"), vault_download: ok("Downloaded"), vault_update: ok("Up to date"), vault_changes: ["L1_Sensing/Calibration_Notes.md", "System/_Management.md", "Meeting_2026_10_06.md"], vault_send: ok("Sent 3 files"), vault_fetch: ok("Smith_2020_Gait.pdf is on the phone"),
+    pick_folder: none, vault_link: ok("Linked"), vault_download: ok("Downloaded"), vault_update: ok("Up to date"), vault_changes: [
+      { path: "L1_Sensing/Calibration_Notes.md", code: "changed", group: "changed", why: "", locked: false, big: 0 },
+      { path: "System/_Management.md", code: "changed", group: "changed", why: "", locked: false, big: 0 },
+      { path: "Old_Draft.md", code: "deleted", group: "changed", why: "", locked: false, big: 0 },
+      { path: "L6_Clinical/recordings/session_07.mp4", code: "changed", group: "changed", why: "", locked: false, big: 84 },
+      { path: "Meeting_2026_10_06.md", code: "new", group: "new", why: "", locked: false, big: 0 },
+      { path: "Untitled.md", code: "new", group: "empty", why: "empty file", locked: false, big: 0 },
+      { path: "notes/api-token.txt", code: "new", group: "held", why: "looks like a login token or key", locked: true, big: 0 },
+      { path: "L2_Platform/Deploy.md", code: "changed", group: "held", why: "a folder you may read but not change", locked: true, big: 0 }],
+    vault_incoming: q.get("incoming") === "none"
+      ? [[], [{ hash: "a1b2c3d", who: "amy-chen", when: Date.now() / 1000 - 3 * 3600, what: "docs(L3): training curves for the v9 sweep (DM-AC)" }, { hash: "b2c3d4e", who: "demo", when: Date.now() / 1000 - 26 * 3600, what: "docs: notes from the phone" }]]
+      : [[{ hash: "c3d4e5f", who: "bo-lin", when: Date.now() / 1000 - 40 * 60, what: "docs(L1): camera calibration checklist (CAL-BL)" }, { hash: "d4e5f6a", who: "amy-chen", when: Date.now() / 1000 - 5 * 3600, what: "fix(L3): reward table units (DM-AC)" }], []],
+    vault_trash: 1, vault_send: ok("Sent 3 files"), vault_fetch: ok("Smith_2020_Gait.pdf is on the phone"),
     vault_left: [["Papers/Gait/Smith_2020_Gait.pdf", "Papers/Gait/Lee_2022_Exoskeleton_Assistance.pdf", "Papers/RL/Peng_2018_DeepMimic.pdf", "Papers/RL/Schumacher_2023_DEP_RL.pdf", "L3_Simulation_AI/figs/training_curves_all_seeds.png", "Presentations/20260915_Lab_Meeting.pptx", "Proposals/Thesis_Draft.docx"], ["Papers"]], vault_open: none, obsidian_install: ok("Obsidian installed"),
     // machines
     reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, guest && h === "heron" ? "refused" : "up"])),

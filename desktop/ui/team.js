@@ -990,6 +990,170 @@ function downloadRow(v) {
 }
 const chosen = {};
 
+// "3 hours ago", as git writes a commit's age.
+function ago(seconds) {
+  const d = Math.max(0, Date.now() / 1000 - seconds);
+  const [n, unit] = d < 90 ? [Math.round(d), "second"] : d < 5400 ? [Math.round(d / 60), "minute"] : d < 129600 ? [Math.round(d / 3600), "hour"]
+    : d < 86400 * 45 ? [Math.round(d / 86400), "day"] : [Math.round(d / (86400 * 30)), "month"];
+  return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
+}
+
+// The commit message as git wants it: the line, a blank line, the details wrapped at 72 (the plugin's commitMessage).
+function commitMessage(subject, body) {
+  const sub = subject.trim(), b = body.trim();
+  if (!b) return sub;
+  const wrap = para => { const out = []; let line = "";
+    for (const w of para.split(/\s+/)) { if (line && (line + " " + w).length > 72) { out.push(line); line = w; } else line = line ? `${line} ${w}` : w; }
+    if (line) out.push(line); return out.join("\n"); };
+  return `${sub}\n\n${b.split(/\n\s*\n/).map(wrap).join("\n\n")}`;
+}
+
+// Sync vault on a phone: the vault plugin's Sync vault page (ship.ts), with this app doing the git. First what the
+// team pushed, to bring in; then this phone's changes, ticked file by file and uploaded as one commit described in
+// one line. The same files are held back, the same two checks run before anything is uploaded (phonegit.rs).
+// Left to a computer: sorting the changes into several commits, drafting the line and mending links, which are
+// Claude Code's work there.
+async function syncDialog(v, path) {
+  const box = el("div", "syncv"), who = el("div", "sync-who"), inbox = el("div", "sync-in"), body = el("div"), out = el("pre", "sync-out");
+  who.append(icon("user-round"), `Signed in as ${lastTeam && lastTeam.user || "nobody"}`);
+  out.hidden = true;
+  box.append(who, inbox, el("div", "sync-section", "Your changes"), body, out,
+    el("p", "sub", "Sorting changes into several commits and drafting the line are Claude Code's work on a computer; a phone uploads one commit at a time."));
+  const me = new Set([lastTeam && lastTeam.user, lastTeam && lastTeam.name].filter(Boolean));
+  const listOf = (rows, most) => {
+    const list = el("div", "sync-list");
+    rows.slice(0, most).forEach(r => { const li = el("div", "sync-inrow"); li.append(el("span", "sub", `${me.has(r.who) ? "you" : r.who}, ${ago(r.when)}`), el("span", null, r.what)); li.title = r.hash; list.append(li); });
+    if (rows.length > most) list.append(el("div", "sub", `and ${rows.length - most} more`));
+    return list;
+  };
+
+  // ---------- in: what teammates pushed ----------
+  async function incoming() {
+    const head = el("div", "sync-inhead"), t = el("span", null, "Checking GitHub for teammates' changes");
+    head.append(icon("cloud"), t);
+    inbox.replaceChildren(head);
+    let got;
+    try { got = await invoke("vault_incoming", { path }); } catch (e) { t.textContent = `Could not reach GitHub: ${e}`; return; }
+    const [rows, all] = got;
+    if (!rows.length) {
+      const now = new Date();
+      t.textContent = `Nothing new from teammates. Up to date with GitHub, checked ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+      const again = el("button", "small ghost", "Check again");
+      again.onclick = () => { incoming(); scan(); };
+      head.append(again);
+      if (all.length) {
+        // "up to date" must not read as "nobody did anything": what arrived already is listed; a tick adds your own
+        let mine = false; try { mine = localStorage.getItem("sync-mine") === "1"; } catch {}
+        const recent = mine ? all : all.filter(r => !me.has(r.who));
+        const line = el("div", "sync-recent"), lab = el("label"), tick = el("input");
+        tick.type = "checkbox"; tick.checked = mine;
+        tick.onchange = () => { try { localStorage.setItem("sync-mine", tick.checked ? "1" : "0"); } catch {} incoming(); };
+        lab.append(tick, " Show mine too");
+        line.append(el("span", null, `${mine ? "Everyone's work" : "Teammates' work"} from the last two days, already on this phone (${recent.length})`), lab);
+        inbox.append(line, listOf(recent, 8));
+      }
+      return;
+    }
+    const n = `${rows.length} change${rows.length === 1 ? "" : "s"}`;
+    t.textContent = `${n} from teammates not on this phone yet`;
+    const get = el("button", "small", `Bring in ${n}`);
+    get.dataset.primary = 1;
+    get.onclick = async () => {
+      out.hidden = true;
+      stages[v.repo] = stage("Bringing them in"); inbox.append(stages[v.repo]);
+      try { toast(await working(get, "Bringing them in", () => invoke("vault_update", { repo: v.repo, path }))); }
+      catch (e) { out.textContent = String(e); out.hidden = false; }
+      delete stages[v.repo];
+      await incoming(); await scan();
+    };
+    inbox.append(listOf(rows, 12), get);
+  }
+
+  // ---------- out: what changed here ----------
+  const LABEL = { changed: "changed", new: "new", deleted: "deleted", renamed: "renamed", conflict: "conflict" };
+  const GROUPS = [["changed", "Changed"], ["new", "New, not in git yet"], ["empty", "Empty files"], ["held", "Held back"]];
+  async function scan() {
+    body.replaceChildren(el("p", "sub", "Looking at what changed on this phone"));
+    let changes;
+    try { changes = await invoke("vault_changes", { path }); } catch (e) { body.replaceChildren(el("p", "sub", `Could not read the changes: ${e}`)); return; }
+    if (!changes.length) { body.replaceChildren(el("p", "sub", "Nothing to upload. Every change on this phone is already on GitHub.")); return; }
+    // a large file is left for the person to tick on purpose
+    let picked = new Set(changes.filter(c => c.group === "changed" && !c.big).map(c => c.path));
+    const head = el("div", "sync-head"), count = el("span", "sub"), all = el("button", "small ghost", "Select all"), none = el("button", "small ghost", "Select none");
+    head.append(count, all, none);
+    const list = el("div", "sync-list"), boxes = new Map();
+    GROUPS.forEach(([g, title]) => {
+      const rows = changes.filter(c => c.group === g);
+      if (!rows.length) return;
+      const gh = el("div", "sync-group");
+      gh.append(el("span", null, title), el("span", "sub", String(rows.length)));
+      if (g === "empty") {
+        // files made by accident (an Untitled.md never written in): to the vault's own trash, so a wrong press can be undone
+        const del = el("button", "small ghost", "Move to trash");
+        del.onclick = async () => {
+          try { const k = await working(del, "Moving", () => invoke("vault_trash", { path, files: rows.map(r => r.path) })); toast(`Moved ${k} empty file${k === 1 ? "" : "s"} to the trash`); }
+          catch (e) { toast(`Could not move them: ${e}`); }
+          scan();
+        };
+        gh.append(del);
+      }
+      list.append(gh);
+      rows.forEach(c => {
+        const row = el("label", "sync-row" + (c.locked ? " locked" : "")), tick = el("input"), name = el("span", "sync-path");
+        tick.type = "checkbox"; tick.checked = picked.has(c.path); tick.disabled = c.locked || g === "empty";
+        tick.onchange = () => { tick.checked ? picked.add(c.path) : picked.delete(c.path); paint(); };
+        boxes.set(c.path, tick);
+        const at = c.path.lastIndexOf("/");
+        name.append(el("span", "cmd", c.path.slice(at + 1)));
+        if (at > 0) name.append(el("span", "sub", c.path.slice(0, at)));
+        row.append(tick, name, el("span", "sub", c.why || LABEL[c.code] || c.code));
+        // over 30 MB: git keeps every version of a file for good, so it is ticked on purpose or not at all
+        if (c.big) { const big = el("span", "tag", `${Math.round(c.big)} MB`); big.dataset.tip = "A large file, left unticked: tick it if it belongs in git, which keeps every version for good."; row.append(big); }
+        list.append(row);
+      });
+    });
+    // everything that can be ticked; a login token stays locked whatever is pressed
+    const pickable = changes.filter(c => !c.locked && c.group !== "empty").map(c => c.path);
+    const setPicked = paths => { picked = new Set(paths); boxes.forEach((x, k) => { x.checked = picked.has(k); }); paint(); };
+    all.onclick = () => setPicked(pickable);
+    none.onclick = () => setPicked([]);
+    const lab = el("label", "sync-lab", "Upload the ticked files as one commit, described in one line"), msg = el("textarea"), details = el("textarea");
+    msg.rows = 1; msg.spellcheck = false; msg.placeholder = "docs(L6): add the M3 roster (JGR-EL)"; msg.id = "sync-msg"; lab.htmlFor = "sync-msg";
+    details.rows = 2; details.spellcheck = false; details.placeholder = "Details: what changed and why, for whoever reads the history later (optional)";
+    details.setAttribute("aria-label", "Details");
+    const one = el("button", "small", "Upload as one commit");
+    one.dataset.primary = 1;
+    const reset = () => { one.classList.remove("armed"); one.textContent = "Upload as one commit"; };
+    const paint = () => { count.textContent = `${picked.size} of ${changes.length} ticked`; one.disabled = !picked.size || !msg.value.trim(); };
+    // a box as tall as its text, so a long line is read whole before it is uploaded
+    const grow = t => { t.style.height = "auto"; t.style.height = `${t.scrollHeight + 2}px`; };
+    msg.oninput = () => { reset(); paint(); grow(msg); };
+    details.oninput = () => grow(details);
+    one.onclick = async () => {
+      // the line is what lands in the shared history: one explicit look at it before it does
+      const line = msg.value.trim();
+      if (!one.classList.contains("armed")) { one.classList.add("armed"); one.textContent = `Commit "${line.slice(0, 40)}${line.length > 40 ? "…" : ""}"?`; return; }
+      out.hidden = true;
+      const files = changes.filter(c => picked.has(c.path)).map(c => c.path);
+      stages[v.repo] = stage("Uploading"); body.append(stages[v.repo]);
+      try {
+        toast(await working(one, "Uploading", () => invoke("vault_send", { repo: v.repo, path, message: commitMessage(line, details.value), files })));
+        delete stages[v.repo];
+        await incoming(); await scan();
+      } catch (e) {
+        // nothing was uploaded and nothing here changed: the reason stays on the page, the ticks and the line too
+        stages[v.repo].remove(); delete stages[v.repo];
+        out.textContent = String(e); out.hidden = false; reset(); paint();
+      }
+    };
+    body.replaceChildren(head, list, lab, msg, details, one);
+    paint();
+  }
+
+  incoming(); scan();
+  await ask("Sync vault", "", [["close", "Close", true]], box);
+}
+
 // The phone's copy: always Documents/aIwalk/<repo> in shared storage, the only kind of folder Obsidian for Android
 // opens (phonegit.rs). No folder picker and no "use a copy" there; Android asks for "All files access" first.
 function phoneRow(v) {
@@ -1005,32 +1169,13 @@ function phoneRow(v) {
   };
   const folder = `Documents/aIwalk/${v.repo.split("/").pop()}`;
   if (path) {
-    const update = iconButton("arrow-down-to-line", "Get latest", "small");
-    update.dataset.primary = 1;
-    update.onclick = run(update, "Getting the latest", () => invoke("vault_update", { repo: v.repo, path }));
+    // the same page as the vault plugin's Sync vault on a computer: the team's changes in, the ticked ones out
+    const sync = iconButton("refresh-cw", "Sync vault", "small");
+    sync.dataset.primary = 1;
+    sync.onclick = async () => { await syncDialog(v, path); await refreshLocal(); loadTeam(); };
     const title = el("div", "title", "On this phone");
     title.append(info(`In Obsidian, choose Open folder as vault and pick ${folder}. Papers are not on the phone until you get them with Get a file; what you send does not touch them.`));
     text.append(title, el("div", "sub path", path), msg);
-    // what changed here is shown before anything leaves the phone, and goes only when Send is pressed
-    const send = iconButton("arrow-up-from-line", "Send changes", "small");
-    const review = el("div", "review");
-    send.onclick = async () => {
-      msg.textContent = "";
-      const files = await working(send, "Looking", () => invoke("vault_changes", { path })).catch(e => { msg.textContent = e; return null; });
-      if (!files) return;
-      if (!files.length) { review.replaceChildren(); msg.textContent = "Nothing changed on this phone."; return; }
-      const list = el("ul", "files");
-      list.append(...files.slice(0, 8).map(f => el("li", "cmd", f)));
-      if (files.length > 8) list.append(el("li", "sub", `and ${files.length - 8} more`));
-      const what = el("input");
-      what.placeholder = "What changed, in a few words";
-      what.setAttribute("aria-label", "What changed");
-      const go = el("button", "small", files.length === 1 ? "Send 1 file" : `Send ${files.length} files`);
-      go.dataset.primary = 1;
-      go.onclick = run(go, "Sending", () => invoke("vault_send", { repo: v.repo, path, message: what.value }));
-      review.replaceChildren(list, what, go);
-    };
-    text.append(review);
     // papers (and, in a copy made small, files over 2 MB) are left on GitHub; any of them comes by itself, to its place
     const fetchOne = iconButton("folder-open", "Get a file", "small");
     fetchOne.onclick = async () => {
@@ -1070,7 +1215,7 @@ function phoneRow(v) {
       await ask("Get a file", "These are on GitHub, not on this phone.", [["close", "Close", true]], box);
       if (chosen) await run(fetchOne, chosen.length === 1 ? "Getting the file" : "Getting the files", () => invoke("vault_fetch", { repo: v.repo, path, files: chosen, everything }))();
     };
-    buttons.append(update, send, fetchOne);
+    buttons.append(sync, fetchOne);
   } else if (!v.permission) {
     return el("span");
   } else if (!filesOk()) {
