@@ -87,6 +87,16 @@ if [ -f "$VNC_LAUNCHER" ] && grep -q -- '-localhost no' "$VNC_LAUNCHER"; then
 fi
 fi
 
+# iptables-persistent, where someone installed it, loads its saved rules at boot at the same moment ufw loads its
+# own, and empties the table ufw is filling: ufw then stops half way with only "refuse everything" in place, and
+# the machine is off the network until someone sits at it (goat, 2026-10-07, at its first restart after this
+# script). ufw waits for it instead.
+if systemctl is-enabled --quiet netfilter-persistent 2>/dev/null; then
+  mkdir -p /etc/systemd/system/ufw.service.d
+  printf '[Unit]\nAfter=netfilter-persistent.service\n' > /etc/systemd/system/ufw.service.d/after-netfilter-persistent.conf
+  echo "ufw now starts after netfilter-persistent, which also loads firewall rules at boot here"
+fi
+
 ufw default deny incoming >/dev/null
 for ip in $PEERS; do ufw allow proto tcp from "$ip" to any port 22 comment 'registered lab machine' >/dev/null; done
 # switched on first: an inactive firewall lists none of its stored rules, so the open ones could not be found, and
