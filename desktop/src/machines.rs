@@ -216,6 +216,20 @@ pub fn setup_cli(vault: &std::path::Path, check: bool) -> i32 {
 // `aiwalk-setup ssh` and the Machines page's SSH button. Both use the app's own proxy and a fresh certificate, the
 // way the app's own ssh calls do (through), so neither needs the block "Set up connections" writes.
 
+/// The vault's rules for a command typed in a terminal: from the folder it is run in or any folder above it, else
+/// from a copy of the vault this app has downloaded or been pointed at, else from GitHub (the vault may be on this
+/// computer in a place the app was never told, or not on it at all). Read from the current folder alone, a
+/// command run from the home folder found no rules and took every machine's account to be the default: goat,
+/// monkey and rabbit, whose accounts are their own, then asked for the password of an account they do not have.
+fn rules_from_anywhere() -> Option<String> {
+    let here = std::env::current_dir().unwrap_or_default();
+    let kept: Vec<std::path::PathBuf> = std::fs::read_to_string(crate::home().join(".config/aiwalk-setup/vaults.json")).ok()
+        .and_then(|t| serde_json::from_str::<std::collections::BTreeMap<String, String>>(&t).ok())
+        .map(|m| m.into_values().map(std::path::PathBuf::from).collect()).unwrap_or_default();
+    here.ancestors().map(std::path::PathBuf::from).chain(kept).find_map(|d| std::fs::read_to_string(d.join("System/vault_rules.json")).ok())
+        .or_else(|| crate::VAULTS.iter().find_map(|&(_, repo, _)| crate::github::raw(repo, "System/vault_rules.json").ok()))
+}
+
 /// `aiwalk-setup ssh [ssh options] [account@]<machine> [command…]`. With no account: the one this folder's vault rules
 /// name for the machine, else ntk. Signs in first when this computer has no usable sign-in for the machine (the
 /// team sign-in traded silently, else the browser, which access::login announces on stderr before opening it).
@@ -240,7 +254,7 @@ pub fn ssh_main(args: &[String]) -> i32 {
     let (opts, dest, command) = match exo_core::ssh_args(args) { Ok(x) => x, Err(e) => return fail(e) };
     if session.is_some() && !command.is_empty() { return fail("--session opens a shell; it takes no command to run".into()) }
     let (user, tunnel) = match exo_core::ssh_destination(&dest, crate::access::ZONE) { Ok(x) => x, Err(e) => return fail(e) };
-    let user = user.unwrap_or_else(|| exo_core::default_account(std::fs::read_to_string("System/vault_rules.json").ok().as_deref(), &tunnel));
+    let user = user.unwrap_or_else(|| exo_core::default_account(rules_from_anywhere().as_deref(), &tunnel));
     if crate::access::token(&tunnel).is_err() {
         // a name with no machine behind it is said plainly, not as a failed sign-in
         match crate::access::is_team_app(&tunnel) {
