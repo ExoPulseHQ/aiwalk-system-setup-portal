@@ -166,19 +166,22 @@ function labLine(s) {
     show(0, tunnels.length, "");
     state.className = "method m-off"; state.replaceChildren(ring, count);
     const stop = await listen("lab-progress", e => show(...e.payload));
-    try { await withAddress(msg, () => working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: quietOne }))); }
-    catch (e) { msg.textContent = e; }
+    // what the step came to is kept past the repaint: it used to be wiped at once, so a step that could not finish
+    // (or finished with no machine) looked as if the button did nothing
+    let said = "";
+    try { said = await withAddress(msg, () => working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: quietOne }))) || ""; }
+    catch (e) { said = String(e); }
     stop();
     window.dispatchEvent(new Event("lab-signed-in"));
-    paint();
+    paint(said);
   };
-  const paint = async () => {
+  const paint = async said => {
     line.querySelectorAll("button").forEach(b => b.remove());
     state.className = "method m-off"; state.replaceChildren(el("span", "spinner"));
     const id = await invoke("lab_identity", { tunnels });
     if (!id) {
       state.textContent = "Step 2 of 2 not done";
-      msg.textContent = "A browser opens with your GitHub account; no Cloudflare account is needed.";
+      msg.textContent = typeof said === "string" && said ? said : "A browser opens with your GitHub account; no Cloudflare account is needed.";
       const b = el("button", "small", "Finish signing in"); b.dataset.primary = 1;
       b.onclick = () => step2(b);
       line.append(b);

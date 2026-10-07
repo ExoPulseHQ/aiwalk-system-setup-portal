@@ -144,7 +144,10 @@ pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<b
             ok
         }).count();
         tell(tunnels.len(), "");
-        return Ok(if n == 0 { "Signed in. No machine lets you in yet: ask an owner".into() } else { format!("Signed in: {n} of the machines let you in") });
+        // asked without the browser, a machine that lets the person in by email may still say no (seen with every
+        // intern so far, cause unknown): "no machine" here is not "no access", and the page must not say so
+        return Ok(if n == 0 { "No machine could be asked without the browser. Open Machines and press Sign in on a machine an owner let you in to.".into() }
+            else { format!("Signed in: {n} of the machines let you in. For another one an owner let you in to, press Sign in on it in Machines.") });
     }
     for (i, tunnel) in tunnels.iter().enumerate() {
         tell(i, &name(tunnel));
