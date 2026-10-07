@@ -625,6 +625,11 @@ fn main() {
         Some("git-credential") => std::process::exit(login::credential(&std::env::args().skip(2).collect::<Vec<_>>())),
         // `sign-in [owner]`: both sign-in steps from a terminal, approved on a phone
         Some("sign-in") => std::process::exit(sign_in_cli(std::env::args().nth(2).as_deref() == Some("owner"))),
+        // `github renew`: renews the sign-in now and says how long the new one lasts (never the token)
+        Some("github") if std::env::args().nth(2).as_deref() == Some("renew") => match login::renew_now() {
+            Ok(said) => { println!("{said}"); return }
+            Err(e) => { eprintln!("{e}"); std::process::exit(1) }
+        },
         // `github token`: the signed-in account's token on stdout, for the vault plugin (what `gh auth token` was)
         Some("github") if std::env::args().nth(2).as_deref() == Some("token") => match login::active() {
             Some((_, t)) => { println!("{t}"); return }

@@ -17,6 +17,38 @@ pub(crate) fn agent() -> &'static ureq::Agent {
 }
 
 static TOKEN: Mutex<Option<String>> = Mutex::new(None);
+/// When the token above runs out (seconds since 1970); 0 for one that does not, or whose end is not known.
+static UNTIL: Mutex<i64> = Mutex::new(0);
+/// What GitHub gave with the newest sign-in to renew it by: (the token it belongs to, the refresh token, when the
+/// token runs out). login::add takes it when it keeps that token.
+static RENEWAL: Mutex<Option<(String, String, i64)>> = Mutex::new(None);
+
+pub fn now() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) }
+
+/// The renewal that came with `token`, once: (refresh token, when the token runs out).
+pub fn take_renewal(token: &str) -> Option<(String, i64)> {
+    let mut r = RENEWAL.lock().unwrap();
+    if r.as_ref().is_some_and(|(t, _, _)| t == token) { r.take().map(|(_, refresh, until)| (refresh, until)) } else { None }
+}
+
+/// (token, refresh token, when the token runs out) from GitHub's answer to a sign-in or a renewal, when it carries
+/// a token. The sign-ins GitHub gives this app last eight hours and come with a refresh token good for months.
+fn issued(r: &Value) -> Option<(String, Option<String>, i64)> {
+    let token = r["access_token"].as_str()?.to_string();
+    let until = r["expires_in"].as_i64().map_or(0, |s| now() + s);
+    Some((token, r["refresh_token"].as_str().map(String::from), until))
+}
+
+/// A new token for a sign-in that is about to run out, from its refresh token: Ok((token, the next refresh token,
+/// when the new token runs out)). GitHub takes each refresh token once.
+pub fn renew(refresh: &str) -> Result<(String, String, i64), String> {
+    let r = oauth("https://github.com/login/oauth/access_token", serde_json::json!({
+        "client_id": CLIENT_ID, "grant_type": "refresh_token", "refresh_token": refresh }))?;
+    match issued(&r) {
+        Some((token, Some(next), until)) if until > 0 => Ok((token, next, until)),
+        _ => Err(format!("GitHub would not renew the sign-in: {}", r["error_description"].as_str().or(r["error"].as_str()).unwrap_or("no reason given"))),
+    }
+}
 /// What the token may do, as GitHub reports it with every answer ("repo, read:org, user:email").
 static SCOPES: Mutex<String> = Mutex::new(String::new());
 
@@ -24,27 +56,31 @@ pub fn scopes() -> Vec<String> {
     SCOPES.lock().unwrap().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
-/// The signed-in account's token. Read once and kept until `forget_token`.
+/// The signed-in account's token. Read once and kept until `forget_token`, or until it is about to run out: the
+/// app's window stays open for days, and a token read once at its start ran out after eight hours.
 fn token() -> Result<String, String> {
     let mut kept = TOKEN.lock().unwrap();
-    if let Some(t) = kept.as_ref() { return Ok(t.clone()) }
+    let until = *UNTIL.lock().unwrap();
+    if let Some(t) = kept.as_ref() { if until == 0 || until - now() > crate::login::SOON { return Ok(t.clone()) } }
+    *UNTIL.lock().unwrap() = 0;
     let t = match crate::login::active() {
         Some((_, t)) => t,
         None => crate::gh(&["auth", "token", "--hostname", "github.com"]).map(|t| t.trim().to_string()).unwrap_or_default(),
     };
     if t.is_empty() { return Err("not signed in to GitHub: sign in in aIwalk System Setup".into()) }
+    *UNTIL.lock().unwrap() = crate::login::runs_out().unwrap_or(0);
     *kept = Some(t.clone());
     Ok(t)
 }
 
 /// After a sign-in, sign-out or account switch: the next question reads the token again.
-pub fn forget_token() { *TOKEN.lock().unwrap() = None; }
+pub fn forget_token() { *TOKEN.lock().unwrap() = None; *UNTIL.lock().unwrap() = 0; }
 
 /// The token in use right now, if one was read.
 pub fn current_token() -> Option<String> { TOKEN.lock().unwrap().clone() }
 
 /// Uses `token` from here on: a sign-in asks GitHub whose it is before anything keeps it.
-pub fn use_token(token: &str) { *TOKEN.lock().unwrap() = Some(token.to_string()); }
+pub fn use_token(token: &str) { *TOKEN.lock().unwrap() = Some(token.to_string()); *UNTIL.lock().unwrap() = 0; }
 
 /// Downloads the file of release `tag` whose name ends as `pattern` does ("*_amd64.deb") into `dir`. Ok(its path).
 pub fn download_asset(repo: &str, tag: &str, pattern: &str, dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -167,7 +203,11 @@ pub fn device_sign_in(scopes: &str, show: &dyn Fn(&str, &str)) -> Result<String,
         // the background (frozen, its network paused) for exactly as long as the person is approving in the browser
         let Ok(r) = oauth("https://github.com/login/oauth/access_token", serde_json::json!({
             "client_id": CLIENT_ID, "device_code": device, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" })) else { continue };
-        if let Some(t) = r["access_token"].as_str() { return Ok(t.to_string()) }
+        if let Some((token, refresh, until)) = issued(&r) {
+            // kept aside for login::add, which stores it with the token: without it the sign-in ended every eight hours
+            if let Some(refresh) = refresh { *RENEWAL.lock().unwrap() = Some((token.clone(), refresh, until)); }
+            return Ok(token)
+        }
         match r["error"].as_str() {
             Some("authorization_pending") => {}
             Some("slow_down") => wait = r["interval"].as_u64().unwrap_or(wait + 5),
