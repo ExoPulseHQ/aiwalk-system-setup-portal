@@ -37,6 +37,9 @@ mod sessioncli;
 mod vault;
 #[cfg(not(target_os = "android"))]
 mod vaultcli;
+// the link check and the ownership sync, shared by vault ship (a computer) and sending from a phone
+#[cfg_attr(target_os = "android", allow(dead_code))]
+mod vaultcheck;
 // the phone's own git (libgit2): its vault downloads; on a computer only for its test (feature phone-git)
 #[cfg(any(target_os = "android", feature = "phone-git"))]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
