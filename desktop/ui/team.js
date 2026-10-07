@@ -929,6 +929,18 @@ function signInView(error, mode) {
 
 // This computer's copy of a vault: download it, bring it up to date, open it in Obsidian.
 let local = { copies: {}, obsidian: true };
+// On a phone, a job that takes a while starts the app's foreground service first (WorkService.kt): under its
+// notification Android lets the job go on with the app off the screen or the screen off. The service stops by
+// itself when the job ends. Nothing on a computer.
+let workFile = null;
+async function kept(label, work) {
+  const A = window.aiwalkFiles;
+  if (A && A.work) {
+    try { workFile = workFile || await invoke("work_file"); A.work(label, workFile); } catch {}
+  }
+  return work();
+}
+
 const stages = {};   // repo -> the stage box of a running download or update, kept across re-renders
 listen("vault-progress", e => {
   const [repo, f, text] = e.payload;
@@ -1075,7 +1087,7 @@ async function syncDialog(v, path) {
     get.onclick = async () => {
       out.hidden = true;
       stages[v.repo] = stage("Bringing them in"); inbox.append(stages[v.repo]);
-      try { toast(await working(get, "Bringing them in", () => invoke("vault_update", { repo: v.repo, path }))); }
+      try { toast(await working(get, "Bringing them in", () => kept("Bringing in the team's changes", () => invoke("vault_update", { repo: v.repo, path })))); }
       catch (e) { out.textContent = String(e); out.hidden = false; }
       delete stages[v.repo];
       await incoming(); await scan();
@@ -1151,7 +1163,7 @@ async function syncDialog(v, path) {
       const files = changes.filter(c => picked.has(c.path)).map(c => c.path);
       stages[v.repo] = stage("Uploading"); body.append(stages[v.repo]);
       try {
-        toast(await working(one, "Uploading", () => invoke("vault_send", { repo: v.repo, path, message: commitMessage(line, details.value), files })));
+        toast(await working(one, "Uploading", () => kept("Uploading", () => invoke("vault_send", { repo: v.repo, path, message: commitMessage(line, details.value), files }))));
         delete stages[v.repo];
         await incoming(); await scan();
       } catch (e) {
@@ -1177,7 +1189,7 @@ function phoneRow(v) {
     msg.textContent = "";
     stages[v.repo] = stage(label);
     text.append(stages[v.repo]);
-    try { toast(await working(b, label, work)); } catch (e) { msg.textContent = e; }
+    try { toast(await working(b, label, () => kept(label, work))); } catch (e) { msg.textContent = e; }
     delete stages[v.repo];
     await refreshLocal(); loadTeam();
   };
@@ -1287,7 +1299,7 @@ async function phoneLink(tries = 0) {
   for (const [repo, path] of copies) {
     try {
       toast(`Getting ${files[0].split("/").pop()}`);
-      toast(await invoke("vault_fetch", { repo, path, files, everything: false }));
+      toast(await kept(`Getting ${files[0].split("/").pop()}`, () => invoke("vault_fetch", { repo, path, files, everything: false })));
       const back = u.searchParams.get("back") || `obsidian://open?path=${encodeURIComponent(`${path}/${files[0]}`)}`;
       linkBusy = false;
       if (back.startsWith("obsidian://")) A.open(back);

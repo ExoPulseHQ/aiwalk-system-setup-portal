@@ -780,6 +780,39 @@ pub fn send(tree: &Path, msg: &str, who: (&str, &str), only: Option<&[String]>, 
 
 // ---------------------------------------------------------------- the phone's commands
 
+/// A long job on the phone (a download, an upload): tells the page how far it is, and writes the same words to a
+/// file the app's foreground service reads (WorkService.kt), so the notification that keeps Android from stopping
+/// the job says what it is doing. The file goes when the job ends, however it ends, which is how the service knows
+/// to stop: the page may be asleep in the background by then and cannot be relied on to say so.
+#[cfg(target_os = "android")]
+struct Working { app: tauri::AppHandle, repo: String, file: std::path::PathBuf, last: std::cell::RefCell<String> }
+
+#[cfg(target_os = "android")]
+fn work_path() -> std::path::PathBuf { crate::home().join("work.status") }
+
+#[cfg(target_os = "android")]
+impl Working {
+    fn new(app: &tauri::AppHandle, repo: &str, text: &str) -> Self {
+        let w = Working { app: app.clone(), repo: repo.to_string(), file: work_path(), last: Default::default() };
+        w.say(0.0, text);
+        w
+    }
+    fn say(&self, f: f32, text: &str) {
+        use tauri::Emitter;
+        let _ = self.app.emit("vault-progress", (&self.repo, f, text));
+        // progress comes many times a second; the file is written when the words change
+        if *self.last.borrow() != text { let _ = std::fs::write(&self.file, text); *self.last.borrow_mut() = text.to_string(); }
+    }
+}
+
+#[cfg(target_os = "android")]
+impl Drop for Working { fn drop(&mut self) { let _ = std::fs::remove_file(&self.file); } }
+
+/// The file a running job writes its words to, for the page to hand to the foreground service.
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub fn work_file() -> String { work_path().to_string_lossy().into_owned() }
+
 /// Where the vaults go: Documents/aIwalk in shared storage, the only kind of folder Obsidian for Android can open.
 // ponytail: the owner of the phone (user 0); a work profile has its own /storage/emulated/<n>. Ask Android
 // (Environment.getExternalStorageDirectory) when someone keeps the vault in a work profile.
@@ -812,19 +845,18 @@ pub fn vault_local(repos: Vec<String>) -> Local {
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
 pub fn vault_download(app: tauri::AppHandle, repo: String, small: bool) -> Result<String, String> {
-    use tauri::Emitter;
     use_token(crate::login::active().map(|(_, t)| t));
     self::small(small);
-    let report = |f: f32, text: &str| { let _ = app.emit("vault-progress", (&repo, f, text)); };
-    Ok(exo_core::exo_repos::summary("Downloaded", &clone(&format!("https://github.com/{repo}.git"), &dest(&repo), &report)?))
+    let w = Working::new(&app, &repo, "Downloading the vault");
+    Ok(exo_core::exo_repos::summary("Downloaded", &clone(&format!("https://github.com/{repo}.git"), &dest(&repo), &|f, text| w.say(f, text))?))
 }
 
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
 pub fn vault_update(app: tauri::AppHandle, repo: String, path: String) -> Result<String, String> {
-    use tauri::Emitter;
     use_token(crate::login::active().map(|(_, t)| t));
-    let (book, rows) = pull(Path::new(&path), &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); });
+    let w = Working::new(&app, &repo, "Getting the latest");
+    let (book, rows) = pull(Path::new(&path), &|f, text| w.say(f, text));
     let folders = if rows.is_empty() { String::new() } else { format!(". {}", exo_core::exo_repos::summary("Folders updated", &rows)) };
     match book {
         Err(e) => Err(format!("{e}{folders}")),
@@ -841,12 +873,12 @@ pub fn vault_left(path: String) -> (Vec<String>, Vec<String>) { (left(Path::new(
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
 pub fn vault_fetch(app: tauri::AppHandle, repo: String, path: String, files: Vec<String>, everything: bool) -> Result<String, String> {
-    use tauri::Emitter;
     use_token(crate::login::active().map(|(_, t)| t));
+    let w = Working::new(&app, &repo, "Getting files");
     // asked for all that was left behind: the copy is no longer a small one, and Get latest stops leaving files out
     if everything { if let Ok(mut c) = Repository::open(&path).and_then(|r| r.config()) { let _ = c.set_bool("aiwalk.small", false); } }
     for (i, f) in files.iter().enumerate() {
-        let _ = app.emit("vault-progress", (&repo, i as f32 / files.len() as f32, format!("Getting {} ({} of {})", f.rsplit('/').next().unwrap_or(f), i + 1, files.len())));
+        w.say(i as f32 / files.len() as f32, &format!("Getting {} ({} of {})", f.rsplit('/').next().unwrap_or(f), i + 1, files.len()));
         fetch(Path::new(&path), f, &github_blob).map_err(|e| format!("{f}: {e}{}", if i > 0 { format!(". {i} arrived before it") } else { String::new() }))?;
     }
     Ok(if files.len() == 1 { format!("{} is on the phone", files[0].rsplit('/').next().unwrap_or(&files[0])) } else { format!("{} files are on the phone", files.len()) })
@@ -878,13 +910,13 @@ pub fn vault_trash(path: String, files: Vec<String>) -> Result<usize, String> { 
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
 pub fn vault_send(app: tauri::AppHandle, repo: String, path: String, message: String, files: Vec<String>) -> Result<String, String> {
-    use tauri::Emitter;
     use_token(crate::login::active().map(|(_, t)| t));
     let user = crate::github::get("user").map_err(|_| "Sign in first".to_string())?;
     let (Some(login), Some(id)) = (user["login"].as_str(), user["id"].as_u64()) else { return Err("Sign in first".into()) };
     if message.trim().is_empty() { return Err("Say what changed in one line first".into()) }
     if files.is_empty() { return Err("Tick at least one file".into()) }
-    send(Path::new(&path), message.trim(), (login, &format!("{id}+{login}@users.noreply.github.com")), Some(&files), &|f, text| { let _ = app.emit("vault-progress", (&repo, f, text)); })
+    let w = Working::new(&app, &repo, "Uploading");
+    send(Path::new(&path), message.trim(), (login, &format!("{id}+{login}@users.noreply.github.com")), Some(&files), &|f, text| w.say(f, text))
 }
 
 // ---------------------------------------------------------------- test

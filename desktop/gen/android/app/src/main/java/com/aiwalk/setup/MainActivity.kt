@@ -36,6 +36,19 @@ class MainActivity : TauriActivity() {
   }
 
   inner class Files {
+    /** A long job starts: the service that keeps it alive off screen. `file` is where the job writes its words. */
+    @JavascriptInterface
+    fun work(text: String, file: String) {
+      runOnUiThread {
+        // Android 13 and later show the notification only when allowed; the job runs on either way
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+          requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+        }
+        val start = Intent(this@MainActivity, WorkService::class.java).putExtra("text", text).putExtra("file", file)
+        try { if (Build.VERSION.SDK_INT >= 26) startForegroundService(start) else startService(start) } catch (e: Exception) {}
+      }
+    }
+
     @JavascriptInterface
     fun link(): String = link ?: ""
 
