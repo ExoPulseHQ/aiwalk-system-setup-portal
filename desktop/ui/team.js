@@ -353,20 +353,24 @@ async function accessDialog(a, repo, code) {
     r.append(pick);
     return r;
   };
+  // people outside the organisation come first, under their own heading: listed after a dozen members they were
+  // below the fold of the dialog and looked as if they could not be chosen at all
+  const members = [];
   Object.entries(a.people).sort(([, x], [, y]) => x.name.localeCompare(y.name)).forEach(([login, p]) => {
-    if (p.outside) return;   // interns have their own rows below; a member's row could put them on a team
+    if (p.outside) return;   // interns have their own rows; a member's row could put them on a team
     if (p.grants === null) {
       const r = el("div", "item"), text = el("div", "text");
       text.append(el("div", "title", p.name === login ? login : p.name), el("div", "sub", login));
       r.append(text, pill(4, "plain", "Owners can open every repo"));
-      return box.append(r);
+      return members.push(r);
     }
-    box.append(row(p.name === login ? login : p.name, login, null, codeLevel(login) ?? Math.min(p.grants[repo] || 0, 2), login, level => { p.grants[repo] = level; }));
+    members.push(row(p.name === login ? login : p.name, login, null, codeLevel(login) ?? Math.min(p.grants[repo] || 0, 2), login, level => { p.grants[repo] = level; }));
   });
   // interns are outside the organisation: their access is per repo, given here like anyone's. The list is the
   // People page's; opened from Team access before that page was ever shown, it was empty and no intern was offered
   if (!internsNow.length) await invoke("org_people", { org: a.org }).then(p => { internsNow = p.interns || []; }, () => {});
   const RANK = { admin: 2, maintain: 2, write: 2, triage: 1, read: 1 };
+  if (internsNow.length) box.append(el("div", "access-group", "Interns and guests"));
   internsNow.forEach(i => {
     const has = i.repos.find(r => r.repo === repo);
     const now = has ? (RANK[has.level] ?? 1) : 0;
@@ -375,7 +379,8 @@ async function accessDialog(a, repo, code) {
       if (level) i.repos.push({ repo, level: level === 2 ? "write" : "read", invite: null });
     }));
   });
-  box.append(msg);
+  if (internsNow.length) box.append(el("div", "access-group", "Members"));
+  box.append(...members, msg);
   await ask(`Who can open ${repo}`, code ? "Changes apply on GitHub as soon as you pick them. Someone outside the organisation gets an invitation to accept first."
     : "Changes apply on GitHub as soon as you pick them.", [["done", "Done", true]], box);
   if (changed && !code) loadTeam();
