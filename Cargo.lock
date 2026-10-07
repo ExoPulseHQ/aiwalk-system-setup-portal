@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "aiwalk-setup"
-version = "0.3.20"
+version = "0.3.21"
 dependencies = [
  "age",
  "base64 0.22.1",
