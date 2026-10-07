@@ -8,7 +8,7 @@
 use crate::{cmd, sh};
 use exo_core::newer;
 
-const REPO: &str = "ExoPulseHQ/aiwalk-system-setup-portal";
+pub(crate) const REPO: &str = "ExoPulseHQ/aiwalk-system-setup-portal";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// How this copy was installed, which decides the file to fetch and how it goes in.

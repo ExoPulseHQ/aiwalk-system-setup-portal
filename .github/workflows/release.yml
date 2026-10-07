@@ -68,6 +68,48 @@ jobs:
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-rc') }}
 
+  # The two apps the Linux build's Android phone page puts on a phone: the Desktop Mode app (android/ in this repo)
+  # and Shizuku. They are in no installer (one page of one system uses them): they are files of the release, which
+  # the app fetches the first time Install is pressed (android.rs fetch_apk). The Desktop Mode app is signed with the
+  # team's release key, so each release can update the one before on a phone.
+  phone-apps:
+    needs: build
+    if: contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor)
+    runs-on: ubuntu-22.04
+    env:
+      KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      SHIZUKU: v13.6.0
+      SHIZUKU_SHA: 6e273ab0e991c4e79bc8b1bbb9b9dd739ccac1a8712a541a214078886b7b790f   # of the file in RikkaApps' own release
+    steps:
+      - name: The release key is there
+        id: key
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then echo "have=yes" >> "$GITHUB_OUTPUT"
+          else echo "::warning::No Android release key in this repo's secrets: no phone apps in this release."; fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: steps.key.outputs.have == 'yes'
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        if: steps.key.outputs.have == 'yes'
+        with: { distribution: temurin, java-version: 21 }
+      - name: Build, sign and add to the release
+        if: steps.key.outputs.have == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          (cd android && ./gradlew --no-daemon -q assembleRelease)
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          "$tools/zipalign" -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/phonedesk.apk"
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias aiwalk "$RUNNER_TEMP/phonedesk.apk"
+          rm -f "$RUNNER_TEMP/release.jks"
+          "$tools/apksigner" verify "$RUNNER_TEMP/phonedesk.apk"
+          # Shizuku is someone else's app: their own release file, and only the one this was tested with
+          url=$(gh api "repos/RikkaApps/Shizuku/releases/tags/$SHIZUKU" --jq '.assets[] | select(.name | endswith(".apk")) | .browser_download_url' | head -1)
+          curl -fsSL -o "$RUNNER_TEMP/shizuku.apk" "$url"
+          echo "$SHIZUKU_SHA  $RUNNER_TEMP/shizuku.apk" | sha256sum -c -
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/phonedesk.apk" "$RUNNER_TEMP/shizuku.apk" --clobber
+
   # The Android app, added to the same release once the desktop installers have made it. It is signed with the
   # team's one release key, kept in the repo's secrets: a phone only takes an update signed by the key of the app it
   # already has. Without the secrets this job says so and uploads nothing, so the desktop release is never held up.

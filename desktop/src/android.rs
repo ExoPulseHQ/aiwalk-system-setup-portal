@@ -44,7 +44,28 @@ settings put global overlay_display_devices none
 }
 
 fn adb_path() -> String { find_tool("tools/platform-tools/adb", "adb") }
-fn apk(name: &str) -> std::path::PathBuf { here().join("apk").join(name) }
+/// Where the two apps this page puts on a phone (the Desktop Mode app and Shizuku) are kept on this computer. They
+/// are in no installer: only Linux has this page and few people use it, so they are files of the release, fetched
+/// the first time Install is pressed (about 3 MB) and kept here.
+fn kept_apks() -> std::path::PathBuf { crate::home().join(".local/share/aiwalk-setup/apk") }
+
+/// The phone app `name`: beside the program (a hand-made bundle), else where a fetched one is kept.
+fn apk(name: &str) -> std::path::PathBuf {
+    let beside = here().join("apk").join(name);
+    if beside.exists() { beside } else { kept_apks().join(name) }
+}
+
+/// The phone app `name`, fetched from this version's release when it is not on this computer yet (from the newest
+/// release when this version has none, a build made by hand).
+fn fetch_apk(name: &str) -> Result<std::path::PathBuf, String> {
+    let have = apk(name);
+    if have.exists() { return Ok(have) }
+    let (repo, dir) = (crate::update::REPO, kept_apks());
+    crate::github::download_asset(repo, &format!("v{}", env!("CARGO_PKG_VERSION")), name, &dir).or_else(|first| {
+        let latest = crate::github::get(&format!("repos/{repo}/releases/latest")).ok().and_then(|r| r["tag_name"].as_str().map(String::from)).ok_or(first)?;
+        crate::github::download_asset(repo, &latest, name, &dir)
+    })
+}
 
 /// adb with an optional serial; (exit code, stdout without \r). 124 when it timed out.
 fn adb(serial: Option<&str>, args: &[&str], timeout: u64) -> (i32, String) {
@@ -189,8 +210,11 @@ fn start_shizuku(serial: &str) {
 }
 
 fn install_phonedesk(p: &Phone, step: &dyn Fn(&str)) -> String {
-    let (pd, sz) = (apk("phonedesk.apk"), apk("shizuku.apk"));
-    if !pd.exists() { return "The Desktop Mode app installer is missing from this folder".into() }
+    if !apk("phonedesk.apk").exists() || !apk("shizuku.apk").exists() { step("Getting the Desktop Mode app for the phone, about 3 MB") }
+    let (pd, sz) = match (fetch_apk("phonedesk.apk"), fetch_apk("shizuku.apk")) {
+        (Ok(pd), Ok(sz)) => (pd, sz),
+        (Err(e), _) | (_, Err(e)) => return format!("Could not get the Desktop Mode app for the phone: {e}"),
+    };
     let s = Some(p.serial.as_str());
     if adb(s, &["shell", &format!("pm path {SHIZUKU}")], 20).0 != 0
         && { step("Installing Shizuku on the phone"); adb(s, &["install", &sz.to_string_lossy()], 180).0 != 0 } {
@@ -201,7 +225,13 @@ fn install_phonedesk(p: &Phone, step: &dyn Fn(&str)) -> String {
         std::thread::sleep(Duration::from_secs(3));
     }
     step("Installing the Desktop Mode app on the phone, about a minute");
-    if adb(s, &["install", "-r", &pd.to_string_lossy()], 180).0 != 0 { return "Could not install the Desktop Mode app".into() }
+    let (code, said) = adb(s, &["install", "-r", &pd.to_string_lossy()], 180);
+    // the copy on the phone was signed by another key (a build made by hand before releases carried this app):
+    // Android takes an update only from the key the installed app was signed with
+    if said.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") {
+        return "The Desktop Mode app on the phone is from an older build that this one cannot update. Remove PhoneDesk on the phone once (Settings, Apps), then press Install again.".into()
+    }
+    if code != 0 { return "Could not install the Desktop Mode app".into() }
     step("Starting Shizuku");
     adb(s, &["shell", &format!("pm enable {PHONEDESK}")], 20);
     start_shizuku(&p.serial);
