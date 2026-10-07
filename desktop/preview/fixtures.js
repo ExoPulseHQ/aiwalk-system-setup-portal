@@ -172,7 +172,7 @@ window.__fixtures = (scenario, os) => {
     vault_incoming: q.get("incoming") === "none"
       ? [[], [{ hash: "a1b2c3d", who: "amy-chen", when: Date.now() / 1000 - 3 * 3600, what: "docs(L3): training curves for the v9 sweep (DM-AC)" }, { hash: "b2c3d4e", who: "demo", when: Date.now() / 1000 - 26 * 3600, what: "docs: notes from the phone" }]]
       : [[{ hash: "c3d4e5f", who: "bo-lin", when: Date.now() / 1000 - 40 * 60, what: "docs(L1): camera calibration checklist (CAL-BL)" }, { hash: "d4e5f6a", who: "amy-chen", when: Date.now() / 1000 - 5 * 3600, what: "fix(L3): reward table units (DM-AC)" }], []],
-    vault_trash: 1, vault_send: ok("Sent 3 files"), vault_fetch: ok("Smith_2020_Gait.pdf is on the phone"),
+    vault_trash: 1, qr: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#fff"/><path d="M1 1h3v3h-3zM6 1h3v3h-3zM1 6h3v3h-3zM5 5h1v1h-1zM7 7h2v2h-2z"/></svg>', vault_send: ok("Sent 3 files"), vault_fetch: ok("Smith_2020_Gait.pdf is on the phone"),
     vault_left: [["Papers/Gait/Smith_2020_Gait.pdf", "Papers/Gait/Lee_2022_Exoskeleton_Assistance.pdf", "Papers/RL/Peng_2018_DeepMimic.pdf", "Papers/RL/Schumacher_2023_DEP_RL.pdf", "L3_Simulation_AI/figs/training_curves_all_seeds.png", "Presentations/20260915_Lab_Meeting.pptx", "Proposals/Thesis_Draft.docx"], ["Papers"]], vault_open: none, obsidian_install: ok("Obsidian installed"),
     // machines
     reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, guest && h === "heron" ? "refused" : "up"])),

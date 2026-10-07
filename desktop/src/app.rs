@@ -482,12 +482,62 @@ pub fn open_url(url: &str) {
     if let Some(app) = APP.get() { use tauri_plugin_opener::OpenerExt; let _ = app.opener().open_url(url, None::<&str>); }
 }
 
+/// `text` as a QR code, black on white with a margin, for the page to show: a sign-in started on this computer is
+/// approved on a phone by scanning it, with nothing typed here.
+#[tauri::command]
+fn qr(text: String) -> Result<String, String> {
+    use qrcode::render::svg::Color;
+    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(code.render::<Color>().min_dimensions(200, 200).dark_color(Color("#000000")).light_color(Color("#ffffff")).build())
+}
+
+/// The same for a terminal, two modules to a line of text.
+fn qr_text(text: &str) -> String {
+    use qrcode::render::unicode::Dense1x2;
+    qrcode::QrCode::new(text.as_bytes()).map(|c| c.render::<Dense1x2>().dark_color(Dense1x2::Light).light_color(Dense1x2::Dark).build()).unwrap_or_default()
+}
+
+/// GitHub's page for the one-time code, with the code already in it.
+fn device_page(url: &str, code: &str) -> String { format!("{url}?user_code={code}") }
+
+/// `aiwalk-setup sign-in [owner]`: signs this computer in from a terminal, for a machine with no screen or one
+/// reached over SSH. Each of the two steps prints an address and its QR code; opened on a phone (or any device) and
+/// approved there, the answer comes back here and is kept as the app's window keeps it. Exit code 1 when a step fails.
+fn sign_in_cli(owner: bool) -> i32 {
+    let scopes = if owner { github::SCOPES_OWNER } else { github::SCOPES_MEMBER };
+    println!("Step 1 of 2: GitHub\n");
+    let token = match github::device_sign_in(scopes, &|code, url| {
+        println!("Scan this with a phone, or open {url} on any device and enter the code:\n\n    {code}\n\n{}\nWaiting for the approval", qr_text(&device_page(url, code)));
+    }) {
+        Ok(t) => t,
+        Err(e) => { eprintln!("{e}"); return 1 }
+    };
+    github::use_token(&token);
+    let user = match github::get("user").and_then(|u| u["login"].as_str().map(String::from).ok_or("GitHub did not say who signed in".into())) {
+        Ok(u) => u,
+        Err(e) => { eprintln!("{e}"); return 1 }
+    };
+    if let Err(e) = login::add(&user, &token) {
+        // a machine with no screen often has no keyring running, which is where the sign-in is kept
+        eprintln!("Signed in as {user}, but this computer would not keep the sign-in: {e}\nOn a computer without a desktop session, start one with a keyring first (gnome-keyring-daemon --unlock), then run this again.");
+        return 1
+    }
+    github::forget_token();
+    println!("Signed in to GitHub as {user}\n\nStep 2 of 2: the machines\n");
+    access::on_sign_in_address(Box::new(|url| println!("Scan this with a phone, or open the address above on any device, and approve with the same GitHub account:\n\n{}\nWaiting for the approval", qr_text(url))));
+    if access::token(access::ENROLL).is_ok() { println!("Already signed in for the machines. `aiwalk-setup ssh <machine>` connects from here."); return 0 }
+    match access::login(access::ENROLL, false) {
+        Ok(()) => { println!("Signed in for the machines. `aiwalk-setup ssh <machine>` connects from here."); 0 }
+        Err(e) => { eprintln!("GitHub is signed in; the machines are not: {e}\nRun `aiwalk-setup sign-in` again for this step."); 1 }
+    }
+}
+
 /// Signs in with GitHub: emits "gh-code" with the one-time code and opens the page to enter it on; true once
 /// GitHub approved. `owner` asks for the permission to manage the organisation as well.
 #[tauri::command(async)]
 fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
     let scopes = if owner == Some(true) { github::SCOPES_OWNER } else { github::SCOPES_MEMBER };
-    let token = match github::device_sign_in(scopes, &|code, url| { let _ = app.emit("gh-code", code); open_url(url); }) {
+    let token = match github::device_sign_in(scopes, &|code, url| { let _ = app.emit("gh-code", code); let _ = app.emit("gh-page", device_page(url, code)); open_url(url); }) {
         Ok(t) => t,
         Err(e) => { let _ = app.emit("gh-line", e); return false }
     };
@@ -503,7 +553,7 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, misplaced, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
+    tauri::generate_handler![platform, start_page, misplaced, qr, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
@@ -513,7 +563,7 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 /// viewer) or updates the app.
 #[cfg(target_os = "android")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, misplaced, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, terms_state, terms_accept, terms_everyone, team_access, machines::reachable, machines::machine_status, machines::forwards, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::find_machine, machines::my_machines, machines::publish_machines,
+    tauri::generate_handler![platform, start_page, misplaced, qr, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, terms_state, terms_accept, terms_everyone, team_access, machines::reachable, machines::machine_status, machines::forwards, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::find_machine, machines::my_machines, machines::publish_machines,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              phonegit::vault_local, phonegit::vault_download, phonegit::vault_update, phonegit::vault_changes, phonegit::vault_send, phonegit::vault_incoming, phonegit::vault_trash, phonegit::vault_left, phonegit::vault_fetch, set_team, request_access, approve_request, decline_request]
 }
@@ -531,7 +581,7 @@ pub fn run() {
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, misplaced, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
+    tauri::generate_handler![platform, start_page, misplaced, qr, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
 }
@@ -573,6 +623,8 @@ fn main() {
         Some("deck") => std::process::exit(deckcli::main(&std::env::args().skip(2).collect::<Vec<_>>())),
         // git asks this for the github.com password (login.rs sets it as the credential helper)
         Some("git-credential") => std::process::exit(login::credential(&std::env::args().skip(2).collect::<Vec<_>>())),
+        // `sign-in [owner]`: both sign-in steps from a terminal, approved on a phone
+        Some("sign-in") => std::process::exit(sign_in_cli(std::env::args().nth(2).as_deref() == Some("owner"))),
         // `github token`: the signed-in account's token on stdout, for the vault plugin (what `gh auth token` was)
         Some("github") if std::env::args().nth(2).as_deref() == Some("token") => match login::active() {
             Some((_, t)) => { println!("{t}"); return }

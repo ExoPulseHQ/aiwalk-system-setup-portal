@@ -28,6 +28,8 @@ ureq = "3"
 # Cloudflare Access without cloudflared (access.rs): SSH over a WebSocket, Access's RS256 signatures, JWTs
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 ring = "0.17"
+# a sign-in on a computer is approved from a phone: the code or address to open is shown as a QR code to scan
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 base64 = "0.22"
 age = { version = "0.11", features = ["armor"] }
 crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20"] }

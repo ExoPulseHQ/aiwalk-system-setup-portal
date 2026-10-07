@@ -122,11 +122,23 @@ function badge(s) {
 // here next to step 1, shows whom Cloudflare knows, and is redone whenever the GitHub account changes.
 // While a browser sign-in runs, the place `where` offers its address to copy: the browser may not have opened (a bare
 // remote desktop), or the person may rather sign in on their phone. Either way the app hears the answer.
+// `text` as a QR code to scan with a phone (the backend draws it): a sign-in started on this computer can be
+// approved on the phone, with nothing typed here. Nothing on a phone, which is the device that would do the scanning.
+async function qrOf(text) {
+  const box = el("div", "qr");
+  if (onPhone()) return box;
+  try {
+    const svg = new DOMParser().parseFromString(await invoke("qr", { text }), "image/svg+xml").documentElement;
+    if (svg.nodeName === "svg") { svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "QR code of the sign-in address"); box.append(document.importNode(svg, true)); }
+  } catch {}
+  return box;
+}
+
 async function withAddress(where, run) {
-  const stop = await listen("access-url", e => {
+  const stop = await listen("access-url", async e => {
     const url = e.payload, b = iconButton("copy", "Copy the sign-in address", "small ghost", true);
     b.onclick = ev => { ev.stopPropagation(); navigator.clipboard.writeText(url).then(() => toast("Copied. Open it in any browser, on this computer or another."), () => toast(url)); };
-    where.replaceChildren("No browser opened? Copy the sign-in address ", b);
+    where.replaceChildren("No browser opened, or signing in from a phone? Scan this, or copy the sign-in address ", b, await qrOf(url));
   });
   try { return await run(); } finally { stop(); where.replaceChildren(); }
 }
@@ -896,10 +908,12 @@ function signInView(error, mode) {
       // copied for the person when the system allows it without a click
       navigator.clipboard.writeText(e.payload).then(() => hint.textContent = " It is already copied, so pasting works.", () => {});
     });
+    // the same page with the code already in it, to scan: approved on the phone, nothing typed on this computer
+    const stopPage = await listen("gh-page", async e => { code.append(el("div", "sub", onPhone() ? "" : "Or scan this with a phone and approve there:"), await qrOf(e.payload)); });
     let why = "";
     const stopLine = await listen("gh-line", e => { why = e.payload; });
     const ok = await working(btn, mode === "owner" ? "Waiting for GitHub" : "Step 1 of 2: waiting for GitHub", () => invoke("sign_in", { owner: mode === "owner" }));
-    stop(); stopLine();
+    stop(); stopLine(); stopPage();
     if (ok) { labSignInNext = mode !== "owner"; termsNow = null; loadTeam(); } else code.textContent = why || "Sign-in was not finished. Try again.";
   };
   // the first sign-in: the strip says what is missing; adding an account or the owner tools keep their explanation
