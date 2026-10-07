@@ -73,7 +73,14 @@ fn app_from(c: &Value, host: &str, now: i64) -> Result<App, String> {
     if s("hostname") != host || s("type") != "match" { return Err(format!("Access answered for another hostname than {host}")) }
     if s("auth_domain") != TEAM { return Err(format!("{host} is guarded by another Access organisation than {TEAM}")) }
     let iat = c["iat"].as_i64().unwrap_or(0);
-    if iat < now - 24 * 3600 || iat > now + 300 { return Err("Access's answer is out of date; check this computer's clock".into()) }
+    // Cloudflare stamps its answer with the time it was made. One from the future means this computer's clock is
+    // behind (a Windows that shares its computer with Linux often reads the clock eight hours off in Taiwan)
+    if iat > now + 300 {
+        let off = iat - now;
+        let how = if off >= 5400 { format!("about {} hours", (off + 1800) / 3600) } else { format!("about {} minutes", (off + 30) / 60) };
+        return Err(format!("This computer's clock is {how} behind, so the sign-in cannot start. Set the time automatically in the system's date and time settings, then try again"))
+    }
+    if iat < now - 24 * 3600 { return Err("This computer's clock is more than a day ahead, so the sign-in cannot start. Set the time automatically in the system's date and time settings, then try again".into()) }
     let app_host = if s("app_hostname").is_empty() { host.to_string() } else { team_host(&s("app_hostname"))? };
     let aud = s("aud");
     if aud.is_empty() || !aud.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("Access named no application".into()) }

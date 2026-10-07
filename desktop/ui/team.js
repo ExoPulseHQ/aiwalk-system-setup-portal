@@ -446,7 +446,7 @@ function machinesSection(machines, org, user, guest) {
         e.stopPropagation();
         const note = el("span", "sub"); b.after(note);
         try { toast(await withAddress(note, () => working(b, "Waiting for the browser", () => invoke("access_login", { tunnels: [m.tunnel] })))); }
-        catch (err) { refusedNote(m.host, true); }
+        catch (err) { refusedNote(m.host, true); toast(String(err)); }
         note.remove();
         window.dispatchEvent(new Event("lab-signed-in"));
       };

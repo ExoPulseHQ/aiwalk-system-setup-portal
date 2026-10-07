@@ -151,7 +151,9 @@ pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<b
     }
     for (i, tunnel) in tunnels.iter().enumerate() {
         tell(i, &name(tunnel));
-        if crate::access::sign_in(tunnel).is_err() { failed.push(name(tunnel)); continue }
+        // the reason is kept: a sign-in that stops before the browser opens (this computer's clock hours off, so
+        // Cloudflare's signed answer reads as from the future) otherwise looks like a button that does nothing
+        if let Err(e) = crate::access::sign_in(tunnel) { failed.push(format!("{} ({e})", name(tunnel))); continue }
         // the status page is usually the same application; where it is its own, it gets its token too
         let _ = crate::access::sign_in(&tunnel.replacen("ssh-", "status-", 1));
     }
