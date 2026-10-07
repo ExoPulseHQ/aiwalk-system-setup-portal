@@ -9,8 +9,12 @@ def sh(cwd, *cmd):
 
 
 with tempfile.TemporaryDirectory() as t:
-    env = {**os.environ, "GIT_AUTHOR_NAME": "Ann", "GIT_COMMITTER_NAME": "Ann", "GIT_AUTHOR_EMAIL": "a@x", "GIT_COMMITTER_EMAIL": "a@x", "HOME": t}
+    env = {**os.environ, "GIT_AUTHOR_NAME": "Ann", "GIT_COMMITTER_NAME": "Ann", "GIT_AUTHOR_EMAIL": "a@x", "GIT_COMMITTER_EMAIL": "a@x", "HOME": t, "EXO_MOUNTS": os.devnull}
     os.environ.update(env)
+    # data disks: only what is mounted under /media or /mnt, a space in the name decoded
+    from importlib.machinery import SourceFileLoader
+    open(f"{t}/mounts", "w").write("/dev/a / ext4 rw 0 0\n/dev/b /media/E_drive fuseblk rw 0 0\n/dev/c /media/kuo/disk\\0401 ext4 rw 0 0\n/dev/d /mnt/x ext4 rw 0 0\n/dev/e /boot/efi vfat rw 0 0\n")
+    assert SourceFileLoader("exo", f"{HERE}/exo").load_module().data_mounts(f"{t}/mounts") == ["/media/E_drive", "/media/kuo/disk 1", "/mnt/x"]
     origin, repo = f"{t}/origin.git", f"{t}/proj"
     sh(t, "git", "init", "-q", "--bare", "-b", "main", origin)
     sh(t, "git", "clone", "-q", origin, repo)

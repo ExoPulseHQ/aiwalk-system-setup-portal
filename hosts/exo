@@ -10,7 +10,7 @@
 
 `status` prints one JSON object describing every git repo in this account: its worktrees, what is changed or unpushed in each,
 how far `main` is behind GitHub, and the branches that have no worktree. It only reads; nothing is changed except
-`git fetch`. With no paths it looks for repos (a `.git` folder, so not worktrees) up to two levels below $HOME;
+`git fetch`. With no paths it looks for repos (a `.git` folder, so not worktrees) up to two levels below $HOME and below each data disk mounted under /media or /mnt;
 `--repos` keeps those whose GitHub repo has one of these names (any owner, so a repo not yet moved into the org still counts).
 The other commands change one worktree and print {"ok": true, ...}; each checks its own rules (never commit or push the
 trunk, never finish a worktree with work not in git) instead of trusting the caller, and refuses with {"ok": false, "error"}.
@@ -20,7 +20,7 @@ import argparse, json, os, re, socket, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-VERSION = "1"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "2"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 FETCH_TIMEOUT = 15   # seconds per repo; a slow GitHub must not hold the page
 
 
@@ -46,6 +46,16 @@ def find_repos(home):
             out.append(root)
         dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "__pycache__")] if depth < 2 else []
     return sorted(out)
+
+
+def data_mounts(mounts=None):
+    """Mount points of the data disks: where a repo that does not fit under $HOME ends up (tiger's E_drive, goat's disk1)."""
+    try:
+        with open(mounts or os.environ.get("EXO_MOUNTS", "/proc/mounts")) as f:   # EXO_MOUNTS: the test points it at its own list
+            pts = [line.split()[1].replace("\\040", " ") for line in f if len(line.split()) > 1]
+    except OSError:
+        return []
+    return sorted({p for p in pts if p.startswith(("/media/", "/mnt/"))})
 
 
 def default_branch(repo):
@@ -210,7 +220,7 @@ def main(argv):
     fetch = "--no-fetch" not in rest
     names = next((rest[i + 1] for i, a in enumerate(rest[:-1]) if a == "--repos"), "")
     want = {n.lower() for n in names.split(",") if n}
-    paths = [os.path.abspath(os.path.expanduser(p)) for p in rest if not p.startswith("--") and p != names] or find_repos(os.path.expanduser("~"))
+    paths = [os.path.abspath(os.path.expanduser(p)) for p in rest if not p.startswith("--") and p != names] or sorted({r for top in [os.path.expanduser("~"), *data_mounts()] for r in find_repos(top)})
     if want:   # the remote's last part, so a second clone of the same repo shows up too (and can be flagged)
         paths = [p for p in paths if strip_git((git(p, "remote", "get-url", "origin") or "").rstrip("/")).rsplit("/", 1)[-1].lower() in want]
     with ThreadPoolExecutor(max_workers=8) as ex:
