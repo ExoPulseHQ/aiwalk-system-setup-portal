@@ -136,9 +136,11 @@ async function qrOf(text) {
 
 async function withAddress(where, run) {
   const stop = await listen("access-url", async e => {
-    const url = e.payload, b = iconButton("copy", "Copy the sign-in address", "small ghost", true);
-    b.onclick = ev => { ev.stopPropagation(); navigator.clipboard.writeText(url).then(() => toast("Copied. Open it in any browser, on this computer or another."), () => toast(url)); };
-    where.replaceChildren("No browser opened, or signing in from a phone? Scan this, or copy the sign-in address ", b, await qrOf(url));
+    const url = e.payload, b = el("button", "small", "Copy the sign-in address");
+    b.prepend(icon("copy"));
+    b.onclick = ev => { ev.stopPropagation(); navigator.clipboard.writeText(url).then(() => toast("Copied. Paste it into any browser, on this computer or another."), () => toast(url)); };
+    // a button with its words, not an icon in a sentence: it was missed when it mattered
+    where.replaceChildren(el("div", "sub", "Waiting for the sign-in. If no browser opened, or to sign in from a phone:"), b, await qrOf(url));
   });
   try { return await run(); } finally { stop(); where.replaceChildren(); }
 }
@@ -154,7 +156,7 @@ function labLine(s) {
   let topped = false;
   const state = el("span", "method m-off"), msg = el("span", "sub");
   line.append(lineLabel("Machines", "server"), state, msg);
-  const step2 = async b => {
+  const step2 = async (b, elsewhere) => {
     msg.textContent = "";
     // the machines are signed in to one after another: a ring fills as each one is done
     const ring = el("span", "ring"), count = el("span");
@@ -169,7 +171,7 @@ function labLine(s) {
     // what the step came to is kept past the repaint: it used to be wiped at once, so a step that could not finish
     // (or finished with no machine) looked as if the button did nothing
     let said = "";
-    try { said = await withAddress(msg, () => working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: quietOne }))) || ""; }
+    try { said = await withAddress(msg, () => working(b, "Step 2 of 2: waiting for the browser", () => invoke("access_login", { tunnels, quiet: quietOne, elsewhere: !!elsewhere }))) || ""; }
     catch (e) { said = String(e); }
     stop();
     window.dispatchEvent(new Event("lab-signed-in"));
@@ -184,7 +186,10 @@ function labLine(s) {
       msg.textContent = typeof said === "string" && said ? said : "A browser opens with your GitHub account; no Cloudflare account is needed.";
       const b = el("button", "small", "Finish signing in"); b.dataset.primary = 1;
       b.onclick = () => step2(b);
-      line.append(b);
+      // the address by itself, for a phone or another browser: nothing is opened on this computer
+      const other = iconButton("copy", "Get the sign-in address, to open on a phone or in another browser", "small ghost", true);
+      other.onclick = () => step2(other, true);
+      line.append(b, other);
       todo("Machines", true);
       if (labSignInNext) { labSignInNext = false; step2(b); }
       return;
@@ -441,16 +446,21 @@ function machinesSection(machines, org, user, guest) {
     // signing in to this one machine, from its row, through the browser: for a guest, who has no team sign-in covering
     // the others, and for anyone else let in machine by machine, as the sure way when the quiet asking found nothing
     if ((guest || outsider(org, user)) && m.tunnel && !m.via) {
-      const b = signIns[m.host] = el("button", "small", "Sign in"); b.hidden = true;
-      b.onclick = async e => {
+      // two ways in: this computer's browser, or the address by itself, to copy into any browser or scan with a
+      // phone (a computer whose browser will not open, or one the person does not want to sign in to GitHub on)
+      const both = signIns[m.host] = el("span", "sign-ins"); both.hidden = true;
+      const b = el("button", "small", "Sign in"), other = iconButton("copy", "Get the sign-in address, to open on a phone or in another browser", "small ghost", true);
+      const start = (ctl, elsewhere) => async e => {
         e.stopPropagation();
-        const note = el("span", "sub"); b.after(note);
-        try { toast(await withAddress(note, () => working(b, "Waiting for the browser", () => invoke("access_login", { tunnels: [m.tunnel] })))); }
+        const note = el("span", "sub"); both.after(note);
+        try { toast(await withAddress(note, () => working(ctl, elsewhere ? "Waiting for the other device" : "Waiting for the browser", () => invoke("access_login", { tunnels: [m.tunnel], elsewhere })))); }
         catch (err) { refusedNote(m.host, true); toast(String(err)); }
         note.remove();
         window.dispatchEvent(new Event("lab-signed-in"));
       };
-      right.push(b);
+      b.onclick = start(b, false); other.onclick = start(other, true);
+      both.append(b, other);
+      right.push(both);
     }
     if (guest) {
       rmMark = iconButton("x", `Remove ${m.host} from this list`, "small ghost row-act", true);

@@ -73,14 +73,13 @@ fn app_from(c: &Value, host: &str, now: i64) -> Result<App, String> {
     if s("hostname") != host || s("type") != "match" { return Err(format!("Access answered for another hostname than {host}")) }
     if s("auth_domain") != TEAM { return Err(format!("{host} is guarded by another Access organisation than {TEAM}")) }
     let iat = c["iat"].as_i64().unwrap_or(0);
-    // Cloudflare stamps its answer with the time it was made. One from the future means this computer's clock is
-    // behind (a Windows that shares its computer with Linux often reads the clock eight hours off in Taiwan)
-    if iat > now + 300 {
-        let off = iat - now;
-        let how = if off >= 5400 { format!("about {} hours", (off + 1800) / 3600) } else { format!("about {} minutes", (off + 30) / 60) };
-        return Err(format!("This computer's clock is {how} behind, so the sign-in cannot start. Set the time automatically in the system's date and time settings, then try again"))
+    // Cloudflare stamps its answer with the time it was made; a day either way is taken. Five minutes into the
+    // future was the limit before, which stopped every sign-in on a computer whose clock is hours behind (a Windows
+    // that shares its disk with Linux reads it eight hours off in Taiwan) before any address was made to open.
+    // The answer is signed, and what it is used for is only where the browser is sent.
+    if (iat - now).abs() > 24 * 3600 {
+        return Err(format!("This computer's clock is more than a day {}, so the sign-in cannot start. Set the time automatically in the system's date and time settings, then try again", if iat > now { "behind" } else { "ahead" }))
     }
-    if iat < now - 24 * 3600 { return Err("This computer's clock is more than a day ahead, so the sign-in cannot start. Set the time automatically in the system's date and time settings, then try again".into()) }
     let app_host = if s("app_hostname").is_empty() { host.to_string() } else { team_host(&s("app_hostname"))? };
     let aud = s("aud");
     if aud.is_empty() || !aud.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("Access named no application".into()) }
@@ -371,11 +370,16 @@ pub fn sign_in_quiet(host: &str) -> bool {
     token(&host).is_ok() || app_info(&host).is_ok_and(|a| exchange(&host, &a).is_ok())
 }
 
+/// Whether a sign-in opens this computer's browser. Off for a sign-in meant for another device: the address is
+/// shown to copy or scan, and nothing is opened here.
+static BROWSER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn open_browser(on: bool) { BROWSER.store(on, std::sync::atomic::Ordering::Relaxed) }
+
 pub fn sign_in(host: &str) -> Result<bool, String> {
     let host = team_host(host)?;
     if token(&host).is_ok() { return Ok(false) }
     if exchange(&host, &app_info(&host)?).is_ok() { return Ok(false) }
-    login(&host, true).map(|_| true)
+    login(&host, BROWSER.load(std::sync::atomic::Ordering::Relaxed)).map(|_| true)
 }
 
 /// The certificate for `host` when the one kept is older than two minutes (they last a few): what ssh runs before
@@ -492,6 +496,9 @@ mod tests {
         let with = |k: &str, v: Value| { let mut m = meta.clone(); m[k] = v; app_from(&m, "status-tiger.aiwalkcorp.com", 1000) };
         assert!(with("auth_domain", json!("other.cloudflareaccess.com")).is_err());
         assert!(with("iat", json!(1000 - 25 * 3600)).is_err());
+        // a clock eight hours behind (the answer reads as from the future) still signs in; more than a day does not
+        assert!(with("iat", json!(1000 + 8 * 3600)).is_ok());
+        assert!(with("iat", json!(1000 + 25 * 3600)).is_err_and(|e| e.contains("more than a day behind")));
         assert!(with("app_hostname", json!("x.evil.com")).is_err());
         assert!(with("app_hostname", json!("../../.ssh/x.aiwalkcorp.com")).is_err());
         assert!(with("aud", json!("")).is_err());

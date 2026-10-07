@@ -120,8 +120,10 @@ pub fn publish_machines(mut names: Vec<String>) -> Result<bool, String> {
 
 /// Signs this computer in to Cloudflare Access for `tunnel`: a browser opens for the GitHub sign-in.
 #[tauri::command(async)]
-pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<bool>) -> Result<String, String> {
+pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<bool>, elsewhere: Option<bool>) -> Result<String, String> {
     use tauri::Emitter;
+    // `elsewhere`: the person asked for the address, to open on a phone or in another browser; nothing opens here
+    crate::access::open_browser(elsewhere != Some(true));
     let name = |t: &str| t.split('.').next().unwrap_or(t).trim_start_matches("ssh-").to_string();
     { let app = app.clone(); crate::access::on_sign_in_address(Box::new(move |url| { let _ = app.emit("access-url", url); })); }
     // "lab-progress": (machines done, machines in all, the one being signed in to now)
