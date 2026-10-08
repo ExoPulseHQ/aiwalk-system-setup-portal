@@ -565,7 +565,7 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, start_page, misplaced, qr, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, terms_state, terms_accept, terms_everyone, team_access, machines::reachable, machines::machine_status, machines::forwards, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::find_machine, machines::my_machines, machines::publish_machines,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
-                             phonegit::vault_local, phonegit::vault_download, phonegit::vault_update, phonegit::work_file, phonegit::vault_changes, phonegit::vault_send, phonegit::vault_incoming, phonegit::vault_trash, phonegit::vault_left, phonegit::vault_fetch, set_team, request_access, approve_request, decline_request]
+                             phonegit::vault_local, phonegit::vault_download, phonegit::vault_update, phonegit::work_file, phonegit::vault_changes, phonegit::vault_send, phonegit::vault_incoming, phonegit::vault_trash, phonegit::vault_left, phonegit::vault_fetch, phonegit::vault_papers, phonegit::vault_drop, set_team, request_access, approve_request, decline_request]
 }
 
 #[cfg(target_os = "android")]

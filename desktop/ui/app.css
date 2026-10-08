@@ -570,3 +570,11 @@ html.phone #dialog button, html.phone #dialog select, html.phone #dialog input:n
 .syncv textarea:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
 .syncv button.armed { outline: 2px solid var(--purple); }
 .sync-out { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-s); color: var(--bad, #e5484d); }
+
+/* Get a file: the papers by shelf, as the vault plugin's Papers page has them */
+.getfile .shelves { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.getfile .shelf[aria-pressed="true"] { background: rgba(140, 84, 217, .22); border-color: var(--purple); }
+.getfile .papers { display: grid; gap: var(--s1); max-height: 52vh; overflow-y: auto; overflow-x: hidden; }
+.getfile .papers .sync-row .file { flex: 1 1 auto; min-width: 0; border-bottom: 0; }
+.getfile .papers .sync-row { border-bottom: 1px solid var(--line); }
+.getfile .papers .buttons { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s1) 0; }

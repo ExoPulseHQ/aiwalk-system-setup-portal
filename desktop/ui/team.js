@@ -1198,6 +1198,94 @@ async function syncDialog(v, path) {
   await ask("Sync vault", "", [["close", "Close", true]], box);
 }
 
+// Get a file on a phone: the vault plugin's Papers page (papers.ts), with this app doing the fetching. The papers
+// by shelf, in the plugin's two states (on GitHub and not downloaded, downloaded), each with its size and how many
+// notes link to it, from the vault's own paper list; download one, all of a shelf, or the ones notes link to;
+// remove one again. Below them, in a copy made small, the other files left on GitHub.
+// Resolves {files, everything} when the person asked for a download, else null.
+function papersDialog(path, papers, [left, lazy]) {
+  const box = el("div", "getfile"), status = el("p", "sub"), shelves = el("div", "shelves"), find = el("input"), body = el("div", "papers");
+  find.type = "search"; find.placeholder = "Search by author, year or title"; find.setAttribute("aria-label", "Search the papers");
+  const others = left.filter(f => !lazy.some(d => f.startsWith(d + "/")));
+  const mb = bytes => (bytes / 1048576).toFixed(1);
+  const pretty = f => f.split("/").pop().replace(/\.pdf$/i, "").replace(/_/g, " ");
+  // a shelf is the folder a paper is in, under the papers' own folder: "Papers/05_Foundation_Methods/x.pdf"
+  const shelfOf = pp => { const parts = pp.path.split("/"); return parts.length > 2 ? parts[1] : ""; };
+  const shelfName = d => d.replace(/^\d+_/, "").replace(/_/g, " ");
+  let shelf = "", job = null;
+  const ask_ = (files, everything) => { job = { files, everything: !!everything }; document.getElementById("dialog").close("get"); };
+  const group = (title, sub, n) => { const g = el("div", "sync-group"); g.append(el("span", null, title), el("span", "sub", String(n))); const w = el("div"); w.append(g, el("div", "sub", sub)); return w; };
+  const draw = () => {
+    const words = find.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const hit = papers.filter(pp => (!shelf || shelfOf(pp) === shelf) && words.every(w => pp.path.toLowerCase().includes(w)));
+    const here = papers.filter(pp => pp.here);
+    status.textContent = papers.length ? `${here.length} of ${papers.length} papers on the phone, ${mb(here.reduce((t, pp) => t + pp.bytes, 0))} MB` : "";
+    // the shelves: All, then one per folder with how many papers it holds
+    const names = [...new Set(papers.map(shelfOf).filter(Boolean))].sort();
+    shelves.replaceChildren(...[["", "All", papers.length], ...names.map(d => [d, shelfName(d), papers.filter(pp => shelfOf(pp) === d).length])].map(([d, label, n]) => {
+      const c = el("button", "small ghost shelf", `${label} `); c.append(el("span", "sub", String(n)));
+      c.setAttribute("aria-pressed", String(shelf === d));
+      c.onclick = () => { shelf = d; draw(); };
+      return c;
+    }));
+    shelves.hidden = names.length < 2;
+    const cloud = hit.filter(pp => !pp.here), have = hit.filter(pp => pp.here);
+    body.replaceChildren();
+    if (papers.length && !hit.length) body.append(el("p", "sub", "Nothing here."));
+    if (cloud.length) {
+      const linked = cloud.filter(pp => pp.notes > 0), acts = el("div", "buttons");
+      const all = el("button", "small", `Download all ${cloud.length} (${mb(cloud.reduce((t, pp) => t + pp.bytes, 0))} MB)`);
+      all.onclick = () => ask_(cloud.map(pp => pp.path));
+      acts.append(all);
+      if (linked.length && linked.length < cloud.length) {
+        const some = el("button", "small ghost", `Download the ${linked.length} linked from notes`);
+        some.onclick = () => ask_(linked.map(pp => pp.path));
+        acts.append(some);
+      }
+      body.append(group("On GitHub, not downloaded", "Listed for everyone; download the ones you need.", cloud.length), acts);
+      cloud.slice(0, 60).forEach(pp => {
+        const row = el("button", "ghost small file");
+        row.append(el("span", "cmd", pretty(pp.path)), el("span", "sub", `Get ${mb(pp.bytes)} MB${pp.notes ? `, ${pp.notes} ${pp.notes === 1 ? "note" : "notes"}` : ""}`));
+        row.onclick = () => ask_([pp.path]);
+        body.append(row);
+      });
+      if (cloud.length > 60) body.append(el("p", "sub", `and ${cloud.length - 60} more: pick a shelf or search to narrow them.`));
+    }
+    if (have.length) {
+      body.append(group("Downloaded", "On this phone and up to date with GitHub.", have.length));
+      have.slice(0, 60).forEach(pp => {
+        const row = el("div", "sync-row"), name = el("button", "ghost small file"), rm = el("button", "small ghost", "Remove");
+        name.append(el("span", "cmd", pretty(pp.path)), el("span", "sub", `${mb(pp.bytes)} MB${pp.notes ? `, ${pp.notes} ${pp.notes === 1 ? "note" : "notes"}` : ""}, opens in Obsidian`));
+        name.onclick = () => { const A = window.aiwalkFiles; if (A && A.open) A.open(`obsidian://open?path=${encodeURIComponent(`${path}/${pp.path}`)}`); };
+        rm.onclick = async () => {
+          try { await working(rm, "Removing", () => invoke("vault_drop", { path, files: [pp.path] })); pp.here = false; toast(`${pretty(pp.path)} is off the phone; it stays on GitHub`); draw(); }
+          catch (e) { toast(String(e)); }
+        };
+        row.append(name, rm);
+        body.append(row);
+      });
+    }
+    // a copy made small also leaves other large files on GitHub: slide decks, Word files, large figures
+    const more = others.filter(f => words.every(w => f.toLowerCase().includes(w)));
+    if (more.length && !shelf) {
+      const acts = el("div", "buttons"), whole = el("button", "small", more.length === 1 ? "Get it" : `Get all ${more.length}`);
+      whole.onclick = () => ask_(more, !words.length);
+      acts.append(whole);
+      body.append(group("Other files left on GitHub", "This copy was made with the notes and small files only.", more.length), acts);
+      more.slice(0, 40).forEach(f => {
+        const row = el("button", "ghost small file");
+        row.append(el("span", "cmd", f.split("/").pop()), el("span", "sub", f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : ""));
+        row.onclick = () => ask_([f]);
+        body.append(row);
+      });
+    }
+    if (!papers.length && !others.length) body.append(el("p", "sub", lazy.length ? "The paper list is not on the phone yet: press Sync vault and bring in the team's changes, then open this again." : "Every file of this vault is on the phone."));
+  };
+  find.oninput = draw; draw();
+  box.append(status, shelves, find, body);
+  return ask("Get a file", "Papers stay on GitHub until you ask for them.", [["close", "Close", true]], box).then(() => job);
+}
+
 // The phone's copy: always Documents/aIwalk/<repo> in shared storage, the only kind of folder Obsidian for Android
 // opens (phonegit.rs). No folder picker and no "use a copy" there; Android asks for "All files access" first.
 function phoneRow(v) {
@@ -1224,40 +1312,10 @@ function phoneRow(v) {
     const fetchOne = iconButton("folder-open", "Get a file", "small");
     fetchOne.onclick = async () => {
       msg.textContent = "";
-      const got = await working(fetchOne, "Looking", () => invoke("vault_left", { path })).catch(e => { msg.textContent = e; return null; });
+      const got = await working(fetchOne, "Looking", () => Promise.all([invoke("vault_papers", { path }), invoke("vault_left", { path })])).catch(e => { msg.textContent = e; return null; });
       if (!got) return;
-      const [all, lazy] = got, rest = all.filter(f => !lazy.some(d => f.startsWith(d + "/")));
-      if (!all.length) { msg.textContent = "Every file of this vault is on the phone."; return; }
-      const box = el("div", "getfile"), find = el("input"), list = el("ul", "files"), count = el("p", "sub");
-      find.placeholder = "Part of a name or a folder"; find.setAttribute("aria-label", "Find a file");
-      let chosen = null, everything = false;
-      const get = (files, whole) => { chosen = files; everything = !!whole; document.getElementById("dialog").close("get"); };
-      const draw = () => {
-        const q = find.value.trim().toLowerCase(), hits = q ? all.filter(f => f.toLowerCase().includes(q)) : all;
-        list.replaceChildren(...hits.slice(0, 60).map(f => {
-          const li = el("li"), b = el("button", "ghost small file");
-          b.append(el("span", "cmd", f.split("/").pop()), el("span", "sub", f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : ""));
-          b.onclick = () => get([f]);
-          li.append(b); return li;
-        }));
-        count.replaceChildren(hits.length > 60 ? `${hits.length} files; the first 60 are shown. Type more of the name.` : hits.length === 1 ? "1 file" : `${hits.length} files`);
-        // a whole folder at once, when the search has narrowed it to a few
-        if (q && hits.length > 1 && hits.length <= 30) {
-          const every = el("button", "small", `Get all ${hits.length}`);
-          every.onclick = () => get(hits);
-          count.append(" ", every);
-        }
-        // a copy made small, and room found since: all that was left behind except the papers, from now on too
-        if (!q && rest.length) {
-          const whole = el("button", "small", rest.length === 1 ? "Get the 1 that is not a paper" : `Get the ${rest.length} that are not papers`);
-          whole.onclick = () => get(rest, true);
-          count.append(" ", whole);
-        }
-      };
-      find.oninput = draw; draw();
-      box.append(find, count, list);
-      await ask("Get a file", "These are on GitHub, not on this phone.", [["close", "Close", true]], box);
-      if (chosen) await run(fetchOne, chosen.length === 1 ? "Getting the file" : "Getting the files", () => invoke("vault_fetch", { repo: v.repo, path, files: chosen, everything }))();
+      const job = await papersDialog(path, got[0], got[1]);
+      if (job) await run(fetchOne, job.files.length === 1 ? "Getting the file" : `Getting ${job.files.length} files`, () => invoke("vault_fetch", { repo: v.repo, path, files: job.files, everything: job.everything }))();
     };
     buttons.append(sync, fetchOne);
   } else if (!v.permission) {

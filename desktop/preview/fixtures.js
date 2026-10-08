@@ -173,7 +173,15 @@ window.__fixtures = (scenario, os) => {
       ? [[], [{ hash: "a1b2c3d", who: "amy-chen", when: Date.now() / 1000 - 3 * 3600, what: "docs(L3): training curves for the v9 sweep (DM-AC)" }, { hash: "b2c3d4e", who: "demo", when: Date.now() / 1000 - 26 * 3600, what: "docs: notes from the phone" }]]
       : [[{ hash: "c3d4e5f", who: "bo-lin", when: Date.now() / 1000 - 40 * 60, what: "docs(L1): camera calibration checklist (CAL-BL)" }, { hash: "d4e5f6a", who: "amy-chen", when: Date.now() / 1000 - 5 * 3600, what: "fix(L3): reward table units (DM-AC)" }], []],
     vault_trash: 1, work_file: "/data/user/0/com.example.setup/work.status", qr: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#fff"/><path d="M1 1h3v3h-3zM6 1h3v3h-3zM1 6h3v3h-3zM5 5h1v1h-1zM7 7h2v2h-2z"/></svg>', vault_send: ok("Sent 3 files"), vault_fetch: ok("Smith_2020_Gait.pdf is on the phone"),
-    vault_left: [["Papers/Gait/Smith_2020_Gait.pdf", "Papers/Gait/Lee_2022_Exoskeleton_Assistance.pdf", "Papers/RL/Peng_2018_DeepMimic.pdf", "Papers/RL/Schumacher_2023_DEP_RL.pdf", "L3_Simulation_AI/figs/training_curves_all_seeds.png", "Presentations/20260915_Lab_Meeting.pptx", "Proposals/Thesis_Draft.docx"], ["Papers"]], vault_open: none, obsidian_install: ok("Obsidian installed"),
+    vault_left: [["Papers/01_Gait/Smith_2020_Gait.pdf", "Papers/02_Learning_Based_Control/Peng_2018_DeepMimic.pdf", "Papers/02_Learning_Based_Control/Schumacher_2023_DEP_RL.pdf",
+      ...(q.get("copy") === "small" ? ["L3_Simulation_AI/figs/training_curves_all_seeds.png", "Presentations/20260915_Lab_Meeting.pptx", "Proposals/Thesis_Draft.docx"] : [])], ["Papers"]],
+    vault_papers: [
+      { path: "Papers/01_Gait/Smith_2020_Gait.pdf", bytes: 3856579, notes: 2, here: false },
+      { path: "Papers/01_Gait/Lee_2022_Exoskeleton_Assistance.pdf", bytes: 1250000, notes: 0, here: true },
+      { path: "Papers/02_Learning_Based_Control/Peng_2018_DeepMimic.pdf", bytes: 9100000, notes: 5, here: false },
+      { path: "Papers/02_Learning_Based_Control/Schumacher_2023_DEP_RL.pdf", bytes: 2400000, notes: 0, here: false },
+      { path: "Papers/02_Learning_Based_Control/Haarnoja_2018_Soft_Actor_Critic.pdf", bytes: 880000, notes: 1, here: true }],
+    vault_drop: 1, vault_open: none, obsidian_install: ok("Obsidian installed"),
     // machines
     reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, guest && h === "heron" ? "refused" : "up"])),
     find_machine: a => !/^[a-z0-9-]{1,32}$/.test((a.name || "").trim()) ? new Error("A machine's name is lower-case letters, digits and hyphens, 1 to 32 of them.")

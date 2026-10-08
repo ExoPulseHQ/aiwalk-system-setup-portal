@@ -97,8 +97,21 @@ fn recall(tree: &Path) {
     small(Repository::open(tree).and_then(|r| r.config()).and_then(|c| c.get_bool("aiwalk.small")).unwrap_or(false))
 }
 
-/// The on-demand folders (the papers): only their notes come; every paper is one tap away (`fetch`).
+/// The on-demand folders (the papers): what GitHub sends with the clone. What such a folder always holds is the
+/// vault's own rule, by name (`always`, exo_core's ALWAYS, which the vault plugin shares); git can only leave files
+/// out by size, so the small ones come with the clone and the rest of the always-kept ones (the paper list, larger
+/// figures) are fetched one by one right after (`keep_always`). The papers themselves stay until asked for.
 const LIMIT_ON_DEMAND: &str = "blob:limit=64k";
+
+/// Whether an on-demand folder always holds `path` (a path inside it): the paper list, notes, pictures, the
+/// EndNote library. Everything else there is a paper, fetched on request.
+pub fn always(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    exo_core::exo_repos::ALWAYS.iter().any(|p| match p.strip_prefix('/') {
+        Some(at_top) => path == at_top,
+        None => p.strip_prefix('*').is_some_and(|ext| lower.ends_with(ext)),
+    })
+}
 
 /// The repos (by address) whose server said it can leave large files out.
 static FILTERS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -373,6 +386,8 @@ fn each(tree: &Path, update: bool, from: f32, progress: Progress) -> Vec<(String
                     if !made { let _ = std::fs::create_dir_all(&dir); }
                 }
             }
+            // the paper list and the notes that did not come with the clone: the vault plugin's Papers page reads them
+            if dir.join(".git").exists() { keep_always(tree, path, &github_blob); }
             Got::Later
         } else if dir.join(".git").exists() {
             match if update { forward(&dir, &f) } else { Ok(()) } {
@@ -488,17 +503,70 @@ pub fn on_demand_folders(tree: &Path) -> Vec<String> {
         .filter(|s| s.name().is_ok_and(|n| lazy.iter().any(|l| l == n))).map(|s| s.path().to_string_lossy().replace('\\', "/")).collect()).unwrap_or_default()
 }
 
+/// Fetches what the on-demand folder at `folder` always holds and does not have yet. Ok(how many arrived); a file
+/// that will not come is left for the next time.
+pub fn keep_always(tree: &Path, folder: &str, get: &dyn Fn(&str, &str, &Path) -> Result<(), String>) -> usize {
+    let prefix = format!("{folder}/");
+    left(tree).iter().filter(|p| p.strip_prefix(&prefix).is_some_and(always)).filter(|p| fetch(tree, p, get).is_ok()).count()
+}
+
+/// One paper as the vault's own list has it (`<folder>/_manifest.json`), and whether it is on the phone.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct Paper {
+    /// from the vault's top
+    pub path: String,
+    pub bytes: u64,
+    /// how many notes link to it
+    pub notes: usize,
+    pub here: bool,
+}
+
+/// Every paper of the vault at `tree`, from the paper list each on-demand folder carries: the same list the vault
+/// plugin's Papers page shows on a computer.
+pub fn papers(tree: &Path) -> Vec<Paper> {
+    on_demand_folders(tree).iter().flat_map(|folder| {
+        let list = std::fs::read_to_string(tree.join(folder).join("_manifest.json")).ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["pdfs"].as_array().cloned()).unwrap_or_default();
+        list.into_iter().filter_map(move |p| {
+            let path = format!("{folder}/{}", p["path"].as_str()?);
+            Some(Paper { here: tree.join(&path).is_file(), bytes: p["bytes"].as_u64().unwrap_or(0), notes: p["linked_from"].as_array().map_or(0, |a| a.len()), path })
+        }).collect::<Vec<_>>()
+    }).collect()
+}
+
+/// The repo a path from the vault's top is in, and the path inside it: the folder it is in (the longest that
+/// matches), else the book itself.
+fn locate(tree: &Path, path: &str) -> Result<(std::path::PathBuf, String), String> {
+    let book = Repository::open(tree).map_err(|e| e.message().to_string())?;
+    let mut subs = folders(&book, tree);
+    subs.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    Ok(match subs.iter().find(|s| path.starts_with(&format!("{s}/"))) {
+        Some(s) => (tree.join(s), path[s.len() + 1..].to_string()),
+        None => (tree.to_path_buf(), path.to_string()),
+    })
+}
+
+/// Takes a fetched file off the phone again; it stays on GitHub and in the list. One the person changed is kept.
+pub fn drop_file(tree: &Path, path: &str) -> Result<(), String> {
+    let say = |e: git2::Error| e.message().to_string();
+    let (dir, inner) = locate(tree, path)?;
+    let repo = Repository::open(&dir).map_err(say)?;
+    let entry = repo.index().map_err(say)?.get_path(Path::new(&inner), 0).ok_or("git does not know this file")?;
+    let file = dir.join(&inner);
+    if !file.is_file() { return Ok(()) }
+    if git2::Oid::hash_file(ObjectType::Blob, &file).map_err(say)? != entry.id {
+        return Err(format!("{} was changed on this phone, so it is kept. Upload it first, in Sync vault", inner.rsplit('/').next().unwrap_or(&inner)))
+    }
+    // only a file git keeps as left on GitHub may go: removing any other would read as deleting it for the team
+    if entry.flags_extended & (1 << 14) == 0 { return Err("this file belongs on the phone".into()) }
+    std::fs::remove_file(&file).map_err(|e| e.to_string())
+}
+
 /// Brings one file left on GitHub to its place. `get(repo's address, blob id, where to write)` fetches the content.
 pub fn fetch(tree: &Path, path: &str, get: &dyn Fn(&str, &str, &Path) -> Result<(), String>) -> Result<(), String> {
     let say = |e: git2::Error| e.message().to_string();
-    let book = Repository::open(tree).map_err(say)?;
-    // the folder the path is in (the longest that matches), else the book itself
-    let mut subs = folders(&book, tree);
-    subs.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    let (dir, inner) = match subs.iter().find(|s| path.starts_with(&format!("{s}/"))) {
-        Some(s) => (tree.join(s), &path[s.len() + 1..]),
-        None => (tree.to_path_buf(), path),
-    };
+    let (dir, inner) = locate(tree, path)?;
+    let inner = inner.as_str();
     let repo = Repository::open(&dir).map_err(say)?;
     let entry = repo.index().map_err(say)?.get_path(Path::new(inner), 0).ok_or("git does not know this file")?;
     let url = repo.find_remote("origin").map_err(say)?.url().unwrap_or_default().to_string();
@@ -864,6 +932,19 @@ pub fn vault_update(app: tauri::AppHandle, repo: String, path: String) -> Result
     }
 }
 
+/// The papers of the copy at `path`, each with its size, how many notes link to it and whether it is on the phone.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_papers(path: String) -> Vec<Paper> { papers(Path::new(&path)) }
+
+/// Takes fetched files off the phone again. Ok(how many went); Err names the first that was kept and why.
+#[cfg(target_os = "android")]
+#[tauri::command(async)]
+pub fn vault_drop(path: String, files: Vec<String>) -> Result<usize, String> {
+    for f in &files { drop_file(Path::new(&path), f)?; }
+    Ok(files.len())
+}
+
 /// The files left on GitHub for the copy at `path`, for the page to choose from.
 #[cfg(target_os = "android")]
 #[tauri::command(async)]
@@ -1109,6 +1190,10 @@ s.serve_forever()
         git(&root, &["clone", "-q", &url("papers"), &papers_work.to_string_lossy()]);
         commit(&papers_work, "README.md", "the papers");
         commit(&papers_work, "smith2020.pdf", &"%PDF ".repeat(40_000));   // 200 KB: over the on-demand limit
+        // the paper list, and a figure, both larger than what comes with the clone: always kept all the same
+        let list = format!(r#"{{"about":"x","pdfs":[{{"path":"smith2020.pdf","bytes":200000,"sha":"","linked_from":["a.md","b.md"]}}],"pad":"{}"}}"#, "p".repeat(80_000));
+        commit(&papers_work, "_manifest.json", &list);
+        commit(&papers_work, "figure.png", &"png ".repeat(30_000));
 
         // the team's side, with a real git: two commits each, so a shallow copy really is missing history
         let notes_work = root.join("notes-work");
@@ -1137,7 +1222,7 @@ s.serve_forever()
         clone(&url("book"), &whole, &|_, _| {}).unwrap();
         assert!(whole.join("paper.pdf").exists() && whole.join("Notes/slides.pptx").exists());
         assert!(whole.join("Papers/README.md").exists() && !whole.join("Papers/smith2020.pdf").exists());
-        assert_eq!(left(&whole), ["Papers/smith2020.pdf"]);
+        assert_eq!(left(&whole), ["Papers/_manifest.json", "Papers/figure.png", "Papers/smith2020.pdf"]);
         assert_eq!(on_demand_folders(&whole), ["Papers"]);
         assert!(pending(&whole).is_empty(), "{:?}", pending(&whole));
 
@@ -1157,13 +1242,30 @@ s.serve_forever()
 
         // the papers: their notes are here, each paper is known and not here; one is brought by itself
         assert!(phone.join("Papers/README.md").exists() && !phone.join("Papers/smith2020.pdf").exists());
-        assert_eq!(left(&phone), ["Notes/slides.pptx", "paper.pdf", "Papers/smith2020.pdf"]);
+        // what the folder always holds by the vault's rule, whatever its size; a paper is not among it
+        assert!(always("_manifest.json") && always("notes/Reading.MD") && always("figs/a.PNG") && always("lib.enl"));
+        assert!(!always("smith2020.pdf") && !always("sub/_manifest.json") && !always("data.csv"));
+        assert_eq!(left(&phone), ["Notes/slides.pptx", "paper.pdf", "Papers/_manifest.json", "Papers/figure.png", "Papers/smith2020.pdf"]);
+        assert!(super::papers(&phone).is_empty(), "no paper list on the phone yet");
         let from_server = |remote: &str, id: &str, to: &Path| -> Result<(), String> {
             let bare = srv.join(remote.rsplit('/').next().unwrap());
             let o = std::process::Command::new("git").current_dir(bare).args(["cat-file", "blob", id]).output().map_err(|e| e.to_string())?;
             if !o.status.success() { return Err("no such blob".into()) }
             std::fs::write(to, o.stdout).map_err(|e| e.to_string())
         };
+        // (in the app this runs with the download; the test's server is not GitHub, so it is called here)
+        assert_eq!(keep_always(&phone, "Papers", &from_server), 2);
+        assert!(phone.join("Papers/_manifest.json").exists() && phone.join("Papers/figure.png").exists());
+        assert_eq!(left(&phone), ["Notes/slides.pptx", "paper.pdf", "Papers/smith2020.pdf"]);
+        // the list the vault plugin's Papers page shows: each paper, its size, the notes that link to it
+        assert_eq!(super::papers(&phone), [Paper { path: "Papers/smith2020.pdf".into(), bytes: 200_000, notes: 2, here: false }]);
+        fetch(&phone, "Papers/smith2020.pdf", &from_server).unwrap();
+        assert!(super::papers(&phone)[0].here);
+        // taken off the phone again: still listed, still on GitHub, not a deletion
+        drop_file(&phone, "Papers/smith2020.pdf").unwrap();
+        assert!(!phone.join("Papers/smith2020.pdf").exists() && !super::papers(&phone)[0].here && pending(&phone).is_empty());
+        // a file that belongs on the phone is not removed this way
+        assert!(drop_file(&phone, "README.md").is_err() && phone.join("README.md").exists());
         fetch(&phone, "Papers/smith2020.pdf", &from_server).unwrap();
         fetch(&phone, "paper.pdf", &from_server).unwrap();
         assert_eq!(std::fs::read_to_string(phone.join("Papers/smith2020.pdf")).unwrap().len(), 200_000);
@@ -1278,7 +1380,7 @@ s.serve_forever()
         pull(&phone, &|_, _| {});
         assert!(!phone.join("Papers/smith2020.pdf").exists() && left(&phone).contains(&"Papers/smith2020.pdf".to_string()));
         assert!(pending(&phone).iter().all(|p| p == "my-token.txt"), "{:?}", pending(&phone));
-        assert_eq!(out(&papers, &["rev-list", "--count", "main"]), "3", "nothing was sent to the papers");
+        assert_eq!(out(&papers, &["rev-list", "--count", "main"]), "5", "nothing was sent to the papers");
 
         // the same file changed by both: nothing sent, the text kept, no commit left behind that GitHub lacks
         git(&notes_work, &["pull", "-q"]);
