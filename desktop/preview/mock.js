@@ -19,7 +19,8 @@
     if (os === "android" && !PHONE.has(cmd)) { console.error("preview: the phone build has no command", cmd); throw `Command ${cmd} not found`; }
     const table = window.__fixtures(scenario, os);
     if (!(cmd in table)) { console.warn("preview: no fixture for", cmd); return null; }
-    const a = table[cmd];
+    // many=1 (fixtures.js): the real vault's amounts stand in for the short lists
+    const a = cmd === "vault_papers" && table.__papers ? table.__papers : cmd === "vault_changes" && table.__changes ? table.__changes : table[cmd];
     const v = typeof a === "function" ? a(args || {}) : a;
     if (v instanceof Error) throw v.message;   // the app's Err(String) arrives as a plain string
     return JSON.parse(JSON.stringify(v ?? null));   // fresh copy: the page mutates what it is given

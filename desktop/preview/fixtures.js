@@ -175,6 +175,15 @@ window.__fixtures = (scenario, os) => {
     vault_trash: 1, work_file: "/data/user/0/com.example.setup/work.status", qr: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#fff"/><path d="M1 1h3v3h-3zM6 1h3v3h-3zM1 6h3v3h-3zM5 5h1v1h-1zM7 7h2v2h-2z"/></svg>', vault_send: ok("Sent 3 files"), vault_fetch: ok("Smith_2020_Gait.pdf is on the phone"),
     vault_left: [["Papers/01_Gait/Smith_2020_Gait.pdf", "Papers/02_Learning_Based_Control/Peng_2018_DeepMimic.pdf", "Papers/02_Learning_Based_Control/Schumacher_2023_DEP_RL.pdf",
       ...(q.get("copy") === "small" ? ["L3_Simulation_AI/figs/training_curves_all_seeds.png", "Presentations/20260915_Lab_Meeting.pptx", "Proposals/Thesis_Draft.docx"] : [])], ["Papers"]],
+    // many=1: as many shelves, papers and changed files as the real vault has, so a phone-width layout is judged on them
+    ...(q.get("many") ? (() => {
+      const SH = ["01_Model_Based_Control", "02_Learning_Based_Control", "03_Human_Adaptive_Control", "04_Reviews_Surveys", "05_Foundation_Methods", "06_EMG_Biosignal", "07_Simulation_Musculoskeletal", "08_Falling_Prevention", "09_Clinical_Biomechanics", "10_Gait_Health_Metrics", "11_Pioneer_Exploratory"];
+      const WHO = ["Carvalho", "Peng", "Schumacher", "Haarnoja", "Winter", "Delp", "Zhang", "Collins", "Song", "Geyer"], WHAT = ["Hip_Knee_Ankle_Joint_Forces_Exo_Walking", "DeepMimic_Example_Guided_Character_Skills", "Natural_Walking_With_Musculoskeletal_Models", "Soft_Actor_Critic", "Human_In_The_Loop_Optimization_Of_Exoskeleton_Assistance"];
+      const pdfs = Array.from({ length: 88 }, (_, i) => ({ path: `Papers/${SH[i % 11]}/${WHO[i % 10]}_${2012 + i % 14}_${WHAT[i % 5]}.pdf`, bytes: 400000 + (i * 733331) % 9000000, notes: i % 4 === 0 ? 1 + i % 3 : 0, here: i % 9 === 0 }));
+      const dirs = ["L1_Sensing", "L3_Simulation_AI/Deep_Mimic", "L6_Clinical/Juguang_Wanhua_Collection", "System", "Project_Management"];
+      const changes = Array.from({ length: 23 }, (_, i) => ({ path: `${dirs[i % 5]}/${["Calibration_Notes", "DeepMimic_Recipe_Combination_Search_EL_Summary", "Juguang_Gait_Statistics_Summary", "_Management", "Team_Access_Rollout_and_Pitfalls_Summary"][i % 5]}_${i}.md`, code: i % 7 === 0 ? "new" : "changed", group: i % 7 === 0 ? "new" : "changed", why: "", locked: false, big: 0 }));
+      return { __papers: pdfs, __changes: changes };
+    })() : {}),
     vault_papers: [
       { path: "Papers/01_Gait/Smith_2020_Gait.pdf", bytes: 3856579, notes: 2, here: false },
       { path: "Papers/01_Gait/Lee_2022_Exoskeleton_Assistance.pdf", bytes: 1250000, notes: 0, here: true },

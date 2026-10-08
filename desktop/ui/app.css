@@ -532,49 +532,96 @@ html.phone main .chip button { min-height: 0; min-width: 0; }
 .access-group { margin-top: var(--s3); font-size: var(--fs-s); font-weight: 600; color: var(--muted); }
 /* a sign-in address as a QR code: black on white whatever the theme, so a phone's camera reads it */
 .qr svg { display: block; width: 180px; height: 180px; margin-top: var(--s2); border-radius: 8px; }
-/* what would be sent from the phone, shown before it goes */
-.place .review:not(:empty) { display: grid; gap: var(--s2); margin-top: var(--s3); }
-.place .review .files { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; font-size: var(--fs-s); }
-/* the files left on GitHub, to pick one from */
-.getfile { display: grid; gap: var(--s2); }
-.getfile .files { margin: 0; padding: 0; list-style: none; max-height: 46vh; overflow-y: auto; }
-#dialog .getfile button.file { display: grid; justify-items: start; justify-content: start; align-content: center; width: 100%; text-align: left; gap: 2px; padding: var(--s2) var(--s1); height: auto;
-  border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; overflow-wrap: anywhere; }
-.getfile .sub button { margin-left: var(--s2); }
-html.phone #dialog button, html.phone #dialog select, html.phone #dialog input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; }
 
-/* Sync vault on a phone: the team's changes to bring in, then this phone's changes to tick and upload */
-.syncv { display: grid; gap: var(--s3); max-height: 68vh; overflow-y: auto; overflow-x: hidden; overflow-wrap: anywhere; }
-.syncv .icon { width: 16px; height: 16px; flex: none; }
+
+/* ---------------------------------------------------------------- sheets (Sync vault and Get a file on a phone)
+   A dialog with a long list in it. On a phone it is the whole screen: a head that stays, one part that scrolls, the
+   job's buttons at the bottom where a thumb reaches. On a wide window it is a two-part window, the shelves down
+   the left, as the vault plugin lays the same pages out on a computer. One scrolling part either way. */
+dialog.sheet[open] { display: flex; flex-direction: column; width: min(860px, calc(100vw - 48px)); max-width: none; height: min(760px, calc(100vh - 48px));
+  max-height: none; padding: 0; overflow: hidden; }
+dialog.sheet > h3 { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); margin: 0; padding: var(--s4) var(--s4) 0 var(--s6); }
+dialog.sheet > p { padding: 0 var(--s6); color: var(--muted); font-size: var(--fs-s); }
+dialog.sheet > p:empty { display: none; }
+dialog.sheet > .getfile, dialog.sheet > .syncv { flex: 1 1 auto; min-height: 0; padding: var(--s3) var(--s6) 0; }
+dialog.sheet > .buttons { display: block; margin: 0; padding: var(--s3) var(--s6) var(--s4); border-top: 1px solid var(--line); }
+dialog.sheet > .buttons:has(.sheet-actions:empty) { display: none; }
+.sheet-scroll { min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.sheet-actions { display: flex; flex-wrap: wrap; gap: var(--s2); justify-content: flex-end; }
+.sheet .icon { width: 16px; height: 16px; flex: none; }
+
+/* Get a file: the papers, as the vault plugin's Papers page has them */
+.getfile { display: grid; gap: var(--s3) var(--s6); grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-areas: "status status" "rail find" "rail list"; }
+.getfile.no-shelves { grid-template-columns: minmax(0, 1fr); grid-template-areas: "status" "find" "list"; }
+.getfile .gf-status { grid-area: status; margin: 0; }
+.getfile > input { grid-area: find; width: 100%; box-sizing: border-box; }
+.getfile .papers { grid-area: list; }
+/* the shelves: a rail down the left, each with how many papers it holds at the right edge */
+.getfile .shelves { grid-area: rail; display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; padding-bottom: var(--s3); }
+.getfile .shelf { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); width: 100%; height: auto; min-height: 32px; padding: 6px var(--s3);
+  text-align: left; border-radius: var(--r-control); white-space: normal; box-shadow: none; }
+.getfile .shelf[aria-pressed="true"] { background: color-mix(in srgb, var(--purple) 22%, transparent); color: var(--ink); font-weight: 600; }
+.getfile .sync-group { position: sticky; top: 0; z-index: 1; margin: 0; padding: var(--s2) 0; background: var(--surface); }
+.getfile .sync-group button { margin-left: auto; }
+/* a paper: its name, then its size and the notes that link to it on a quiet line under it */
+#dialog .getfile .file { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; width: 100%; height: auto; min-height: 44px;
+  padding: var(--s2) 0; text-align: left; white-space: normal; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
+#dialog .getfile .file:hover { background: var(--hover); }
+.getfile .file .name { font-weight: 500; overflow-wrap: break-word; }
+.getfile .paper-here { display: flex; align-items: center; gap: var(--s2); border-bottom: 1px solid var(--line); }
+#dialog .getfile .paper-here .file { flex: 1 1 auto; min-width: 0; border-bottom: 0; }
+
+/* Sync vault: the team's changes to bring in, then this phone's changes to tick and upload */
+.syncv { display: flex; flex-direction: column; gap: var(--s3); }
+.syncv > .sheet-scroll { flex: 1 1 auto; display: flex; flex-direction: column; gap: var(--s3); }
 .sync-who, .sync-inhead { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 .sync-inhead > span { flex: 1 1 60%; min-width: 0; }
 .sync-who { color: var(--muted); font-size: var(--fs-s); }
 .sync-in { display: grid; gap: var(--s2); padding: var(--s3) 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.sync-in > button { justify-self: start; }
 .sync-recent { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; font-size: var(--fs-s); color: var(--muted); }
-.sync-recent label, .sync-row { display: flex; align-items: center; gap: var(--s2); }
-.sync-list { display: grid; gap: 2px; }
+.sync-recent label, .sync-row { display: flex; align-items: center; gap: var(--s3); }
+.sync-list { display: grid; gap: 0; }
 .sync-inrow { display: grid; gap: 1px; padding: var(--s1) 0; }
 .sync-section { font-weight: 600; }
-.sync-head, .sync-group { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
-.sync-head .sub { margin-right: auto; }
-.sync-group { margin-top: var(--s3); font-weight: 500; padding-bottom: var(--s1); border-bottom: 1px solid var(--line); }
+/* "Your changes", the count and the two selectors stay in sight while the list scrolls under them */
+.sync-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; padding: var(--s2) 0; background: var(--surface); }
+.sync-what { display: grid; gap: 1px; margin-right: auto; }
+.sync-group { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-top: var(--s3); padding-bottom: var(--s1); font-weight: 500; border-bottom: 1px solid var(--line); }
 .sync-group button { margin-left: auto; }
-.sync-row { min-height: 40px; padding: var(--s1) 0; }
+.sync-row { min-height: 44px; padding: var(--s1) 0; border-bottom: 1px solid var(--line); }
 .sync-row input { flex: none; width: 20px; height: 20px; }
 .sync-row.locked { opacity: .6; }
-.sync-path { display: grid; gap: 1px; flex: 1 1 auto; min-width: 0; }
-.sync-row > .sub { flex: none; max-width: 40%; text-align: right; }
-.sync-lab { display: block; margin-top: var(--s3); font-size: var(--fs-s); color: var(--muted); }
-.syncv textarea { width: 100%; box-sizing: border-box; min-height: 40px; padding: 9px 10px; resize: none; overflow: hidden; font: inherit;
-  font-family: var(--mono); font-size: var(--fs-s); color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 8px; }
-.syncv textarea:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
-.syncv button.armed { outline: 2px solid var(--purple); }
+.sync-path { display: grid; gap: 1px; flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
+/* the line and the button: at the bottom of the sheet, in reach, not after the last file */
+.sync-compose { display: grid; gap: var(--s2); justify-content: stretch; }
+.sync-compose textarea { width: 100%; box-sizing: border-box; min-height: 40px; padding: 9px 10px; resize: none; overflow-y: auto; font: inherit; font-family: var(--mono);
+  font-size: var(--fs-s); color: inherit; background: transparent; border: 1px solid var(--line); border-radius: var(--r-control); }
+.sync-compose textarea:focus-visible { outline: 2px solid var(--purple); outline-offset: 1px; }
+.sync-go { display: flex; gap: var(--s2); justify-content: flex-end; align-items: center; }
+.sync-go button.armed { outline: 2px solid var(--purple); }
 .sync-out { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-s); color: var(--bad, #e5484d); }
 
-/* Get a file: the papers by shelf, as the vault plugin's Papers page has them */
-.getfile .shelves { display: flex; flex-wrap: wrap; gap: var(--s1); }
-.getfile .shelf[aria-pressed="true"] { background: rgba(140, 84, 217, .22); border-color: var(--purple); }
-.getfile .papers { display: grid; gap: var(--s1); max-height: 52vh; overflow-y: auto; overflow-x: hidden; }
-.getfile .papers .sync-row .file { flex: 1 1 auto; min-width: 0; border-bottom: 0; }
-.getfile .papers .sync-row { border-bottom: 1px solid var(--line); }
-.getfile .papers .buttons { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s1) 0; }
+/* a narrow window, and every phone: the sheet is the screen, the shelves a strip to swipe, the buttons full width */
+@media (max-width: 720px) {
+  dialog.sheet[open] { width: 100vw; height: 100dvh; margin: 0; border: 0; border-radius: 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
+  dialog.sheet > h3 { padding: max(env(safe-area-inset-top, 0px), var(--s4)) var(--s2) 0 var(--s4); }
+  dialog.sheet > p { padding: 0 var(--s4); }
+  dialog.sheet > .getfile, dialog.sheet > .syncv { padding: var(--s3) var(--s4) 0; }
+  dialog.sheet > .buttons { padding: var(--s3) var(--s4); }
+  .getfile, .getfile.no-shelves { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); grid-template-areas: "status" "find" "rail" "list"; gap: var(--s3); }
+  /* one row, swiped sideways by itself; it runs to the screen's edges so a cut-off shelf shows there is more */
+  .getfile .shelves { flex-direction: row; gap: var(--s1); margin: 0 calc(-1 * var(--s4)); padding: 0 var(--s4) 2px; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none; scroll-snap-type: x proximity; }
+  .getfile .shelves::-webkit-scrollbar { display: none; }
+  .getfile .shelf { flex: none; width: auto; white-space: nowrap; border: 1px solid var(--line); scroll-snap-align: start; }
+  .getfile .shelf[aria-pressed="true"] { border-color: var(--purple); }
+  .sheet-actions, .sync-go { flex-direction: column; align-items: stretch; }
+  .sheet-actions > button, .sync-go > button { width: 100%; }
+  /* "Add details" is the lesser of the two: a word to press at the left, not a second bar */
+  .sync-go > button.ghost { width: auto; align-self: flex-start; box-shadow: none; padding-left: 0; }
+}
+html.phone dialog.sheet > h3 { padding-top: max(env(safe-area-inset-top, 0px), 36px); }
+html.phone #dialog button, html.phone #dialog select, html.phone #dialog input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; }
+html.phone .sheet-actions > button, html.phone .sync-go > button:not(.ghost) { min-height: 48px; }

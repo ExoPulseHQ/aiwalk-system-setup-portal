@@ -1052,17 +1052,47 @@ function commitMessage(subject, body) {
   return `${sub}\n\n${b.split(/\n\s*\n/).map(wrap).join("\n\n")}`;
 }
 
+// A sheet: the dialog for a job with a long list in it. On a phone it is the whole screen, with a head that stays,
+// one part that scrolls and the actions at the bottom where a thumb reaches; on a wide window it is a two-part
+// window, as the vault plugin lays the same pages out on a computer. `box` is the content (its own parts decide what
+// scrolls), `actions` the element that holds the job's own buttons at the bottom; closing is the mark in the corner.
+function sheet(title, sub, box, actions) {
+  const d = document.getElementById("dialog");
+  const done = ask(title, sub, [["close", "Close", true]], box);
+  d.className = "sheet";
+  const foot = d.querySelector(":scope > .buttons"), close = foot.querySelector("button");
+  const x = iconButton("x", "Close", "small ghost sheet-x", true);
+  x.onclick = () => close.click();
+  d.querySelector("h3").append(x);
+  close.hidden = true;
+  foot.prepend(actions);
+  // nothing is typed into until the person chooses to: a field in focus as the sheet opens brings a phone's keyboard
+  // up over half of it
+  d.tabIndex = -1; d.focus();
+  return done.finally(() => { d.className = ""; d.removeAttribute("tabindex"); });
+}
+
+// A file's name that breaks where a person would break it: after an underscore, a hyphen or a dot, not mid-word.
+function breakable(name, cls) {
+  const sp = el("span", cls);
+  name.split(/(?<=[_\-.])/).forEach((part, i) => { if (i) sp.append(document.createElement("wbr")); sp.append(part); });
+  return sp;
+}
+
 // Sync vault on a phone: the vault plugin's Sync vault page (ship.ts), with this app doing the git. First what the
 // team pushed, to bring in; then this phone's changes, ticked file by file and uploaded as one commit described in
 // one line. The same files are held back, the same two checks run before anything is uploaded (phonegit.rs).
+// The line and the Upload button stay at the bottom of the screen, whatever the length of the list above them.
 // Left to a computer: sorting the changes into several commits, drafting the line and mending links, which are
 // Claude Code's work there.
 async function syncDialog(v, path) {
-  const box = el("div", "syncv"), who = el("div", "sync-who"), inbox = el("div", "sync-in"), body = el("div"), out = el("pre", "sync-out");
+  const box = el("div", "syncv"), who = el("div", "sync-who"), scroll = el("div", "sheet-scroll"), inbox = el("div", "sync-in"),
+    head = el("div", "sync-head"), body = el("div", "sync-body"), out = el("pre", "sync-out"), compose = el("div", "sheet-actions sync-compose");
   who.append(icon("user-round"), `Signed in as ${lastTeam && lastTeam.user || "nobody"}`);
   out.hidden = true;
-  box.append(who, inbox, el("div", "sync-section", "Your changes"), body, out,
+  scroll.append(inbox, head, body, out,
     el("p", "sub", "Sorting changes into several commits and drafting the line are Claude Code's work on a computer; a phone uploads one commit at a time."));
+  box.append(who, scroll);
   const me = new Set([lastTeam && lastTeam.user, lastTeam && lastTeam.name].filter(Boolean));
   const listOf = (rows, most) => {
     const list = el("div", "sync-list");
@@ -1073,9 +1103,9 @@ async function syncDialog(v, path) {
 
   // ---------- in: what teammates pushed ----------
   async function incoming() {
-    const head = el("div", "sync-inhead"), t = el("span", null, "Checking GitHub for teammates' changes");
-    head.append(icon("cloud"), t);
-    inbox.replaceChildren(head);
+    const top = el("div", "sync-inhead"), t = el("span", null, "Checking GitHub for teammates' changes");
+    top.append(icon("cloud"), t);
+    inbox.replaceChildren(top);
     let got;
     try { got = await invoke("vault_incoming", { path }); } catch (e) { t.textContent = `Could not reach GitHub: ${e}`; return; }
     const [rows, all] = got;
@@ -1084,7 +1114,7 @@ async function syncDialog(v, path) {
       t.textContent = `Nothing new from teammates. Up to date with GitHub, checked ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
       const again = el("button", "small ghost", "Check again");
       again.onclick = () => { incoming(); scan(); };
-      head.append(again);
+      top.append(again);
       if (all.length) {
         // "up to date" must not read as "nobody did anything": what arrived already is listed; a tick adds your own
         let mine = false; try { mine = localStorage.getItem("sync-mine") === "1"; } catch {}
@@ -1101,7 +1131,6 @@ async function syncDialog(v, path) {
     const n = `${rows.length} change${rows.length === 1 ? "" : "s"}`;
     t.textContent = `${n} from teammates not on this phone yet`;
     const get = el("button", "small", `Bring in ${n}`);
-    get.dataset.primary = 1;
     get.onclick = async () => {
       out.hidden = true;
       stages[v.repo] = stage("Bringing them in"); inbox.append(stages[v.repo]);
@@ -1117,14 +1146,18 @@ async function syncDialog(v, path) {
   const LABEL = { changed: "changed", new: "new", deleted: "deleted", renamed: "renamed", conflict: "conflict" };
   const GROUPS = [["changed", "Changed"], ["new", "New, not in git yet"], ["empty", "Empty files"], ["held", "Held back"]];
   async function scan() {
+    head.replaceChildren(el("span", "sync-section", "Your changes"));
+    compose.replaceChildren();
     body.replaceChildren(el("p", "sub", "Looking at what changed on this phone"));
     let changes;
     try { changes = await invoke("vault_changes", { path }); } catch (e) { body.replaceChildren(el("p", "sub", `Could not read the changes: ${e}`)); return; }
     if (!changes.length) { body.replaceChildren(el("p", "sub", "Nothing to upload. Every change on this phone is already on GitHub.")); return; }
     // a large file is left for the person to tick on purpose
     let picked = new Set(changes.filter(c => c.group === "changed" && !c.big).map(c => c.path));
-    const head = el("div", "sync-head"), count = el("span", "sub"), all = el("button", "small ghost", "Select all"), none = el("button", "small ghost", "Select none");
-    head.append(count, all, none);
+    const count = el("span", "sub"), all = el("button", "small ghost", "Select all"), none = el("button", "small ghost", "Select none"), what = el("div", "sync-what");
+    // the title over its count, so the two selectors fit beside them on a phone
+    what.append(el("span", "sync-section", "Your changes"), count);
+    head.replaceChildren(what, all, none);
     const list = el("div", "sync-list"), boxes = new Map();
     GROUPS.forEach(([g, title]) => {
       const rows = changes.filter(c => c.group === g);
@@ -1148,9 +1181,11 @@ async function syncDialog(v, path) {
         tick.onchange = () => { tick.checked ? picked.add(c.path) : picked.delete(c.path); paint(); };
         boxes.set(c.path, tick);
         const at = c.path.lastIndexOf("/");
-        name.append(el("span", "cmd", c.path.slice(at + 1)));
-        if (at > 0) name.append(el("span", "sub", c.path.slice(0, at)));
-        row.append(tick, name, el("span", "sub", c.why || LABEL[c.code] || c.code));
+        name.append(breakable(c.path.slice(at + 1), "cmd"));
+        // where it is and what happened to it, on one quiet line under the name: a column of its own took a third
+        // of a phone's width and broke the names mid-word
+        name.append(el("span", "sub", [at > 0 ? c.path.slice(0, at) : "", c.why || LABEL[c.code] || c.code].filter(Boolean).join(", ")));
+        row.append(tick, name);
         // over 30 MB: git keeps every version of a file for good, so it is ticked on purpose or not at all
         if (c.big) { const big = el("span", "tag", `${Math.round(c.big)} MB`); big.dataset.tip = "A large file, left unticked: tick it if it belongs in git, which keeps every version for good."; row.append(big); }
         list.append(row);
@@ -1161,25 +1196,27 @@ async function syncDialog(v, path) {
     const setPicked = paths => { picked = new Set(paths); boxes.forEach((x, k) => { x.checked = picked.has(k); }); paint(); };
     all.onclick = () => setPicked(pickable);
     none.onclick = () => setPicked([]);
-    const lab = el("label", "sync-lab", "Upload the ticked files as one commit, described in one line"), msg = el("textarea"), details = el("textarea");
-    msg.rows = 1; msg.spellcheck = false; msg.placeholder = "docs(L6): add the M3 roster (JGR-EL)"; msg.id = "sync-msg"; lab.htmlFor = "sync-msg";
-    details.rows = 2; details.spellcheck = false; details.placeholder = "Details: what changed and why, for whoever reads the history later (optional)";
+    const msg = el("textarea"), details = el("textarea"), more = el("button", "small ghost", "Add details"), one = el("button", "small", "Upload as one commit");
+    msg.rows = 1; msg.spellcheck = false; msg.placeholder = "docs(L6): add the M3 roster (JGR-EL)";
+    msg.setAttribute("aria-label", "The ticked files as one commit, described in one line");
+    details.rows = 2; details.spellcheck = false; details.hidden = true; details.placeholder = "Details: what changed and why, for whoever reads the history later";
     details.setAttribute("aria-label", "Details");
-    const one = el("button", "small", "Upload as one commit");
+    // the details are for the few commits that need them: one press away, so the line and the button stay in reach
+    more.onclick = () => { details.hidden = false; more.hidden = true; details.focus(); };
     one.dataset.primary = 1;
-    const reset = () => { one.classList.remove("armed"); one.textContent = "Upload as one commit"; };
-    const paint = () => { count.textContent = `${picked.size} of ${changes.length} ticked`; one.disabled = !picked.size || !msg.value.trim(); };
+    const reset = () => { one.classList.remove("armed"); one.textContent = picked.size === 1 ? "Upload 1 file" : `Upload ${picked.size} files`; };
+    const paint = () => { count.textContent = `${picked.size} of ${changes.length} ticked`; one.disabled = !picked.size || !msg.value.trim(); if (!one.classList.contains("armed")) reset(); };
     // a box as tall as its text, so a long line is read whole before it is uploaded
-    const grow = t => { t.style.height = "auto"; t.style.height = `${t.scrollHeight + 2}px`; };
-    msg.oninput = () => { reset(); paint(); grow(msg); };
+    const grow = t => { t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight + 2, 140)}px`; };
+    msg.oninput = () => { one.classList.remove("armed"); paint(); grow(msg); };
     details.oninput = () => grow(details);
     one.onclick = async () => {
       // the line is what lands in the shared history: one explicit look at it before it does
       const line = msg.value.trim();
-      if (!one.classList.contains("armed")) { one.classList.add("armed"); one.textContent = `Commit "${line.slice(0, 40)}${line.length > 40 ? "…" : ""}"?`; return; }
+      if (!one.classList.contains("armed")) { one.classList.add("armed"); one.textContent = `Commit "${line.slice(0, 34)}${line.length > 34 ? "…" : ""}"?`; return; }
       out.hidden = true;
       const files = changes.filter(c => picked.has(c.path)).map(c => c.path);
-      stages[v.repo] = stage("Uploading"); body.append(stages[v.repo]);
+      stages[v.repo] = stage("Uploading"); body.prepend(stages[v.repo]);
       try {
         toast(await working(one, "Uploading", () => kept("Uploading", () => invoke("vault_send", { repo: v.repo, path, message: commitMessage(line, details.value), files }))));
         delete stages[v.repo];
@@ -1187,65 +1224,80 @@ async function syncDialog(v, path) {
       } catch (e) {
         // nothing was uploaded and nothing here changed: the reason stays on the page, the ticks and the line too
         stages[v.repo].remove(); delete stages[v.repo];
-        out.textContent = String(e); out.hidden = false; reset(); paint();
+        out.textContent = String(e); out.hidden = false; out.scrollIntoView({ block: "nearest" });
+        one.classList.remove("armed"); paint();
       }
     };
-    body.replaceChildren(head, list, lab, msg, details, one);
+    const actions = el("div", "sync-go");
+    actions.append(more, one);
+    compose.replaceChildren(msg, details, actions);
+    body.replaceChildren(list);
     paint();
   }
 
   incoming(); scan();
-  await ask("Sync vault", "", [["close", "Close", true]], box);
+  await sheet("Sync vault", "", box, compose);
 }
 
 // Get a file on a phone: the vault plugin's Papers page (papers.ts), with this app doing the fetching. The papers
 // by shelf, in the plugin's two states (on GitHub and not downloaded, downloaded), each with its size and how many
 // notes link to it, from the vault's own paper list; download one, all of a shelf, or the ones notes link to;
 // remove one again. Below them, in a copy made small, the other files left on GitHub.
+// The shelves are a strip to swipe on a phone and the plugin's rail down the left on a wide window; the two
+// downloads that take many papers stay at the bottom of the screen.
 // Resolves {files, everything} when the person asked for a download, else null.
 function papersDialog(path, papers, [left, lazy]) {
-  const box = el("div", "getfile"), status = el("p", "sub"), shelves = el("div", "shelves"), find = el("input"), body = el("div", "papers");
+  const box = el("div", "getfile"), status = el("p", "sub gf-status"), shelves = el("div", "shelves"), find = el("input"),
+    body = el("div", "papers sheet-scroll"), acts = el("div", "sheet-actions");
   find.type = "search"; find.placeholder = "Search by author, year or title"; find.setAttribute("aria-label", "Search the papers");
+  shelves.setAttribute("role", "group"); shelves.setAttribute("aria-label", "Shelves");
   const others = left.filter(f => !lazy.some(d => f.startsWith(d + "/")));
   const mb = bytes => (bytes / 1048576).toFixed(1);
   const pretty = f => f.split("/").pop().replace(/\.pdf$/i, "").replace(/_/g, " ");
   // a shelf is the folder a paper is in, under the papers' own folder: "Papers/05_Foundation_Methods/x.pdf"
   const shelfOf = pp => { const parts = pp.path.split("/"); return parts.length > 2 ? parts[1] : ""; };
   const shelfName = d => d.replace(/^\d+_/, "").replace(/_/g, " ");
+  const names = [...new Set(papers.map(shelfOf).filter(Boolean))].sort();
   let shelf = "", job = null;
   const ask_ = (files, everything) => { job = { files, everything: !!everything }; document.getElementById("dialog").close("get"); };
-  const group = (title, sub, n) => { const g = el("div", "sync-group"); g.append(el("span", null, title), el("span", "sub", String(n))); const w = el("div"); w.append(g, el("div", "sub", sub)); return w; };
+  const group = (title, sub, n) => { const g = el("div", "sync-group"); g.append(el("span", null, title), el("span", "sub", String(n))); g.dataset.tip = sub; return g; };
+  const meta = pp => `${mb(pp.bytes)} MB${pp.notes ? `, ${pp.notes} ${pp.notes === 1 ? "note" : "notes"}` : ""}`;
+  // the shelves are drawn once: redrawn with every keystroke, the strip jumped back to its start under the finger
+  const chips = [["", "All"], ...names.map(d => [d, shelfName(d)])].map(([d, label]) => {
+    const c = el("button", "small ghost shelf"), n = d ? papers.filter(pp => shelfOf(pp) === d).length : papers.length;
+    c.append(el("span", null, label), el("span", "sub", String(n)));
+    c.onclick = () => { shelf = d; draw(); c.scrollIntoView({ inline: "nearest", block: "nearest" }); };
+    return [d, c];
+  });
+  shelves.append(...chips.map(([, c]) => c));
+  shelves.hidden = names.length < 2;
+  box.classList.toggle("no-shelves", shelves.hidden);
   const draw = () => {
     const words = find.value.toLowerCase().split(/\s+/).filter(Boolean);
     const hit = papers.filter(pp => (!shelf || shelfOf(pp) === shelf) && words.every(w => pp.path.toLowerCase().includes(w)));
     const here = papers.filter(pp => pp.here);
     status.textContent = papers.length ? `${here.length} of ${papers.length} papers on the phone, ${mb(here.reduce((t, pp) => t + pp.bytes, 0))} MB` : "";
-    // the shelves: All, then one per folder with how many papers it holds
-    const names = [...new Set(papers.map(shelfOf).filter(Boolean))].sort();
-    shelves.replaceChildren(...[["", "All", papers.length], ...names.map(d => [d, shelfName(d), papers.filter(pp => shelfOf(pp) === d).length])].map(([d, label, n]) => {
-      const c = el("button", "small ghost shelf", `${label} `); c.append(el("span", "sub", String(n)));
-      c.setAttribute("aria-pressed", String(shelf === d));
-      c.onclick = () => { shelf = d; draw(); };
-      return c;
-    }));
-    shelves.hidden = names.length < 2;
+    chips.forEach(([d, c]) => c.setAttribute("aria-pressed", String(shelf === d)));
     const cloud = hit.filter(pp => !pp.here), have = hit.filter(pp => pp.here);
     body.replaceChildren();
+    acts.replaceChildren();
     if (papers.length && !hit.length) body.append(el("p", "sub", "Nothing here."));
     if (cloud.length) {
-      const linked = cloud.filter(pp => pp.notes > 0), acts = el("div", "buttons");
-      const all = el("button", "small", `Download all ${cloud.length} (${mb(cloud.reduce((t, pp) => t + pp.bytes, 0))} MB)`);
-      all.onclick = () => ask_(cloud.map(pp => pp.path));
-      acts.append(all);
+      // the two downloads of many papers, of what is listed now (the shelf, the search): the larger one last, as the
+      // confirming button is in every dialog
+      const linked = cloud.filter(pp => pp.notes > 0);
       if (linked.length && linked.length < cloud.length) {
         const some = el("button", "small ghost", `Download the ${linked.length} linked from notes`);
         some.onclick = () => ask_(linked.map(pp => pp.path));
         acts.append(some);
       }
-      body.append(group("On GitHub, not downloaded", "Listed for everyone; download the ones you need.", cloud.length), acts);
+      const all = el("button", "small", cloud.length === 1 ? `Download it (${mb(cloud[0].bytes)} MB)` : `Download all ${cloud.length} (${mb(cloud.reduce((t, pp) => t + pp.bytes, 0))} MB)`);
+      all.onclick = () => ask_(cloud.map(pp => pp.path));
+      acts.append(all);
+      body.append(group("On GitHub, not downloaded", "Listed for everyone; download the ones you need.", cloud.length));
       cloud.slice(0, 60).forEach(pp => {
         const row = el("button", "ghost small file");
-        row.append(el("span", "cmd", pretty(pp.path)), el("span", "sub", `Get ${mb(pp.bytes)} MB${pp.notes ? `, ${pp.notes} ${pp.notes === 1 ? "note" : "notes"}` : ""}`));
+        row.append(el("span", "name", pretty(pp.path)), el("span", "sub", `Get ${meta(pp)}`));
         row.onclick = () => ask_([pp.path]);
         body.append(row);
       });
@@ -1254,8 +1306,8 @@ function papersDialog(path, papers, [left, lazy]) {
     if (have.length) {
       body.append(group("Downloaded", "On this phone and up to date with GitHub.", have.length));
       have.slice(0, 60).forEach(pp => {
-        const row = el("div", "sync-row"), name = el("button", "ghost small file"), rm = el("button", "small ghost", "Remove");
-        name.append(el("span", "cmd", pretty(pp.path)), el("span", "sub", `${mb(pp.bytes)} MB${pp.notes ? `, ${pp.notes} ${pp.notes === 1 ? "note" : "notes"}` : ""}, opens in Obsidian`));
+        const row = el("div", "paper-here"), name = el("button", "ghost small file"), rm = el("button", "small ghost", "Remove");
+        name.append(el("span", "name", pretty(pp.path)), el("span", "sub", `${meta(pp)}, opens in Obsidian`));
         name.onclick = () => { const A = window.aiwalkFiles; if (A && A.open) A.open(`obsidian://open?path=${encodeURIComponent(`${path}/${pp.path}`)}`); };
         rm.onclick = async () => {
           try { await working(rm, "Removing", () => invoke("vault_drop", { path, files: [pp.path] })); pp.here = false; toast(`${pretty(pp.path)} is off the phone; it stays on GitHub`); draw(); }
@@ -1268,22 +1320,24 @@ function papersDialog(path, papers, [left, lazy]) {
     // a copy made small also leaves other large files on GitHub: slide decks, Word files, large figures
     const more = others.filter(f => words.every(w => f.toLowerCase().includes(w)));
     if (more.length && !shelf) {
-      const acts = el("div", "buttons"), whole = el("button", "small", more.length === 1 ? "Get it" : `Get all ${more.length}`);
+      const g = group("Other files left on GitHub", "This copy was made with the notes and small files only.", more.length);
+      const whole = el("button", "small ghost", more.length === 1 ? "Get it" : `Get all ${more.length}`);
       whole.onclick = () => ask_(more, !words.length);
-      acts.append(whole);
-      body.append(group("Other files left on GitHub", "This copy was made with the notes and small files only.", more.length), acts);
+      g.append(whole);
+      body.append(g);
       more.slice(0, 40).forEach(f => {
         const row = el("button", "ghost small file");
-        row.append(el("span", "cmd", f.split("/").pop()), el("span", "sub", f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : ""));
+        row.append(breakable(f.split("/").pop(), "name"), el("span", "sub", f.includes("/") ? f.slice(0, f.lastIndexOf("/")) : ""));
         row.onclick = () => ask_([f]);
         body.append(row);
       });
     }
     if (!papers.length && !others.length) body.append(el("p", "sub", lazy.length ? "The paper list is not on the phone yet: press Sync vault and bring in the team's changes, then open this again." : "Every file of this vault is on the phone."));
+    body.scrollTop = 0;
   };
   find.oninput = draw; draw();
-  box.append(status, shelves, find, body);
-  return ask("Get a file", "Papers stay on GitHub until you ask for them.", [["close", "Close", true]], box).then(() => job);
+  box.append(status, find, shelves, body);
+  return sheet("Get a file", "Papers stay on GitHub until you ask for them.", box, acts).then(() => job);
 }
 
 // The phone's copy: always Documents/aIwalk/<repo> in shared storage, the only kind of folder Obsidian for Android
