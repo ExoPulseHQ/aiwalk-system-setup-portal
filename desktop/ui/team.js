@@ -1769,8 +1769,27 @@ function prSection(org, user, machines) {
   return sec;
 }
 
+// A phone has no rail with the version at its foot (the rail is the bar of tabs there), so the version went
+// unseen and so did a newer release. It sits under every page instead. The app cannot replace itself on a phone:
+// the button opens the release's .apk in the browser, and Android installs it over this one.
+let versionShown = false;
+async function phoneVersion() {
+  if (versionShown || !onPhone()) return;
+  versionShown = true;
+  const ver = document.getElementById("ver");
+  document.querySelector("main").append(ver);
+  const u = await invoke("update_state").catch(() => null);
+  if (!u) return;
+  ver.replaceChildren(`Version ${u.current}`);
+  if (!u.newer) return;
+  const b = el("button", "small", `Get ${u.latest}`);
+  b.onclick = () => invoke("open_release", { tag: u.latest }).catch(e => toast(String(e)));
+  ver.append(`. ${u.latest} is out. `, b, el("div", "sub", "The browser downloads it; open the download and Android installs it over this one. Nothing on the phone is lost."));
+}
+
 let lastTeam = null;
 async function loadTeam(viewAs) {
+  phoneVersion();
   const page = teamPage();
   // first load fills the page with the steps; later reloads keep the page and show the top line only
   const first = !page.querySelector(".badge");

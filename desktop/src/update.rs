@@ -40,6 +40,18 @@ pub fn update_state() -> serde_json::Value {
     serde_json::json!({ "current": VERSION, "latest": latest, "newer": newer(&latest, VERSION), "can": pattern().is_some() })
 }
 
+/// Opens release `tag` in the browser: on a phone its .apk itself, which the browser downloads and Android installs
+/// over this app (the app cannot replace itself there); on a computer the release's page.
+#[tauri::command]
+pub fn open_release(tag: String) -> Result<(), String> {
+    if !tag.strip_prefix('v').is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit() || b == b'.')) { return Err("not a release".into()) }
+    let url = if cfg!(target_os = "android") {
+        format!("https://github.com/{REPO}/releases/download/{tag}/aIwalk.System.Setup_{}_android_arm64.apk", &tag[1..])
+    } else { format!("https://github.com/{REPO}/releases/tag/{tag}") };
+    crate::open_url(&url);
+    Ok(())
+}
+
 /// Downloads release `tag` for this computer and starts its installer. Ok(text) says what happens next.
 #[tauri::command(async)]
 pub fn update_install(app: tauri::AppHandle, tag: String) -> Result<String, String> {
