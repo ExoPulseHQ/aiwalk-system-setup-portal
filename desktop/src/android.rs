@@ -1,5 +1,5 @@
 //! Module Android Phone: the phones on this desk (desktop mode, mirroring, keyboard, USB / Wi-Fi).
-//! Linux only; adb and scrcpy come with the app folder, or from PATH.
+//! Linux only; adb comes with the app folder or from PATH, scrcpy also from its own release (`scrcpy_path`).
 
 use crate::{find_tool, here, sh_stdin};
 use serde::{Deserialize, Serialize};
@@ -178,18 +178,53 @@ pub fn phones() -> Phones {
     Phones { phones, waiting }
 }
 
-fn scrcpy(serial: &str, model: &str, keyboard_only: bool) {
+/// The scrcpy release fetched when this computer has none, and its hash.
+const SCRCPY: (&str, &str) = ("v4.1", "ad56ae8bfeedf41e824945c11dbf55fcb092b3e615b9b486f48a50e30d389635");
+
+/// scrcpy, which types on the phone and shows its screen: beside the program (a hand-made bundle), else the kept
+/// one, else the one on PATH. It is in no installer, for the reason the phone apps are not (`kept_apks`): with none
+/// of the three it is fetched once from its own release (18 MB), checked against the hash above and kept.
+fn scrcpy_path() -> Result<String, String> {
+    let kept = crate::home().join(".local/share/aiwalk-setup/tools/scrcpy");
+    if let Some(p) = [here().join("tools/scrcpy/scrcpy"), kept.join("scrcpy")].into_iter().find(|p| p.exists()).or_else(|| crate::on_path("scrcpy")) {
+        return Ok(p.to_string_lossy().into())
+    }
+    if !cfg!(target_arch = "x86_64") { return Err("scrcpy is not on this computer. Install it (sudo apt install scrcpy), then try again".into()) }
+    let file = crate::github::download_asset("Genymobile/scrcpy", SCRCPY.0, &format!("scrcpy-linux-x86_64-{}.tar.gz", SCRCPY.0), kept.parent().unwrap())
+        .map_err(|e| format!("Could not fetch scrcpy, which this needs: {e}"))?;
+    let name = file.to_string_lossy().to_string();
+    let sum = crate::sh("sha256sum", &[&name], 60).1;
+    let made = sum.starts_with(SCRCPY.1) && std::fs::create_dir_all(&kept).is_ok()
+        && crate::sh("tar", &["-xzf", &name, "-C", &kept.to_string_lossy(), "--strip-components=1"], 120).0 == 0;
+    let _ = std::fs::remove_file(&file);
+    if !made { let _ = std::fs::remove_dir_all(&kept); return Err("The scrcpy that was fetched is not the expected file, so it was not used".into()) }
+    Ok(kept.join("scrcpy").to_string_lossy().into())
+}
+
+/// Starts scrcpy for the phone. Err says why nothing opened: it is not here and would not come, or it stopped at once.
+fn scrcpy(serial: &str, model: &str, keyboard_only: bool) -> Result<(), String> {
     let mut args = vec!["-s".to_string(), serial.to_string()];
     if keyboard_only {
         args.extend(["--no-video", "--no-audio", "--keyboard=uhid", "--mouse=uhid", "--window-title=Phone keyboard"].map(String::from));
     } else {
         args.extend(["--keyboard=uhid".into(), format!("--window-title={model}")]);
     }
+    let log = std::env::temp_dir().join("aiwalk-scrcpy.log");
+    let said = std::fs::File::create(&log).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
     // group scrcpy's windows under this app in the dock and show our icon inside them
-    let _ = crate::cmd(find_tool("tools/scrcpy/scrcpy", "scrcpy")).args(args)
+    let mut child = crate::cmd(scrcpy_path()?).args(args)
         .env("ADB", adb_path()).env("SCRCPY_ICON_PATH", here().join("icon.png"))
         .envs([("SDL_APP_ID", APP_ID), ("SDL_VIDEO_WAYLAND_WMCLASS", APP_ID), ("SDL_VIDEO_X11_WMCLASS", APP_ID)])
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        .stdout(Stdio::null()).stderr(said).spawn().map_err(|e| format!("scrcpy did not start: {e}"))?;
+    // one that cannot reach the phone gives up within a second or two; a window that opened stays
+    std::thread::sleep(Duration::from_secs(2));
+    match child.try_wait() {
+        Ok(Some(_)) => {
+            let why = std::fs::read_to_string(&log).unwrap_or_default();
+            Err(format!("It closed right away. {}", why.lines().rev().find(|l| l.contains("ERROR")).unwrap_or("Check that the phone is unlocked and still connected").trim()))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Starts Shizuku, then sets up what lets it come back by itself (Shizuku 13.6's BootCompleteReceiver, Android 13+):
@@ -251,8 +286,8 @@ pub fn phone_action(app: tauri::AppHandle, action: String, phone: Option<Phone>,
     let p = phone.unwrap_or_default();
     let s = Some(p.serial.as_str());
     match action.as_str() {
-        "keyboard" => { scrcpy(&p.serial, &p.model, true); "Click the Phone keyboard window, then type".into() }
-        "mirror" => { scrcpy(&p.serial, &p.model, false); String::new() }
+        "keyboard" => scrcpy(&p.serial, &p.model, true).map_or_else(|e| e, |_| "Click the Phone keyboard window, then type".into()),
+        "mirror" => scrcpy(&p.serial, &p.model, false).err().unwrap_or_default(),
         "install" => install_phonedesk(&p, &step),
         "desk" if p.root => {
             let on = on.unwrap_or(false);
