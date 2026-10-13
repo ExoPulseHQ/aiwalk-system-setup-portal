@@ -45,12 +45,17 @@ fn serve(mut viewer: TcpStream, target: u16) -> std::io::Result<()> {
     desk.read_exact(&mut result)?;
     if result != [0, 0, 0, 0] { return Err(bad("the desktop refused")) }
 
-    // the viewer's side: one method offered, "password" (2); the challenge is answered with anything
+    // the viewer's side: one method offered, "password" (2); the challenge is answered with anything. A 3.3 viewer
+    // (macOS Screen Sharing) is told the method as a U32 and picks nothing; later versions get a list and pick.
     viewer.write_all(VERSION)?;
     viewer.read_exact(&mut twelve)?;
-    viewer.write_all(&[1, 2])?;
-    viewer.read_exact(&mut n)?;
-    if n[0] != 2 { return Err(bad("the viewer chose a method that was not offered")) }
+    if &twelve == b"RFB 003.003\n" {
+        viewer.write_all(&[0, 0, 0, 2])?;
+    } else {
+        viewer.write_all(&[1, 2])?;
+        viewer.read_exact(&mut n)?;
+        if n[0] != 2 { return Err(bad("the viewer chose a method that was not offered")) }
+    }
     viewer.write_all(&[0x5a; 16])?;
     let mut answer = [0u8; 16];
     viewer.read_exact(&mut answer)?;
@@ -91,6 +96,35 @@ mod tests {
         v.write_all(VERSION).unwrap();
         let mut kinds = [0u8; 2]; v.read_exact(&mut kinds).unwrap(); assert_eq!(kinds, [1, 2]);
         v.write_all(&[2]).unwrap();
+        let mut challenge = [0u8; 16]; v.read_exact(&mut challenge).unwrap();
+        v.write_all(&[7; 16]).unwrap();
+        let mut ok = [9u8; 4]; v.read_exact(&mut ok).unwrap(); assert_eq!(ok, [0, 0, 0, 0]);
+        v.write_all(&[1]).unwrap();
+        let mut init = [0u8; 11]; v.read_exact(&mut init).unwrap(); assert_eq!(&init, b"server-init");
+    }
+
+    /// macOS Screen Sharing answers with version 3.3, where the server names the one method as a U32 and the viewer
+    /// picks nothing (RFC 6143, appendix on 3.3); sent the 3.8 list instead, it waited forever (issue #6).
+    #[test]
+    fn a_viewer_that_speaks_version_3_3_reaches_the_desktop_too() {
+        let desk = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let target = desk.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = desk.accept().unwrap();
+            let mut b = [0u8; 12];
+            s.write_all(VERSION).unwrap(); s.read_exact(&mut b).unwrap();
+            s.write_all(&[1, 1]).unwrap();
+            let mut pick = [0u8; 1]; s.read_exact(&mut pick).unwrap(); assert_eq!(pick, [1]);
+            s.write_all(&[0, 0, 0, 0]).unwrap();
+            let mut init = [0u8; 1]; s.read_exact(&mut init).unwrap(); assert_eq!(init, [1]);
+            s.write_all(b"server-init").unwrap();
+        });
+        let mut v = TcpStream::connect(("127.0.0.1", front(target).unwrap())).unwrap();
+        v.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut b = [0u8; 12];
+        v.read_exact(&mut b).unwrap(); assert_eq!(&b, VERSION);
+        v.write_all(b"RFB 003.003\n").unwrap();
+        let mut kind = [0u8; 4]; v.read_exact(&mut kind).unwrap(); assert_eq!(kind, [0, 0, 0, 2]);
         let mut challenge = [0u8; 16]; v.read_exact(&mut challenge).unwrap();
         v.write_all(&[7; 16]).unwrap();
         let mut ok = [9u8; 4]; v.read_exact(&mut ok).unwrap(); assert_eq!(ok, [0, 0, 0, 0]);
