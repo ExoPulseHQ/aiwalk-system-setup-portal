@@ -668,7 +668,9 @@ function machinesSection(machines, org, user, guest) {
       if (guest && !sshAcct[host]) sshAcct[host] = ((s.desktops || []).find(d => d.kind !== "rdp") || {}).user || null;
       if (sshRows[host]) { specs[host].append(sshRows[host]); paintSsh(host); }
       if (s.host_tools && !onPhone()) specs[host].append(hostTools(byHost[host], s.host_tools));
-      if ((s.desktops || []).length && !onPhone()) specs[host].append(desktopList(byHost[host], s.desktops, open));
+      // shown with no desktop running too (a machine just restarted has none), or there is nowhere to start the first
+      // one from; a guest whose account on the machine is not known yet cannot start one, so sees the row only once one runs
+      if (((s.desktops || []).length || sshAcct[host]) && !onPhone()) specs[host].append(desktopList(byHost[host], s.desktops || [], open));
       // a cluster reached through this machine (rooster through horse) comes in the same answer
       if (s.cluster) hosts.filter(x => x.via === host).forEach(x => clusterView(x.host, s.cluster));
     }
@@ -716,7 +718,7 @@ function machinesSection(machines, org, user, guest) {
     const add = iconButton("plus", "New desktop", "small ghost", true);
     add.onclick = async e => {
       e.stopPropagation(); msg.textContent = "";
-      try { toast(`Desktop ${await working(add, "Starting", () => invoke("desktop", { tunnel: m.tunnel, user: desktops[0]?.user || "ntk", action: "start", display: 0 }))} is ready`); status(); }
+      try { toast(`Desktop ${await working(add, "Starting", () => invoke("desktop", { tunnel: m.tunnel, user: desktops[0]?.user || sshAcct[m.host] || "ntk", action: "start", display: 0 }))} is ready`); status(); }
       catch (err) { msg.textContent = err; }
     };
     head.append(el("span", "k", "Desktops"), add, msg);
