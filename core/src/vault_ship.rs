@@ -295,6 +295,22 @@ pub fn team(text: &str) -> Vec<Person> {
     out
 }
 
+/// Where the team's names live now: the Skill tree's `people`, code -> { names: [english, chinese, passport], left }.
+pub const PEOPLE: &str = "System/skill_tree.json";
+
+/// people(): code -> (english, chinese) from the Skill tree's `people`; a person without names is skipped (as a table
+/// row without them was). Someone who has left is kept: their Dev Topics still carry their code.
+pub fn people(json: &str) -> Vec<Person> {
+    let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    let Some(m) = v.get("people").and_then(|p| p.as_object()) else { return vec![] };
+    m.iter().filter_map(|(code, p)| {
+        let mut n: Vec<String> = p.get("names").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str()).map(String::from).collect()).unwrap_or_default();
+        if n.is_empty() { n.extend(p.get("name").and_then(|x| x.as_str()).map(String::from)) }
+        let en = n.first()?.clone();
+        Some((code.clone(), en.clone(), n.get(1).cloned().unwrap_or(en)))
+    }).collect()
+}
+
 /// `^# (20\d\d/\d\d/\d\d)(.*)$` -> the date
 fn topic_date(line: &str) -> Option<String> {
     let c: Vec<char> = line.chars().take(12).collect();
@@ -569,6 +585,8 @@ mod tests {
 
     #[test]
     fn owners_and_signatures() {
+        let p = people(r#"{"people": {"EL": {"names": ["Eddie", "賴宏達"]}, "TP": {"name": "Tom", "left": true}, "AW": {}}}"#);
+        assert_eq!(p, vec![("EL".into(), "Eddie".into(), "賴宏達".into()), ("TP".into(), "Tom".into(), "Tom".into())]);
         let people = team("| Eddie | 賴宏達 | EL | x |\n| Sean | 劉智翔 | SL |\n| Tom | 潘語堂 | TP |\n| A | — | AB |\n");
         assert_eq!(people.len(), 4);
         assert_eq!(owners("2026/01/01 x (SL-TP)", &people), ["TP"]);

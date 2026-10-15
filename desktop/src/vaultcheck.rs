@@ -94,8 +94,12 @@ pub fn glob_index(dir: &Path, names: &mut HashMap<String, PathBuf>) {
 pub fn ownership(vault: &Path, path: &Path, rel: &str, today: &dyn Fn() -> Option<(i64, i64, i64)>) -> Result<Option<String>, String> {
     let mut names = HashMap::new();
     glob_index(vault, &mut names);
-    let team = std::fs::read_to_string(vault.join(vs::TEAM)).map_err(|e| format!("{}: {e}", vs::TEAM))?;
-    let people = vs::team(&vs::py_text(&team));
+    // the Skill tree's people; a vault from before that move still has the old table in the team assignment page
+    let mut people = std::fs::read_to_string(vault.join(vs::PEOPLE)).map(|j| vs::people(&j)).unwrap_or_default();
+    if people.is_empty() {
+        let team = std::fs::read_to_string(vault.join(vs::TEAM)).map_err(|e| format!("{} and {}: {e}", vs::PEOPLE, vs::TEAM))?;
+        people = vs::team(&vs::py_text(&team));
+    }
     let day = today().ok_or("git did not give today's date")?;
     let text = std::fs::read_to_string(path).map_err(|e| format!("{rel}: {e}"))?;
     let subdoc = |target: &str| -> Result<Option<String>, String> {
