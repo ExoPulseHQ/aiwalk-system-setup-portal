@@ -83,6 +83,41 @@ pub fn claude_install(app: tauri::AppHandle) -> Result<String, String> {
     if ok && find().is_some() { Ok("Claude Code installed".into()) } else { Err("The Claude Code installer did not finish; try again or see claude.ai/code".into()) }
 }
 
+/// gstack (github.com/garrytan/gstack): the skill suite the vault's CLAUDE.md routes reviews, investigations and QA
+/// through. It only works installed in ~/.claude/skills (its skills name that path), so it is installed per computer.
+fn gstack_dir() -> std::path::PathBuf { home().join(".claude/skills/gstack") }
+
+/// Installed means its setup ran: the suite is there and one of the skills it links (review) is in place.
+#[tauri::command(async)]
+pub fn gstack_state() -> bool {
+    gstack_dir().join("SKILL.md").is_file() && home().join(".claude/skills/review/SKILL.md").exists()
+}
+
+/// Clones (or updates) gstack and runs its setup, which needs bun: installed first when missing. Each line goes to the
+/// page as "gstack-step". Windows runs it in Git Bash, which gstack's setup is written for.
+#[tauri::command(async)]
+pub fn gstack_install(app: tauri::AppHandle) -> Result<String, String> {
+    const SCRIPT: &str = r#"set -e
+export PATH="$HOME/.bun/bin:$PATH"
+if ! command -v bun >/dev/null 2>&1; then echo "Installing bun"; curl -fsSL https://bun.sh/install | bash; export PATH="$HOME/.bun/bin:$PATH"; fi
+d="$HOME/.claude/skills/gstack"
+if [ -d "$d/.git" ]; then echo "Updating gstack"; git -C "$d" pull -q --ff-only; else echo "Downloading gstack"; git clone -q --single-branch --depth 1 https://github.com/garrytan/gstack.git "$d"; fi
+cd "$d" && echo "Setting up gstack (a few minutes)" && ./setup -q 2>&1"#;
+    let bash = if cfg!(windows) {
+        // bun's own installer for Windows, then Git for Windows' bash
+        let _ = crate::cmd("powershell").args(["-NoProfile", "-Command", "if (-not (Get-Command bun -ErrorAction SilentlyContinue)) { irm bun.sh/install.ps1 | iex }"]).status();
+        ["C:/Program Files/Git/bin/bash.exe".into(), home().join("AppData/Local/Programs/Git/bin/bash.exe")].into_iter()
+            .find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned()).ok_or("gstack needs Git Bash (Git for Windows) on Windows: install it from git-scm.com, then try again")?
+    } else { "bash".into() };
+    let mut child = crate::cmd(&bash).args(["-c", SCRIPT]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
+    for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+        let line = line.trim();
+        if !line.is_empty() { let _ = app.emit("gstack-step", line); }
+    }
+    let ok = child.wait().is_ok_and(|s| s.success());
+    if ok && gstack_state() { Ok("gstack installed. Start a new Claude session to use it".into()) } else { Err("gstack setup did not finish; try again, or see github.com/garrytan/gstack".into()) }
+}
+
 /// The running sign-in's input: where the code from the browser goes (claude_code).
 static LOGIN_IN: std::sync::Mutex<Option<std::process::ChildStdin>> = std::sync::Mutex::new(None);
 

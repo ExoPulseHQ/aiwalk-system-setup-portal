@@ -85,7 +85,7 @@ function badge(s) {
     way("temporary", "Temporary credential", "m-temporary", "circle-alert", "clock"),
     glyph("method m-off", "key-round", "Security key", "Security key: another way to sign in, not in use"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine()]));
+  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine(), gstackLine()]));
   const out = iconButton("log-out", "Sign out of GitHub", "ghost small", true);
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -272,6 +272,37 @@ function claudeLine() {
     try { toast(await working(b, label, () => invoke(cmd))); } catch (e) { msg.textContent = e; }
     stop(); paint();
   }
+  paint();
+  return line;
+}
+
+// gstack: the skill suite the vault's CLAUDE.md routes reviews, investigations and QA through. It installs on its
+// own once Claude Code is there, unless the box is unticked (remembered on this computer).
+let gstackTried = false;
+function gstackLine() {
+  const line = el("div", "claude-line");
+  const state = el("span", "method m-off"); state.append(el("span", "spinner"));
+  const msg = el("span", "sub");
+  const auto = el("input"); auto.type = "checkbox"; auto.checked = localStorage.getItem("gstack-auto") !== "0";
+  const autoLabel = el("label", "sub"); autoLabel.append(auto, " Install with Claude Code");
+  auto.onchange = () => { localStorage.setItem("gstack-auto", auto.checked ? "1" : "0"); paint(); };
+  line.append(lineLabel("gstack", "wrench"), state, msg);
+  async function install(b) {
+    gstackTried = true; msg.textContent = ""; state.className = "method m-temporary"; state.replaceChildren(el("span", "spinner"), " Installing");
+    const stop = await listen("gstack-step", e => { msg.textContent = e.payload; });
+    try { toast(b ? await working(b, "Installing", () => invoke("gstack_install")) : await invoke("gstack_install")); } catch (e) { msg.textContent = e; }
+    stop(); paint();
+  }
+  const paint = async () => {
+    line.querySelectorAll("button, label").forEach(b => b.remove());
+    const [has, c] = await Promise.all([invoke("gstack_state"), invoke("claude_state")]);
+    if (has) { state.className = "method m-key"; stateText(state, "check", "Installed"); msg.textContent = ""; return; }
+    state.className = "method m-off"; state.textContent = "Not installed";
+    if (!c.path) { msg.textContent = "Installs after Claude Code"; line.append(autoLabel); return; }
+    const b = el("button", "small", "Install gstack"); b.onclick = () => install(b);
+    line.append(b, autoLabel);
+    if (auto.checked && !gstackTried) install(null);
+  };
   paint();
   return line;
 }
