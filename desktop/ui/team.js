@@ -276,14 +276,14 @@ function claudeLine() {
   return line;
 }
 
-// gstack: the skill suite the vault's CLAUDE.md routes reviews, investigations and QA through. It installs on its
-// own once Claude Code is there, unless the box is unticked (remembered on this computer).
+// gstack: an optional skill suite (reviews, investigations, QA). Install it with the button, or tick the box to have it
+// installed on its own once Claude Code is there (remembered on this computer).
 let gstackTried = false;
 function gstackLine() {
   const line = el("div", "claude-line");
   const state = el("span", "method m-off"); state.append(el("span", "spinner"));
   const msg = el("span", "sub");
-  const auto = el("input"); auto.type = "checkbox"; auto.checked = localStorage.getItem("gstack-auto") !== "0";
+  const auto = el("input"); auto.type = "checkbox"; auto.checked = localStorage.getItem("gstack-auto") === "1";   // off unless ticked: optional, not required
   const autoLabel = el("label", "sub"); autoLabel.append(auto, " Install with Claude Code");
   auto.onchange = () => { localStorage.setItem("gstack-auto", auto.checked ? "1" : "0"); paint(); };
   line.append(lineLabel("gstack", "wrench"), state, msg);
