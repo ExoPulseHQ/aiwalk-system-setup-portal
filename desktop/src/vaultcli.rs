@@ -269,8 +269,9 @@ fn ship_repo(vault: &Path, sub: Option<&str>, msg: &str, paths: Vec<String>, nam
     let ahead: i64 = sh(root, &["git", "rev-list", "--count", &format!("origin/{branch}..HEAD")], false).trim().parse().unwrap_or(0);
     if staged.is_empty() && ahead == 0 {
         if !required { println!("  nothing to commit here"); return }
-        // an earlier upload (another window, another session) already took them: done, not failed
-        if !paths.is_empty() && vs::py_strip(&sh(root, &[&["git", "status", "--porcelain", "--"][..], &p].concat(), false)).is_empty() {
+        // an earlier upload (another window, another session) already took them: done, not failed. A submodule whose
+        // only change is work not committed inside it (or inside one nested in it) has nothing git can stage here either
+        if !paths.is_empty() && vs::py_strip(&sh(root, &[&["git", "status", "--porcelain", "--ignore-submodules=dirty", "--"][..], &p].concat(), false)).is_empty() {
             println!("  already in git, nothing left to upload for these paths");
             return;
         }
@@ -303,7 +304,7 @@ fn ship_repo(vault: &Path, sub: Option<&str>, msg: &str, paths: Vec<String>, nam
             let files = if conflicts.is_empty() { vs::py_strip(if r.err.is_empty() { &r.out } else { &r.err }).to_string() } else { conflicts };
             die(&vs::conflict_message(sub.map(native).as_deref(), &files, &branch))
         }
-        let push = run(root, &["git", "push", "-q", "origin", &format!("HEAD:{branch}")]);
+        let push = run(root, &[&["git"][..], &vs::PUSH_BUFFER, &["push", "-q", "origin", &format!("HEAD:{branch}")]].concat());
         if push.code == 0 { break }
         if attempt == 2 { die(&format!("✗ push failed twice:\n{}", vs::py_strip(if push.err.is_empty() { &push.out } else { &push.err }))) }
         sh(root, &["git", "fetch", "-q", "origin"], true);   // someone pushed in between: rebase once more and retry
