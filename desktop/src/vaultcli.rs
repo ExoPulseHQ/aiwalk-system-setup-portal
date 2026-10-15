@@ -122,6 +122,31 @@ fn update_index(vault: &Path) -> bool {
     true
 }
 
+/// llms.txt: its primary-log section rebuilt from every `_*.md` with a `layer` in its frontmatter. A log inside a
+/// submodule this computer has not checked out keeps its line from the last version.
+fn update_llms(vault: &Path) -> bool {
+    let path = vault.join(vs::LLMS);
+    let Ok(old) = std::fs::read_to_string(&path) else { return false };
+    let layers = read_json(&vault.join("System/vault_rules.json")).and_then(|r| r.get("layers").cloned()).unwrap_or_default();
+    let mut names = HashMap::new();
+    glob_index(vault, &mut names);
+    let mut lines = vec![];
+    for (n, p) in &names {
+        if !n.starts_with('_') || !n.ends_with(".md") { continue }
+        let rel = p.strip_prefix(vault).unwrap_or(p).to_string_lossy().replace('\\', "/");
+        if rel.starts_with("Templates/") { continue }
+        if let Some(l) = std::fs::read_to_string(p).ok().and_then(|t| vs::llms_line(&rel, &vs::py_text(&t))) { lines.push(l) }
+    }
+    let subs = submodule_paths(vault);
+    let kept: Vec<(String, String)> = vs::llms_old_lines(&old, &layers).into_iter().filter(|(_, l)| {
+        let rel = l.split("](").nth(1).and_then(|x| x.split(')').next()).unwrap_or("").replace("%20", " ");
+        !vault.join(&rel).exists() && subs.iter().any(|s| rel.starts_with(&format!("{s}/")) && !checked_out(vault, s))
+    }).collect();
+    let Some(new) = vs::llms_apply(&old, &vs::llms_block(&lines, &kept, &layers)) else { return false };
+    write_text(&path, &new).unwrap_or_else(|e| die(&format!("✗ {}: {e}", path.display())));
+    true
+}
+
 /// Every [[target]] a change adds to a .md must resolve to a vault file (vaultcheck.rs); the file's last version is git's.
 fn check_wikilinks(vault: &Path, root: &Path, paths: &[String]) -> Vec<String> {
     broken_links(vault, root, paths, &|p| run(root, &["git", "show", &format!("HEAD:{p}")]).out, &HashSet::new()).unwrap_or_else(|e| die(&format!("✗ {e}")))
@@ -198,6 +223,9 @@ fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     }
     if update_index(vault) {
         if !paths.is_empty() { paths.push(INDEX.into()) } else { sh(vault, &["git", "add", "--", INDEX], true); }   // new the first time
+    }
+    if update_llms(vault) {
+        if !paths.is_empty() { paths.push(vs::LLMS.into()) } else { sh(vault, &["git", "add", "--", vs::LLMS], true); }
     }
     ship_repo(vault, None, msg, paths, &name, &email, true);
 }
@@ -483,6 +511,7 @@ pub fn main(a: &[String]) {
         Some("identity") => { let (n, e) = identity(); println!("{n} <{e}>") }
         Some("can-push") if a.len() == 2 => println!("{}", if can_push(&vault, &a[1]) { "yes" } else { "no" }),
         Some("index") => println!("{}", if update_index(&vault) { "updated" } else { "unchanged" }),
+        Some("llms") => println!("{}", if update_llms(&vault) { "updated" } else { "unchanged" }),
         Some("check-author") => check_author(&vault),
         Some("sync-ownership") => std::process::exit(sync_cli(&vault, &a[1..])),
         Some("count") if a.len() > 1 => {
