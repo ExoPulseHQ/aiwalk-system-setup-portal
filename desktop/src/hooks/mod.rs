@@ -21,6 +21,7 @@ use serde_json::Value;
 use std::io::Read;
 use std::path::PathBuf;
 
+mod biz_neutral_reminder;
 mod file_location_reminder;
 mod pycompat;
 mod skills_registry_reminder;
@@ -71,6 +72,7 @@ pub fn main(args: &[String]) -> i32 {
         "git_discipline_reminder" => git_discipline_reminder::run(&stdin),
         "new_repo_worktree_check" => new_repo_worktree_check::run(&stdin),
         "primary_log_reminder" => primary_log_reminder::run(&stdin),
+        "biz_neutral_reminder" => biz_neutral_reminder::run(&stdin),
         _ => { eprintln!("aiwalk-setup hook: no hook called {name}"); return 2 }
     };
     #[allow(unreachable_code)]
@@ -78,4 +80,4 @@ pub fn main(args: &[String]) -> i32 {
 }
 
 /// The hooks this build runs, for `--can` and for whoever writes the vault's settings.json.
-pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder", "writing_style_reminder", "git_discipline_reminder", "new_repo_worktree_check", "primary_log_reminder"];
+pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder", "writing_style_reminder", "git_discipline_reminder", "new_repo_worktree_check", "primary_log_reminder", "biz_neutral_reminder"];

@@ -119,6 +119,18 @@ pub fn submodule_paths(out: &str) -> Vec<String> {
 
 /// Paths inside a submodule go to that submodule (longest submodule path first); the rest stay in the vault, which
 /// then also records each submodule's new commit. (groups in first-seen order, vault paths)
+/// The submodule folders whose route in vault_rules.json `repos` is marked `"private": true`: a restricted repo whose
+/// file names and commit messages must not reach the book, which every member and intern can read.
+pub fn private_subs(repos: &Value) -> Vec<String> {
+    repos["routes"].as_array().map_or(vec![], |r| r.iter()
+        .filter(|x| x["private"] == Value::Bool(true))
+        .filter_map(|x| x["prefix"].as_str()).map(|p| p.trim_end_matches('/').to_string()).filter(|p| !p.is_empty()).collect())
+}
+
+/// The book's message for a commit that records private submodules' new gitlinks: their folders and nothing else, so
+/// the book's history (readable by all) never repeats what the private repo's own commit says.
+pub fn private_gitlink_msg(subs: &[&str]) -> String { format!("chore: update {}", subs.join(", ")) }
+
 pub fn group_paths(paths: &[String], subs: &[String]) -> (Vec<(String, Vec<String>)>, Vec<String>) {
     let mut subs: Vec<&String> = subs.iter().collect();
     subs.sort_by_key(|s| std::cmp::Reverse(s.chars().count()));
@@ -579,6 +591,18 @@ pub fn cjk_and_lines(text: &str) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_routes() {
+        let repos = serde_json::json!({"routes": [
+            {"prefix": "Business/", "repo": "exo-biz", "private": true},
+            {"prefix": "L1_Sensing/", "repo": "exo-l1"},
+            {"prefix": "Secrets/", "repo": "exo-secrets", "private": false},
+        ]});
+        assert_eq!(private_subs(&repos), ["Business"]);
+        assert!(private_subs(&serde_json::json!({})).is_empty());
+        assert_eq!(private_gitlink_msg(&["Business"]), "chore: update Business");
+    }
+
     #[test]
     fn a_push_buffer_bigger_than_gits_default() {
         let [c, kv] = super::PUSH_BUFFER;

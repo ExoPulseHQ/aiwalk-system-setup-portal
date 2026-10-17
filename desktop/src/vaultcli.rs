@@ -100,12 +100,21 @@ fn submodule_paths(vault: &Path) -> Vec<String> {
     vs::submodule_paths(&run(vault, &["git", "config", "-z", "-f", ".gitmodules", "--get-regexp", r"submodule\..*\.path"]).out)
 }
 
-/// System/vault_index.json: per submodule, the hashed names of its files. An absent submodule keeps its entry.
+/// The submodules marked private in System/vault_rules.json (vs::private_subs) that this vault actually has.
+fn private_subs(vault: &Path) -> Vec<String> {
+    let subs = submodule_paths(vault);
+    read_json(&vault.join("System/vault_rules.json")).map_or(vec![], |r| vs::private_subs(&r["repos"])).into_iter().filter(|p| subs.contains(p)).collect()
+}
+
+/// System/vault_index.json: per submodule, the hashed names of its files. An absent submodule keeps its entry; a
+/// private one has none, since a guessed name hashed the same way would confirm the file exists.
 fn update_index(vault: &Path) -> bool {
     let path = vault.join(INDEX);
     let old = read_json(&path).unwrap_or(Value::Object(Default::default()));
     let mut subs = vec![];
+    let private = private_subs(vault);
     for s in submodule_paths(vault) {
+        if private.contains(&s) { continue }
         if checked_out(vault, &s) {
             let dir = vault.join(&s);
             let files = run(vault, &["git", "-C", &dir.to_string_lossy(), "-c", "core.quotePath=false", "ls-files"]).out;
@@ -211,8 +220,29 @@ fn sync_cli(vault: &Path, a: &[String]) -> i32 {
 fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     let (name, email) = identity();
     println!("identity: {name} <{email}>");
+    let private = private_subs(vault);
+    let mut book_msg = msg.to_string();
+    if paths.is_empty() && !private.is_empty() {
+        // `git add -u` would record a private folder's new gitlink under this message
+        let moved = sh(vault, &[&["git", "diff", "HEAD", "--ignore-submodules=dirty", "--name-only", "--"][..], &private.iter().map(String::as_str).collect::<Vec<_>>()].concat(), false);
+        if !moved.is_empty() { die(&private_alone(&lines(&moved))) }
+    }
     if !paths.is_empty() {
         let (groups, rest) = vs::group_paths(&paths, &submodule_paths(vault));
+        let mine: Vec<&str> = groups.iter().map(|g| g.0.as_str()).filter(|g| private.iter().any(|p| p == g)).collect();
+        let bare: Vec<&str> = rest.iter().map(String::as_str).filter(|r| private.iter().any(|p| p == r) && !mine.contains(r)).collect();
+        if !bare.is_empty() { die(&private_alone(&bare)) }
+        if !mine.is_empty() {
+            let others = rest.iter().any(|r| !groups.iter().any(|g| &g.0 == r)) || groups.len() > mine.len();
+            if others { die(&private_alone(&mine)) }
+            // a new primary log there would put its title in llms.txt, which everyone reads
+            let new: Vec<String> = groups.iter().filter(|g| mine.contains(&g.0.as_str())).flat_map(|(s, inner)| {
+                let root = vault.join(s);
+                inner.iter().filter(move |f| vs::is_primary(f) && root.join(f).exists() && run(&root, &["git", "cat-file", "-e", &format!("HEAD:{f}")]).code != 0).map(move |f| format!("{s}/{f}"))
+            }).collect();
+            if !new.is_empty() { die(&format!("✗ no new primary log (_*.md) in a private folder: its title would reach llms.txt. Rename it without the leading underscore:\n  {}", new.join("\n  "))) }
+            book_msg = vs::private_gitlink_msg(&mine);
+        }
         // the vault's own paths are checked before any submodule is committed, so a bad one stops the ship whole
         addable(vault, &rest.iter().map(String::as_str).collect::<Vec<_>>());
         for (s, inner) in &groups {
@@ -227,7 +257,12 @@ fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     if update_llms(vault) {
         if !paths.is_empty() { paths.push(vs::LLMS.into()) } else { sh(vault, &["git", "add", "--", vs::LLMS], true); }
     }
-    ship_repo(vault, None, msg, paths, &name, &email, true);
+    ship_repo(vault, None, &book_msg, paths, &name, &email, true);
+}
+
+/// Why a private folder ships on its own: the book's commit then says only which folder moved.
+fn private_alone(subs: &[&str]) -> String {
+    format!("✗ {} is private: ship the files inside it on their own, with nothing from the book, so the book's message names only the folder\n  aiwalk-setup vault ship -m \"<message>\" {}/<file>...", subs.join(", "), subs[0])
 }
 
 /// The paths `git add` can take. One that is gone from disk and from the index but still in the last commit is a
