@@ -50,10 +50,61 @@ pub fn sealed_key() -> Result<bool, String> {
     #[cfg(not(target_os = "linux"))] { Ok(false) }
 }
 
+/// The PIN every key is handed out with; the key then refuses to work until its holder chose their own.
+const HANDED_OUT_PIN: &str = "aIwalkcorp";
+
+/// `old` None: the key still has the PIN it was handed out with.
 #[tauri::command(async)]
-pub fn sealed_change_pin(old: String, new: String) -> Result<(), String> {
-    #[cfg(target_os = "linux")] { crate::fidokey::change_pin(&old, &new) }
+pub fn sealed_change_pin(old: Option<String>, new: String) -> Result<(), String> {
+    #[cfg(target_os = "linux")] { crate::fidokey::change_pin(old.as_deref().unwrap_or(HANDED_OUT_PIN), &new) }
     #[cfg(not(target_os = "linux"))] { let _ = (old, new); Err("Changing the key's PIN works on Linux for now.".into()) }
+}
+
+/// Our pico-fido build for the team's boards (Waveshare RP2350-Zero): its source and the changes are described in
+/// desktop/firmware/README.md (AGPL-3.0).
+#[cfg(target_os = "linux")]
+const FIRMWARE: &[u8] = include_bytes!("../firmware/pico-fido-waveshare-rp2350-zero.uf2");
+
+/// An RP2350 board waiting to be flashed: a fresh board starts that way, or any board held on BOOT when plugged in.
+/// It shows up as a small drive with INFO_UF2.TXT; the folder it is mounted on.
+#[cfg(target_os = "linux")]
+fn bootsel_drive() -> Option<PathBuf> {
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    mounts.lines().filter_map(|l| l.split(' ').nth(1)).map(|m| PathBuf::from(m.replace("\\040", " ")))
+        .find(|m| std::fs::read_to_string(m.join("INFO_UF2.TXT")).is_ok_and(|t| t.contains("Board-ID: RP2350")))
+}
+
+/// Whether a board is waiting to be made into a key (shown to owners).
+#[tauri::command]
+pub fn sealed_new_board() -> bool {
+    #[cfg(target_os = "linux")] { bootsel_drive().is_some() }
+    #[cfg(not(target_os = "linux"))] { false }
+}
+
+/// Flashes the waiting board, waits for it to come back as a key, and hands it out: the shared PIN, and a new PIN
+/// required on first use. The words to show when done.
+#[tauri::command(async)]
+pub fn sealed_setup_board() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let drive = bootsel_drive().ok_or("No board waiting: hold BOOT while plugging it in.")?;
+        // the key set up next is whichever key is plugged in, so it must be the only one
+        if crate::fidokey::present() { return Err("Unplug any other security key first, so the new one is the only key here.".into()) }
+        std::fs::write(drive.join("pico-fido.uf2"), FIRMWARE).map_err(|e| format!("Could not write the firmware to the board: {e}"))?;
+        // the board reboots into the new firmware on its own once the file is in
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while bootsel_drive().is_some() || !crate::fidokey::present() {
+            if std::time::Instant::now() > end { return Err("The board did not come back as a key within 30 s. Unplug it and plug it in again, then set it up again.".into()) }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(800));   // its USB settles before the first request
+        return match crate::fidokey::hand_out(HANDED_OUT_PIN)? {
+            Some(kept) => Ok(format!("Flashed. {kept}")),
+            None => Ok("The key is ready: hand it out. Its holder chooses their own PIN the first time they unlock.".into()),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err("Setting up a key works on Linux for now.".into())
 }
 
 /// Forgets the group key; the key's light goes back to the locked colour. Also run when the app quits.
@@ -216,7 +267,7 @@ pub fn cli(args: &[String]) -> i32 {
         Some("change-pin") => {
             let mut lines = std::io::stdin().lines().map_while(Result::ok);
             let (old, new) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
-            return match sealed_change_pin(old, new) { Ok(()) => { println!("PIN changed"); 0 } Err(e) => { eprintln!("{e}"); 1 } }
+            return match sealed_change_pin(Some(old), new) { Ok(()) => { println!("PIN changed"); 0 } Err(e) => { eprintln!("{e}"); 1 } }
         }
         _ => {}
     }
