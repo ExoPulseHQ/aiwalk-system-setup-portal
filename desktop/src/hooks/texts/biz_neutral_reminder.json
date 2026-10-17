@@ -1,0 +1,5 @@
+{
+  "reminder": "⚠ `{folder}/` 是私有資料夾（vault_rules.json route 標 private）。book 全員與實習生可讀，以下會外流到 book，寫之前檢查：\n  (1) **檔名中性**：不寫公司、學校、合作方、交易名稱（用 Partner_A、BD_Topic_01 這類代稱）。檔名雖不進 book 的 index，仍可能出現在連結、commit 與對話紀錄。\n  (2) **ship 單獨進行**：`aiwalk-setup vault ship -m \"...\" {folder}/<file>`，不和 book 的檔案混在同一次；book 端訊息會自動改成 `chore: update {folder}`。\n  (3) **不新增 `_*.md`**：主幹標題會進全員可讀的 llms.txt。\n  (4) **book 的文件不要 wikilink 進 `{folder}/`**：沒權限的人點下去會新建空檔。\n  規則全文見 `{folder}/_Business_Plan.md` §私有資料夾規則。",
+  "reminder_bash": "⚠ 這個指令碰到私有資料夾 `{folder}/`。commit 訊息、檔名與輸出都可能外流：ship 請只帶 `{folder}/` 內的檔案並用中性訊息（例：`docs(biz): update (BD-EL)`），不要在指令或訊息裡寫出公司、學校或交易名稱。",
+  "deny_new_primary": "⛔ 不在私有資料夾新增主幹 `{file}`：`_*.md` 的標題會進全員可讀的 llms.txt。請改用不帶底線的中性檔名（例：BD_Topic_01.md），再掛到既有主幹的 Dev Topic。"
+}
