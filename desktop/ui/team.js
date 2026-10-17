@@ -85,7 +85,7 @@ function badge(s) {
     way("temporary", "Temporary credential", "m-temporary", "circle-alert", "clock"),
     glyph("method m-off", "key-round", "Security key", "Security key: another way to sign in, not in use"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine(), gstackLine(), sealedLine()]));
+  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine(), gstackLine(), sealedLine(s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null))]));
   const out = iconButton("log-out", "Sign out of GitHub", "ghost small", true);
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -307,33 +307,56 @@ function gstackLine() {
   return line;
 }
 
-// Sealed notes (*.age, sealed.rs): shown when a vault on this computer has a keyring. Unlock asks the hardware key's
-// PIN once; Obsidian then opens every sealed note until Lock, the key is unplugged, or this app quits.
-function sealedLine() {
+// Sealed notes (*.age, sealed.rs): shown when a vault on this computer has a keyring, or (to owners) when a new key
+// board is plugged in. Unlock asks the hardware key's PIN once; Obsidian then opens every sealed note until Lock, the
+// key is unplugged, or this app quits. A key still on the PIN it was handed out with asks for the holder's own first.
+let firstPinAsked = false;
+function sealedLine(owner) {
   const line = el("div", "claude-line"), msg = el("span", "sub");
   line.hidden = true;
+  // asked of the key once, and again after an action: each question flickers its light
+  let busy = false, force = null;
   const paint = async () => {
+    if (busy || !line.isConnected && line.dataset.drawn) return;
+    line.dataset.drawn = 1;
     let path = null, s = null;
     for (const p of Object.values(local.copies || {})) {
       const st = await invoke("sealed_state", { path: p }).catch(() => null);
       if (st && st.keyring) { path = p; s = st; break; }
     }
-    if (!s) return line.hidden = true;
-    line.hidden = false;
-    const state = s.unlocked ? stateText(el("span", "method m-key"), "lock-open", "Unlocked") : stateText(el("span", "method m-off"), "lock", "Locked");
-    const b = el("button", "small", s.unlocked ? "Lock" : "Unlock");
-    b.onclick = async () => {
-      msg.textContent = "";
-      if (s.unlocked) { await invoke("sealed_lock"); return paint(); }
-      let pin;
-      try { pin = await (await invoke("sealed_key") ? newPin() : askPin()); } catch (e) { return msg.textContent = e; }
-      if (!pin) return;
-      try { await working(b, "Touch your key", () => invoke("sealed_unlock", { path, pin })); } catch (e) { msg.textContent = e; }
-      paint();
-    };
-    line.replaceChildren(lineLabel("Sealed notes", "key-round"), state, b, msg);
-    // the app locks by itself when the key is unplugged; follow it while this line is on screen
-    if (s.unlocked) setTimeout(() => { if (line.isConnected) paint(); }, 500);
+    const board = owner && await invoke("sealed_new_board").catch(() => false);
+    const parts = [lineLabel("Sealed notes", "key-round")];
+    if (s) {
+      if (force === null) force = !s.unlocked && await invoke("sealed_key").catch(() => false);
+      const state = s.unlocked ? stateText(el("span", "method m-key"), "lock-open", "Unlocked") : stateText(el("span", "method m-off"), "lock", "Locked");
+      const b = el("button", "small", s.unlocked ? "Lock" : force ? "Choose your PIN" : "Unlock");
+      const go = async () => {
+        msg.textContent = ""; busy = true;
+        try {
+          if (s.unlocked) return await invoke("sealed_lock");
+          const pin = await (force ? newPin() : askPin());
+          if (pin) await working(b, "Touch your key", () => invoke("sealed_unlock", { path, pin }));
+        } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
+      };
+      b.onclick = go;
+      parts.push(state, b);
+      // the first time a handed-out key is seen, ask for the holder's own PIN without waiting for a click
+      if (force && !firstPinAsked) { firstPinAsked = true; setTimeout(go, 0); }
+    }
+    if (board) {
+      const setup = el("button", "small", "Set up the new key");
+      setup.onclick = async () => {
+        if (await ask("Set up the new key?", "The board plugged in is flashed with the team's key firmware and given the PIN keys are handed out with. Its holder chooses their own PIN the first time they unlock. Unplug any other security key first.",
+          [["cancel", "Cancel"], ["go", "Set up", true]]) !== "go") return;
+        msg.textContent = ""; busy = true;
+        try { toast(await working(setup, "Flashing, about 20 s", () => invoke("sealed_setup_board"))); } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
+      };
+      parts.push(stateText(el("span", "method m-temporary"), "circle-alert", "New key board plugged in"), setup);
+    }
+    if (!s && !board) line.hidden = true;
+    else { line.hidden = false; line.replaceChildren(...parts, msg); }
+    // follow the app: it locks by itself when the key is unplugged, and an owner sees a new board when it appears
+    if (s && s.unlocked || owner) setTimeout(() => { if (line.isConnected) paint(); }, s && s.unlocked ? 500 : 2000);
   };
   paint();
   return line;
@@ -360,13 +383,13 @@ async function askPin() {
 }
 // A key just handed out carries the shared PIN and refuses to work until it gets one of the holder's own.
 async function newPin(reason = "") {
-  const old = pinField("PIN you were given"), a = pinField("New PIN, at least 4 characters"), again = pinField("New PIN again");
-  const box = el("div", "pin-fields"); box.append(old, a, again);
-  if (await ask("Choose your own PIN", (reason ? reason + " " : "") + "This key still has the PIN it was handed out with. Choose a new one; you will use it to unlock sealed notes from now on.",
+  const a = pinField("New PIN, at least 4 characters"), again = pinField("New PIN again");
+  const box = el("div", "pin-fields"); box.append(a, again);
+  if (await ask("Choose your own PIN", (reason ? reason + " " : "") + "This key still has the PIN it was handed out with. Choose your own; you will use it to unlock sealed notes from now on.",
     [["cancel", "Cancel"], ["set", "Change PIN", true]], box) !== "set") return null;
   if (a.value().length < 4) return newPin("The new PIN needs at least 4 characters.");
   if (a.value() !== again.value()) return newPin("The two new PINs were different.");
-  await invoke("sealed_change_pin", { old: old.value(), new: a.value() });
+  await invoke("sealed_change_pin", { old: null, new: a.value() });
   toast("PIN changed. Touch your key to unlock.");
   return a.value();
 }

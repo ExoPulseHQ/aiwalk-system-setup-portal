@@ -93,35 +93,89 @@ pub fn must_change_pin() -> Result<bool, String> {
 /// clientPIN changePIN, PIN protocol 1: a shared secret with the key by ECDH P-256, the new PIN and the old PIN's
 /// hash sent encrypted with it.
 pub fn change_pin(old: &str, new: &str) -> Result<(), String> {
-    use ring::{agreement, digest, hmac, rand::SystemRandom};
+    use ring::{digest, hmac};
     if new.chars().count() < 4 || new.len() > 63 { return Err("The new PIN needs 4 to 63 characters.".into()) }
     let mut h = Hid::open()?;
-    let refused = |s: u8| match s {
-        0x31 => "The current PIN is wrong.".to_string(),
-        0x32 | 0x34 => "The key is locked after too many wrong PINs; unplug it and plug it in again (it may need a reset).".to_string(),
-        0x37 => "The key does not accept this new PIN (too short, or the same as before).".to_string(),
-        s => format!("The key refused (status {s:#04x})."),
-    };
-    // getKeyAgreement: the key's public key, a COSE map with x (-2) and y (-3)
-    let ka = h.ctap(0x06, Some(&enc_map(&[(1, Cb::U(1)), (2, Cb::U(2))]))).map_err(refused)?;
-    let cose = ka.get(1).ok_or("The key gave no key agreement.")?;
-    let (Some(Value::Bytes(x)), Some(Value::Bytes(y))) = (cose.get(-2), cose.get(-3)) else { return Err("The key gave a malformed key agreement.".into()) };
-    let rng = SystemRandom::new();
-    let mine = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).map_err(|_| "No random numbers.")?;
-    let pub_mine = mine.compute_public_key().map_err(|_| "No public key.")?;
-    let theirs = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, [&[4u8][..], x, y].concat());
-    let shared: [u8; 32] = agreement::agree_ephemeral(mine, &theirs, |z| digest::digest(&digest::SHA256, z).as_ref().try_into().unwrap())
-        .map_err(|_| "The key agreement failed.")?;
+    let (shared, platform_key) = agree(&mut h).map_err(|e| e.unwrap_or_else(|| "The key agreement failed.".into()))?;
     let mut pin = new.as_bytes().to_vec();
     pin.resize(64, 0);
     let new_enc = aes256_cbc_zero_iv(&shared, &pin);
     let old_hash = digest::digest(&digest::SHA256, old.as_bytes());
     let old_enc = aes256_cbc_zero_iv(&shared, &old_hash.as_ref()[..16]);
     let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &shared), &[&new_enc[..], &old_enc[..]].concat());
-    let p = pub_mine.as_ref();
-    let platform_key = enc_map(&[(1, Cb::U(2)), (3, Cb::N(-25)), (-1, Cb::U(1)), (-2, Cb::B(&p[1..33])), (-3, Cb::B(&p[33..65]))]);
     let req = enc_map(&[(1, Cb::U(1)), (2, Cb::U(4)), (3, Cb::Raw(&platform_key)), (4, Cb::B(&tag.as_ref()[..16])), (5, Cb::B(&new_enc)), (6, Cb::B(&old_enc))]);
     h.ctap(0x06, Some(&req)).map(|_| ()).map_err(refused)
+}
+
+fn refused(s: u8) -> String {
+    match s {
+        0x31 => "The current PIN is wrong.".into(),
+        0x32 | 0x34 => "The key is locked after too many wrong PINs; unplug it and plug it in again (it may need a reset).".into(),
+        0x37 => "The key does not accept this new PIN (too short, or the same as before).".into(),
+        s => format!("The key refused (status {s:#04x})."),
+    }
+}
+
+/// PIN protocol 1's shared secret with the key (ECDH P-256, SHA-256 of x) and this side's COSE key to send with it.
+/// Err(Some) is the key's refusal, Err(None) a failure here.
+fn agree(h: &mut Hid) -> Result<([u8; 32], Vec<u8>), Option<String>> {
+    use ring::{agreement, digest, rand::SystemRandom};
+    let ka = h.ctap(0x06, Some(&enc_map(&[(1, Cb::U(1)), (2, Cb::U(2))]))).map_err(|s| Some(refused(s)))?;
+    let cose = ka.get(1).ok_or(None)?;
+    let (Some(Value::Bytes(x)), Some(Value::Bytes(y))) = (cose.get(-2), cose.get(-3)) else { return Err(None) };
+    let rng = SystemRandom::new();
+    let mine = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng).map_err(|_| None)?;
+    let p = mine.compute_public_key().map_err(|_| None)?;
+    let platform_key = enc_map(&[(1, Cb::U(2)), (3, Cb::N(-25)), (-1, Cb::U(1)), (-2, Cb::B(&p.as_ref()[1..33])), (-3, Cb::B(&p.as_ref()[33..65]))]);
+    let theirs = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, [&[4u8][..], x, y].concat());
+    let shared = agreement::agree_ephemeral(mine, &theirs, |z| -> [u8; 32] { digest::digest(&digest::SHA256, z).as_ref().try_into().unwrap() }).map_err(|_| None)?;
+    Ok((shared, platform_key))
+}
+
+/// Sets up a key that has just been flashed: the PIN it is handed out with (when it has none yet), and
+/// forcePINChange, so its holder must choose their own PIN before anything else. Some(message) when the key already
+/// had a PIN (flashing keeps the key's data), which is kept.
+pub fn hand_out(pin: &str) -> Result<Option<String>, String> {
+    use ring::{digest, hmac};
+    let mut h = Hid::open()?;
+    let info = h.ctap(0x04, None).map_err(refused)?;
+    let has_pin = matches!(info.get(4).and_then(|o| { let Value::Map(m) = o else { return None }; m.iter().find(|(k, _)| *k == Value::Text("clientPin".into())).map(|(_, v)| v) }), Some(Value::Bool(true)));
+    if has_pin { return Ok(Some("This key already had a PIN, which was kept: flashing keeps a key's data. Reset the key to start it over.".into())) }
+    // setPIN
+    let (shared, platform_key) = agree(&mut h).map_err(|e| e.unwrap_or_else(|| "The key agreement failed.".into()))?;
+    let mut padded = pin.as_bytes().to_vec();
+    padded.resize(64, 0);
+    let pin_enc = aes256_cbc_zero_iv(&shared, &padded);
+    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &shared), &pin_enc);
+    h.ctap(0x06, Some(&enc_map(&[(1, Cb::U(1)), (2, Cb::U(3)), (3, Cb::Raw(&platform_key)), (4, Cb::B(&tag.as_ref()[..16])), (5, Cb::B(&pin_enc))]))).map_err(refused)?;
+    // a token for authenticatorConfig (permission acfg, 0x20), then setMinPINLength with forceChangePin
+    let (shared, platform_key) = agree(&mut h).map_err(|e| e.unwrap_or_else(|| "The key agreement failed.".into()))?;
+    let hash = digest::digest(&digest::SHA256, pin.as_bytes());
+    let hash_enc = aes256_cbc_zero_iv(&shared, &hash.as_ref()[..16]);
+    let r = h.ctap(0x06, Some(&enc_map(&[(1, Cb::U(1)), (2, Cb::U(9)), (3, Cb::Raw(&platform_key)), (6, Cb::B(&hash_enc)), (9, Cb::U(0x20))]))).map_err(refused)?;
+    let Some(Value::Bytes(token_enc)) = r.get(2) else { return Err("The key gave no token.".into()) };
+    let token = aes256_cbc_zero_iv_decrypt(&shared, token_enc);
+    let params = enc_map(&[(3, Cb::T)]);
+    let mut msg = vec![0xFF; 32];
+    msg.extend([0x0D, 0x03]);
+    msg.extend_from_slice(&params);
+    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &token), &msg);
+    h.ctap(0x0D, Some(&enc_map(&[(1, Cb::U(3)), (2, Cb::Raw(&params)), (3, Cb::U(1)), (4, Cb::B(&tag.as_ref()[..16]))]))).map_err(refused)?;
+    Ok(None)
+}
+
+fn aes256_cbc_zero_iv_decrypt(key: &[u8; 32], data: &[u8]) -> Vec<u8> {
+    use aes::cipher::{BlockCipherDecrypt, KeyInit};
+    let c = aes::Aes256::new(key.into());
+    let (mut prev, mut out) = ([0u8; 16], Vec::with_capacity(data.len()));
+    for chunk in data.chunks(16) {
+        let mut b: [u8; 16] = std::array::from_fn(|i| chunk[i]);
+        let ct = b;
+        c.decrypt_block((&mut b).into());
+        out.extend((0..16).map(|i| b[i] ^ prev[i]));
+        prev = ct;
+    }
+    out
 }
 
 fn aes256_cbc_zero_iv(key: &[u8; 32], data: &[u8]) -> Vec<u8> {
@@ -139,7 +193,7 @@ fn aes256_cbc_zero_iv(key: &[u8; 32], data: &[u8]) -> Vec<u8> {
 
 // ---------------------------------------------------------------- the little CBOR CTAP needs
 
-enum Cb<'a> { U(u64), N(i64), B(&'a [u8]), Raw(&'a [u8]) }
+enum Cb<'a> { U(u64), N(i64), B(&'a [u8]), Raw(&'a [u8]), T }
 
 fn head(out: &mut Vec<u8>, major: u8, n: u64) {
     let m = major << 5;
@@ -159,7 +213,7 @@ fn enc_map(entries: &[(i64, Cb)]) -> Vec<u8> {
     head(&mut out, 5, entries.len() as u64);
     for (k, v) in entries {
         int(&mut out, *k);
-        match v { Cb::U(n) => head(&mut out, 0, *n), Cb::N(n) => int(&mut out, *n), Cb::B(b) => { head(&mut out, 2, b.len() as u64); out.extend_from_slice(b) } Cb::Raw(r) => out.extend_from_slice(r) }
+        match v { Cb::U(n) => head(&mut out, 0, *n), Cb::N(n) => int(&mut out, *n), Cb::B(b) => { head(&mut out, 2, b.len() as u64); out.extend_from_slice(b) } Cb::Raw(r) => out.extend_from_slice(r), Cb::T => out.push(0xF5) }
     }
     out
 }
@@ -215,6 +269,8 @@ mod tests {
         // FIPS-197 AES-256 vector: one block with a zero IV is plain AES
         let key: [u8; 32] = std::array::from_fn(|i| i as u8);
         let pt: [u8; 16] = std::array::from_fn(|i| (i as u8) * 0x11);
+        let two: Vec<u8> = (0..32).collect();
+        assert_eq!(aes256_cbc_zero_iv_decrypt(&key, &aes256_cbc_zero_iv(&key, &two)), two);
         assert_eq!(aes256_cbc_zero_iv(&key, &pt), [0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf, 0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49, 0x60, 0x89]);
     }
 }
