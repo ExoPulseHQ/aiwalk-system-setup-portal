@@ -390,7 +390,7 @@ fn stop(k: &Keeper) {
 
 /// Unix: a socket per session in a folder only this user can enter.
 #[cfg(unix)]
-mod os {
+pub(crate) mod os {
     use std::io;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
@@ -401,12 +401,15 @@ mod os {
 
     /// $XDG_RUNTIME_DIR/aiwalk-setup/sessions, else under ~/.local/state (Linux) or ~/Library/Application Support
     /// (macOS); mode 0700 and refused unless it is a real folder owned by this user.
-    fn dir() -> io::Result<PathBuf> {
+    fn dir() -> io::Result<PathBuf> { private_dir("sessions") }
+
+    /// `sub` in the app's runtime folder (sessions here, sealed.rs's socket in "sealed"), made private as above.
+    pub(crate) fn private_dir(sub: &str) -> io::Result<PathBuf> {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let d = match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-            Some(r) => PathBuf::from(r).join("aiwalk-setup/sessions"),
-            None if cfg!(target_os = "macos") => crate::home().join("Library/Application Support/aiwalk-setup/sessions"),
-            None => crate::home().join(".local/state/aiwalk-setup/sessions"),
+            Some(r) => PathBuf::from(r).join("aiwalk-setup").join(sub),
+            None if cfg!(target_os = "macos") => crate::home().join("Library/Application Support/aiwalk-setup").join(sub),
+            None => crate::home().join(".local/state/aiwalk-setup").join(sub),
         };
         std::fs::create_dir_all(&d)?;
         let m = std::fs::symlink_metadata(&d)?;

@@ -628,3 +628,9 @@ dialog.sheet > .buttons:has(.sheet-actions:empty) { display: none; }
 html.phone dialog.sheet > h3 { padding-top: max(env(safe-area-inset-top, 0px), 36px); }
 html.phone #dialog button, html.phone #dialog select, html.phone #dialog input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; }
 html.phone .sheet-actions > button, html.phone .sync-go > button:not(.ghost) { min-height: 48px; }
+
+/* PIN fields (sealed notes): label over the field, the show button beside it */
+.pin-fields { display: grid; gap: var(--s3); }
+.pin-field { display: grid; gap: var(--s1); }
+.pin-row { display: flex; gap: var(--s2); align-items: center; }
+.pin-row input { flex: 1; }
