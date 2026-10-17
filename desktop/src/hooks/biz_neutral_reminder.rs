@@ -47,11 +47,15 @@ pub fn decide(root: &Path, private: &[String], data: &Value, t: &Value) -> Out {
         }
         "Bash" => {
             let cmd = ti["command"].as_str().unwrap_or("");
+            // what the command would create, by the same reading the new-file gate uses (cp/mv into a folder, -t,
+            // tee, touch, redirections, open(..., "w")); a relative name is relative to the call's cwd
+            let cwd = data["cwd"].as_str().map(Path::new).unwrap_or(root);
+            let made: Vec<String> = super::writing_style_reminder::bash_targets(cmd, &cwd.to_string_lossy()).iter()
+                .filter_map(|t| rel(root, &cwd.join(t).to_string_lossy())).filter(|t| holder(private, t).is_some()).collect();
+            if let Some(m) = made.iter().find(|m| vs::is_primary(basename(m)) && !root.join(m).exists()) { return deny(m) }
             let words = private_words(root, private, cmd);
-            if words.is_empty() { return Out::quiet() }
-            let creates = ["mv ", "cp ", "touch ", "tee ", ">"].iter().any(|v| cmd.contains(v));
-            if let Some(w) = words.iter().find(|w| creates && vs::is_primary(basename(w)) && !root.join(w).exists()) { return deny(w) }
-            remind("reminder_bash", holder(private, &words[0]).unwrap_or(""))
+            let Some(first) = made.first().or(words.first()) else { return Out::quiet() };
+            remind("reminder_bash", holder(private, first).unwrap_or(""))
         }
         _ => Out::quiet(),
     }
@@ -89,6 +93,13 @@ mod tests {
         assert!(call("Write", json!({"file_path": abs("System/_Other.md")})).stdout.is_empty());
 
         assert!(denied(&call("Bash", json!({"command": "mv draft.md Business/_Deal.md"}))));
+        assert!(denied(&call("Bash", json!({"command": "cp _Deal.md Business/"}))));         // into a folder: name from the source
+        assert!(denied(&call("Bash", json!({"command": "cp -t Business _Deal.md"}))));
+        assert!(denied(&call("Bash", json!({"command": "echo x > Business/_Deal.md"}))));
+        let in_folder = json!({"tool_name": "Bash", "cwd": abs("Business"), "tool_input": {"command": "touch _Deal.md"}});
+        assert!(denied(&decide(&root, &p, &in_folder, &t())));                                  // relative to the call's cwd
+        assert!(!denied(&call("Bash", json!({"command": "cp notes.md Business/"}))));
+        assert!(!denied(&call("Bash", json!({"command": "echo x > Business/_Plan.md"}))));   // exists already
         assert!(denied(&call("Bash", json!({"command": format!("cp x \"{}\"", abs("Business/_Deal.md"))}))));
         assert!(!denied(&call("Bash", json!({"command": "cat Business/_Plan.md"}))));
         assert!(call("Bash", json!({"command": "git -C Business log"})).stdout.is_empty());

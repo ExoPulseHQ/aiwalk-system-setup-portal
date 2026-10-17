@@ -331,7 +331,7 @@ fn is_new_doc(fp: &str, cwd: &str, root: Option<&str>) -> bool {
 /// Paths a shell command would create. ponytail: one regex for redirections and shlex per command; misses exotic
 /// forms (env prefixes, sudo, subshells). Unlike the Python it reads quoted names, skips option values and input
 /// redirections, and takes a lone `&` as the end of a command.
-fn bash_targets(cmd: &str, cwd: &str) -> Vec<String> {
+pub(crate) fn bash_targets(cmd: &str, cwd: &str) -> Vec<String> {
     // always with forward slashes: on Windows joining a folder and a name gives a backslash, and everything that
     // judges these paths afterwards (which folder, which kind of file) reads them the way the command wrote them
     bash_targets_os(cmd, cwd).into_iter().map(|p| p.replace('\\', "/")).collect()
