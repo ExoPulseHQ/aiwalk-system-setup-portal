@@ -85,6 +85,7 @@ dependencies = [
 name = "aiwalk-setup"
 version = "0.3.29"
 dependencies = [
+ "aes",
  "age",
  "base64 0.22.1",
  "crypto_box",

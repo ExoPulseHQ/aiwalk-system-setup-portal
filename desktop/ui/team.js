@@ -85,7 +85,7 @@ function badge(s) {
     way("temporary", "Temporary credential", "m-temporary", "circle-alert", "clock"),
     glyph("method m-off", "key-round", "Security key", "Security key: another way to sign in, not in use"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine(), gstackLine()]));
+  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine(), gstackLine(), sealedLine()]));
   const out = iconButton("log-out", "Sign out of GitHub", "ghost small", true);
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -305,6 +305,70 @@ function gstackLine() {
   };
   paint();
   return line;
+}
+
+// Sealed notes (*.age, sealed.rs): shown when a vault on this computer has a keyring. Unlock asks the hardware key's
+// PIN once; Obsidian then opens every sealed note until Lock, the key is unplugged, or this app quits.
+function sealedLine() {
+  const line = el("div", "claude-line"), msg = el("span", "sub");
+  line.hidden = true;
+  const paint = async () => {
+    let path = null, s = null;
+    for (const p of Object.values(local.copies || {})) {
+      const st = await invoke("sealed_state", { path: p }).catch(() => null);
+      if (st && st.keyring) { path = p; s = st; break; }
+    }
+    if (!s) return line.hidden = true;
+    line.hidden = false;
+    const state = s.unlocked ? stateText(el("span", "method m-key"), "lock-open", "Unlocked") : stateText(el("span", "method m-off"), "lock", "Locked");
+    const b = el("button", "small", s.unlocked ? "Lock" : "Unlock");
+    b.onclick = async () => {
+      msg.textContent = "";
+      if (s.unlocked) { await invoke("sealed_lock"); return paint(); }
+      let pin;
+      try { pin = await (await invoke("sealed_key") ? newPin() : askPin()); } catch (e) { return msg.textContent = e; }
+      if (!pin) return;
+      try { await working(b, "Touch your key", () => invoke("sealed_unlock", { path, pin })); } catch (e) { msg.textContent = e; }
+      paint();
+    };
+    line.replaceChildren(lineLabel("Sealed notes", "key-round"), state, b, msg);
+    // the app locks by itself when the key is unplugged; follow it while this line is on screen
+    if (s.unlocked) setTimeout(() => { if (line.isConnected) paint(); }, 500);
+  };
+  paint();
+  return line;
+}
+
+// A PIN field with its label and a button that shows or hides what was typed.
+function pinField(label) {
+  const box = el("label", "pin-field"), row = el("span", "pin-row"), input = el("input");
+  input.type = "password"; input.autocomplete = "off";
+  const eye = iconButton("eye", "Show PIN", "small ghost", true); eye.type = "button";
+  eye.onclick = () => {
+    const show = input.type === "password"; input.type = show ? "text" : "password";
+    const words = show ? "Hide PIN" : "Show PIN";
+    eye.replaceChildren(icon(show ? "eye-off" : "eye")); eye.setAttribute("aria-label", words); eye.dataset.tip = words;
+  };
+  row.append(input, eye); box.append(el("span", "sub", label), row);
+  box.value = () => input.value;
+  return box;
+}
+async function askPin() {
+  const f = pinField("PIN");
+  return await ask("Unlock sealed notes", "Enter your key's PIN, then touch the key. Sealed notes then open in Obsidian until you lock them or quit this app.",
+    [["cancel", "Cancel"], ["unlock", "Unlock", true]], f) === "unlock" && f.value() || null;
+}
+// A key just handed out carries the shared PIN and refuses to work until it gets one of the holder's own.
+async function newPin(reason = "") {
+  const old = pinField("PIN you were given"), a = pinField("New PIN, at least 4 characters"), again = pinField("New PIN again");
+  const box = el("div", "pin-fields"); box.append(old, a, again);
+  if (await ask("Choose your own PIN", (reason ? reason + " " : "") + "This key still has the PIN it was handed out with. Choose a new one; you will use it to unlock sealed notes from now on.",
+    [["cancel", "Cancel"], ["set", "Change PIN", true]], box) !== "set") return null;
+  if (a.value().length < 4) return newPin("The new PIN needs at least 4 characters.");
+  if (a.value() !== again.value()) return newPin("The two new PINs were different.");
+  await invoke("sealed_change_pin", { old: old.value(), new: a.value() });
+  toast("PIN changed. Touch your key to unlock.");
+  return a.value();
 }
 
 // A member asks for more on one repo: pick read or write, add a note, it lands as an issue the owners see.

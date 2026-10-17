@@ -190,7 +190,7 @@ window.__fixtures = (scenario, os) => {
       { path: "Papers/02_Learning_Based_Control/Peng_2018_DeepMimic.pdf", bytes: 9100000, notes: 5, here: false },
       { path: "Papers/02_Learning_Based_Control/Schumacher_2023_DEP_RL.pdf", bytes: 2400000, notes: 0, here: false },
       { path: "Papers/02_Learning_Based_Control/Haarnoja_2018_Soft_Actor_Critic.pdf", bytes: 880000, notes: 1, here: true }],
-    vault_drop: 1, vault_open: none, obsidian_install: ok("Obsidian installed"),
+    vault_drop: 1, vault_open: none, sealed_state: { keyring: true, unlocked: false }, sealed_unlock: none, sealed_lock: none, sealed_key: true, sealed_change_pin: none, obsidian_install: ok("Obsidian installed"),
     // machines
     reachable: a => Object.fromEntries((a.machines || []).map(([h]) => [h, guest && h === "heron" ? "refused" : "up"])),
     find_machine: a => !/^[a-z0-9-]{1,32}$/.test((a.name || "").trim()) ? new Error("A machine's name is lower-case letters, digits and hyphens, 1 to 32 of them.")

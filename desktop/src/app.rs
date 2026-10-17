@@ -33,6 +33,11 @@ mod hooks;
 mod ptycli;
 #[cfg(not(target_os = "android"))]
 mod sessioncli;
+// sealed notes: the vault's *.age files, unlocked once with a hardware key
+#[cfg(not(target_os = "android"))]
+mod sealed;
+#[cfg(not(target_os = "android"))]
+mod fidokey;
 #[cfg(not(target_os = "android"))]
 mod vault;
 #[cfg(not(target_os = "android"))]
@@ -555,7 +560,7 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
-                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request,
+                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 /// Android: sign-in, the machines, the owners' tools and the vault's download and Get latest (phonegit.rs, git inside
@@ -583,7 +588,7 @@ pub fn run() {
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
-                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, set_team, request_access, approve_request, decline_request]
+                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, set_team, request_access, approve_request, decline_request]
 }
 
 /// Windows: the release build is a GUI program, so a console it is started from is not given to it. A command-line
@@ -648,6 +653,10 @@ fn main() {
     // `vault <cmd>`: scripts/vault_ship.py for computers without Python, run in the vault's folder
     if std::env::args().nth(1).as_deref() == Some("pty") {
         std::process::exit(ptycli::main(&std::env::args().skip(2).collect::<Vec<_>>()));
+    }
+    // `sealed open <file>`: a sealed note's text from the running app (sealed.rs)
+    if std::env::args().nth(1).as_deref() == Some("sealed") {
+        std::process::exit(sealed::cli(&std::env::args().skip(2).collect::<Vec<_>>()));
     }
     if std::env::args().nth(1).as_deref() == Some("session") {
         std::process::exit(sessioncli::main(&std::env::args().skip(2).collect::<Vec<_>>()));
@@ -753,7 +762,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "ssh": true, "github": true, "repos": true, "hooks": hooks::NAMES }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "ssh": true, "github": true, "repos": true, "sealed": cfg!(unix), "hooks": hooks::NAMES }));
         return;
     }
     // --cf-selfcheck: token on stdin; see cloudflare::selfcheck
@@ -806,11 +815,13 @@ fn main() {
         std::process::exit(2);
     }
     std::thread::spawn(login::repair_git);
+    #[cfg(unix)]
+    sealed::serve();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(handlers())
         .build(tauri::generate_context!())
         .expect("error while starting aIwalk System Setup")
         // desktop forwards are ssh processes; none outlives the app
-        .run(|_, event| if let tauri::RunEvent::Exit = event { machines::close_all() });
+        .run(|_, event| if let tauri::RunEvent::Exit = event { machines::close_all(); sealed::sealed_lock() });
 }
