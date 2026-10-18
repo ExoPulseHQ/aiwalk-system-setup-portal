@@ -85,7 +85,8 @@ function badge(s) {
     way("temporary", "Temporary credential", "m-temporary", "circle-alert", "clock"),
     glyph("method m-off", "key-round", "Security key", "Security key: another way to sign in, not in use"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine(), gstackLine(), sealedLines(s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null), s.user, teamPeople(s), s.vaults)]));
+  who.append(methods, labLine(s), ...(onPhone() ? [sealedLines(false, s.user, teamPeople(s), s.vaults)]
+      : [claudeLine(), gstackLine(), sealedLines(s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null), s.user, teamPeople(s), s.vaults)]));
   const out = iconButton("log-out", "Sign out of GitHub", "ghost small", true);
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -369,7 +370,11 @@ function sealedLine(owner, user, people, vault, first, named) {
           // asked again on each click: the key may have been plugged in, unplugged or handed out since
           force = await invoke("sealed_key", { dev });
           const pin = force ? await newPin("", dev) : askingPin() ? await askPin() : "";
-          if (pin !== null) await working(b, TOUCH, () => invoke("sealed_unlock", { path, pin, dev }));
+          if (pin !== null) {
+            await working(b, TOUCH, () => invoke("sealed_unlock", { path, pin, dev }));
+            // a phone: the service whose notification keeps Android from stopping the app while unlocked
+            if (onPhone() && window.aiwalkFiles) window.aiwalkFiles.work("Sealed notes unlocked", await invoke("sealed_keepalive"));
+          }
         } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
       };
       b.onclick = go;
@@ -468,9 +473,12 @@ function welcomeButton(s, path, people, msg) {
   return w;
 }
 
-// Every key on a vault's list as rows: holder, working or waiting, kind, fingerprint and who set it up.
+// Every key on a vault's list as rows: holder, working or waiting, kind, fingerprint and who set it up; first, who
+// sealed the keyring last, marked when that was not through this app.
 function holderRows(h, people) {
   const rows = el("div", "list");
+  if (h.sealed_by) rows.append(h.sealed_in_app ? el("p", "sub", `Keyring last sealed by ${h.sealed_by} in this app.`)
+    : stateText(el("p", "method m-temporary"), "circle-alert", `Keyring last sealed by ${h.sealed_by} outside this app: check that it was meant.`));
   for (const k of h.keys) {
     const who = people.find(p => p.login.toLowerCase() === (k.account || "").toLowerCase());
     const state = k.working ? keyGlyph(who ? who.owner : false) : stateText(el("span", "method m-temporary"), "circle-alert", "Waiting for access");

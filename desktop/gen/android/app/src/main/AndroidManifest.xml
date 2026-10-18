@@ -12,6 +12,8 @@
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
+    <!-- sealed notes: a security key on the USB port (KeyUsb.kt); phones without USB host still install -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
         android:allowBackup="false"

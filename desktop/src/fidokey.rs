@@ -59,6 +59,43 @@ pub fn devices() -> Vec<Dev> {
 }
 
 
+/// Android: the keys on the USB port, as KeyUsb.kt finds them (the HID interface with an interrupt endpoint each way).
+#[cfg(target_os = "android")]
+pub fn devices() -> Vec<Dev> {
+    let json = usb::call(|env, class| {
+        let s = env.call_static_method(class, "devices", "()Ljava/lang/String;", &[])?.l()?;
+        Ok(env.get_string(&s.into())?.into())
+    }).unwrap_or_else(|_: String| "[]".to_string());
+    let list: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap_or_default();
+    list.iter().map(|d| {
+        let name = d["name"].as_str().unwrap_or("Security key").to_string();
+        Dev { id: d["id"].as_str().unwrap_or_default().to_string(), kind: kind_of(&name), name }
+    }).collect()
+}
+
+/// Calls into KeyUsb.kt from any thread: attached to the app's JVM, with the class found through the app's own class
+/// loader (a native thread's FindClass sees only Android's classes).
+#[cfg(target_os = "android")]
+mod usb {
+    use jni::objects::{JClass, JObject, JValue};
+    pub fn call<R>(f: impl FnOnce(&mut jni::JNIEnv, &JClass) -> jni::errors::Result<R>) -> Result<R, String> {
+        let ctx = ndk_context::android_context();
+        // SAFETY: the pointers come from the running app's context, which outlives this call
+        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
+        let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+        let context = unsafe { JObject::from_raw(ctx.context().cast()) };
+        let run = |env: &mut jni::JNIEnv| -> jni::errors::Result<R> {
+            let loader = env.call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+            let name = env.new_string("com.aiwalk.setup.KeyUsb")?;
+            let class: JClass = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&name)])?.l()?.into();
+            f(env, &class)
+        };
+        let r = run(&mut env);
+        if env.exception_check().unwrap_or(false) { let _ = env.exception_clear(); }
+        r.map_err(|e| e.to_string())
+    }
+}
+
 /// The id of the key to talk to: `id` when given, else the only one plugged in.
 #[cfg(not(windows))]
 fn chosen(id: Option<&str>) -> Result<String, String> {
@@ -70,6 +107,38 @@ fn chosen(id: Option<&str>) -> Result<String, String> {
             [one] => Ok(one.id.clone()),
             _ => Err("More than one key is plugged in: choose which one.".into()),
         },
+    }
+}
+
+/// Android: the key through KeyUsb.kt; it asks the person once whether the app may use the key.
+#[cfg(target_os = "android")]
+struct Port(String);
+#[cfg(target_os = "android")]
+impl Port {
+    fn open(id: &str) -> Result<Port, String> {
+        let said: String = usb::call(|env, class| {
+            let i = env.new_string(id)?;
+            let s = env.call_static_method(class, "open", "(Ljava/lang/String;)Ljava/lang/String;", &[(&i).into()])?.l()?;
+            Ok(env.get_string(&s.into())?.into())
+        })?;
+        if said.is_empty() { Ok(Port(id.to_string())) } else { Err(said) }
+    }
+    fn send(&mut self, r: &[u8; 65]) -> std::io::Result<()> {
+        let ok = usb::call(|env, class| {
+            let i = env.new_string(&self.0)?;
+            let b = env.byte_array_from_slice(&r[1..])?;
+            env.call_static_method(class, "send", "(Ljava/lang/String;[B)Z", &[(&i).into(), (&b).into()])?.z()
+        }).map_err(std::io::Error::other)?;
+        if ok { Ok(()) } else { Err(std::io::Error::other("the key took no report")) }
+    }
+    fn recv(&mut self, p: &mut [u8; 64]) -> std::io::Result<()> {
+        let got: Option<Vec<u8>> = usb::call(|env, class| {
+            let i = env.new_string(&self.0)?;
+            let b = env.call_static_method(class, "recv", "(Ljava/lang/String;I)[B", &[(&i).into(), 30_000i32.into()])?.l()?;
+            if b.is_null() { return Ok(None) }
+            Ok(Some(env.convert_byte_array(jni::objects::JByteArray::from(b))?))
+        }).map_err(std::io::Error::other)?;
+        match got { Some(v) if v.len() == 64 => { p.copy_from_slice(&v); Ok(()) } _ => Err(std::io::Error::other("no answer from the key in 30 s")) }
     }
 }
 

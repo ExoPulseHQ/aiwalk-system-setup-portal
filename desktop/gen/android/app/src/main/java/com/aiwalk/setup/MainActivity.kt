@@ -20,6 +20,7 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    KeyUsb.init(this)   // sealed notes: the security key on the USB port
     keep(intent)
   }
 

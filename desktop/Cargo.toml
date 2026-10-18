@@ -52,6 +52,9 @@ portable-pty = "0.9"
 tauri-plugin-opener = "2"
 # a phone has no git program: the vault is downloaded and updated by libgit2 inside the app (phonegit.rs says why this one)
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+# fidokey.rs: the security key on the phone's USB port, through KeyUsb.kt (both already in the tree through tao)
+jni = "0.21"
+ndk-context = "0.1"
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }

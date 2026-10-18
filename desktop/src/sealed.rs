@@ -238,7 +238,11 @@ fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
 pub struct KeyRow { fp: String, account: String, kind: String, working: bool, added_by: Option<String>, by_app: bool }
 
 #[derive(Serialize)]
-pub struct Holders { keys: Vec<KeyRow>, removed: usize, yubikey_only: bool }
+pub struct Holders { keys: Vec<KeyRow>, removed: usize, yubikey_only: bool, sealed_by: Option<String>, sealed_in_app: bool }
+
+/// The app's own commit messages for the keyring: a keyring last sealed with any other message was sealed by hand, which
+/// the organisation's plan cannot forbid (no push rules on private repositories), so the app shows it.
+const SEAL_MSGS: [&str; 2] = ["chore(keyring): seal the vault's group key for its holders", "chore(keyring): start sealed notes"];
 
 /// Every key on the list: whose it is, its kind, whether the keyring is sealed for it (working) or it waits for Give
 /// access, and who added it (from git: the commit that brought its line in) and whether through the app's own setup;
@@ -254,7 +258,10 @@ pub fn sealed_holders(path: String) -> Holders {
         let (by, subject) = first.split_once('\t').map(|(a, b)| (Some(a.to_string()), b.to_string())).unwrap_or((None, String::new()));
         KeyRow { fp: fp.clone(), account: h.account.clone(), kind: h.kind.clone(), working: sealed.contains(fp), added_by: by, by_app: subject == ADD_MSG }
     }).collect();
-    Holders { keys: rows, removed: sealed.iter().filter(|f| !fps.contains(f)).count(), yubikey_only: yubikey_only(vault) }
+    let last = std::process::Command::new("git").arg("-C").arg(vault).args(["log", "-1", "--format=%an%x09%s", "--", KEYRING]).output().ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let (sealed_by, subject) = last.split_once('\t').map(|(a, b)| (Some(a.to_string()), b.to_string())).unwrap_or((None, String::new()));
+    Holders { keys: rows, removed: sealed.iter().filter(|f| !fps.contains(f)).count(), yubikey_only: yubikey_only(vault), sealed_in_app: SEAL_MSGS.contains(&subject.as_str()), sealed_by }
 }
 
 /// Seals the unlocked group key again, for every key in `.keyring.recipients`, after binding each chosen key to its
@@ -367,6 +374,8 @@ pub fn sealed_lock(path: Option<String>) {
         gone
     };
     for u in gone { eprintln!("sealed: locked {} (Lock or quit)", u.root.display()); light(u.dev.as_deref(), 2) }
+    #[cfg(target_os = "android")]
+    keepalive_update();
 }
 
 /// Opens the vault's `.keyring.age` with the plugged-in key: its PIN, then a touch.
@@ -389,8 +398,10 @@ pub fn sealed_unlock(path: String, pin: String, dev: Option<String>) -> Result<(
     }
     let mut open = OPEN.lock().unwrap();
     open.retain(|u| !same(&u.root, &root));
-    open.push(Unlocked { root, key, dev: Some(d.id.clone()) });
+    open.push(Unlocked { root: root.clone(), key, dev: Some(d.id.clone()) });
     drop(open);
+    #[cfg(target_os = "android")]
+    { let _ = std::fs::write(root.join(".sealed-token"), phone_token()); keepalive_update(); }
     eprintln!("sealed: unlocked {path}");
     watch_key();
     Ok(())
@@ -412,7 +423,11 @@ fn watch_key() {
             if !stays { eprintln!("sealed: locked {} (key unplugged)", u.root.display()) }
             stays
         });
-        if open.is_empty() { WATCHING.store(false, std::sync::atomic::Ordering::SeqCst); return }
+        let empty = open.is_empty();
+        drop(open);
+        #[cfg(target_os = "android")]
+        keepalive_update();
+        if empty { WATCHING.store(false, std::sync::atomic::Ordering::SeqCst); return }
     });
 }
 
@@ -493,7 +508,7 @@ fn answer(mut c: impl Read + Write + Send + 'static) {
 /// 127.0.0.1 and a token in this user's own app-data folder; a request without the token is dropped. A second copy of
 /// the app leaves the channel to the first.
 pub fn serve() {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     {
         use std::os::unix::net::{UnixListener, UnixStream};
         let Ok(dir) = crate::sessioncli::os::private_dir("sealed") else { return };
@@ -522,6 +537,96 @@ pub fn serve() {
     }
 }
 
+/// Android: Obsidian cannot start this app's command line, so the app answers it over HTTP on 127.0.0.1 (port 47170):
+/// `GET /open?file=`, `POST /save?file=` (the text as the body), `GET /state?file=`, each with `token=`. The file is
+/// relative to the vault. The token is new each time the app starts and is written, at unlock, to `.sealed-token` at
+/// the vault's root (kept out of git), where the plugin reads it.
+// ponytail: an app with "All files access" could read the token too and ask while unlocked; a pairing step closes that
+#[cfg(target_os = "android")]
+pub const PHONE_PORT: u16 = 47170;
+#[cfg(target_os = "android")]
+static PHONE_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+fn phone_token() -> &'static str {
+    PHONE_TOKEN.get_or_init(|| { let mut b = [0u8; 16]; let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b); hex(&b) })
+}
+
+#[cfg(target_os = "android")]
+pub fn serve_phone() {
+    let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", PHONE_PORT)) else { return };
+    std::thread::spawn(move || for c in listener.incoming().flatten() { std::thread::spawn(move || { let _ = phone_request(c); }); });
+}
+
+#[cfg(target_os = "android")]
+fn phone_request(mut c: std::net::TcpStream) -> std::io::Result<()> {
+    let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let mut buf = Vec::new();
+    let mut b = [0u8; 4096];
+    // the head, then a body as long as Content-Length says
+    let head_end = loop {
+        let n = c.read(&mut b)?;
+        if n == 0 { return Ok(()) }
+        buf.extend_from_slice(&b[..n]);
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") { break i + 4 }
+        if buf.len() > 1 << 16 { return Ok(()) }
+    };
+    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+    let len: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+    while buf.len() < head_end + len { let n = c.read(&mut b)?; if n == 0 { break } buf.extend_from_slice(&b[..n]); }
+    let body = buf[head_end..].to_vec();
+    let target = head.split_whitespace().nth(1).unwrap_or("/");
+    let (route, query) = target.split_once('?').unwrap_or((target, ""));
+    let param = |k: &str| query.split('&').find_map(|p| p.strip_prefix(&format!("{k}="))).map(percent_decode).unwrap_or_default();
+    let (code, out): (u16, Vec<u8>) = if param("token") != phone_token() { (403, b"bad token".to_vec()) } else {
+        let rel = param("file");
+        let file = OPEN.lock().unwrap().iter().map(|u| u.root.join(&rel)).find(|f| f.is_file());
+        match (route, file) {
+            ("/state", f) => (200, if f.is_some() { b"unlocked".to_vec() } else { b"locked".to_vec() }),
+            (_, None) => (423, b"locked".to_vec()),
+            ("/open", Some(f)) => match open(&f) { Ok(t) => (200, t), Err(Reply::Locked) => (423, b"locked".to_vec()), Err(Reply::Error(e)) => (400, e.into_bytes()) },
+            ("/save", Some(f)) => match seal_for_vault(&f, &body).and_then(|sealed| { let tmp = f.with_extension("age.saving"); std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &f)).map_err(|e| e.to_string()) }) {
+                Ok(()) => (200, b"saved".to_vec()), Err(e) => (400, e.into_bytes()),
+            },
+            _ => (404, b"no such request".to_vec()),
+        }
+    };
+    let reason = match code { 200 => "OK", 403 => "Forbidden", 404 => "Not Found", 423 => "Locked", _ => "Bad Request" };
+    c.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len()).as_bytes())?;
+    c.write_all(&out)
+}
+
+#[cfg(target_os = "android")]
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => { out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap_or(b'?')); i += 3 }
+            b'+' => { out.push(b' '); i += 1 }
+            c => { out.push(c); i += 1 }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Android: the file the app's foreground service watches (WorkService.kt): it is there while a vault is unlocked, so
+/// Android does not stop the app and lose the unlocked key; the page starts the service after an unlock.
+#[cfg(target_os = "android")]
+fn keepalive_file() -> PathBuf { crate::home().join("sealed-unlocked.txt") }
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+pub fn sealed_keepalive() -> String { keepalive_file().to_string_lossy().into_owned() }
+
+#[cfg(target_os = "android")]
+fn keepalive_update() {
+    let n = OPEN.lock().unwrap().len();
+    if n == 0 { let _ = std::fs::remove_file(keepalive_file()); }
+    else { let _ = std::fs::write(keepalive_file(), if n == 1 { "Sealed notes unlocked".to_string() } else { format!("Sealed notes unlocked in {n} vaults") }); }
+}
+
 /// Windows: where the running app writes its port and token for the plugin (this user's local app data).
 #[cfg(windows)]
 fn windows_ticket() -> PathBuf {
@@ -530,7 +635,9 @@ fn windows_ticket() -> PathBuf {
 
 /// A connection to the running app, or None when it is not running.
 fn connect() -> Option<Box<dyn ReadWrite>> {
-    #[cfg(unix)]
+    #[cfg(target_os = "android")]
+    { None }
+    #[cfg(all(unix, not(target_os = "android")))]
     { crate::sessioncli::os::private_dir("sealed").ok().and_then(|d| std::os::unix::net::UnixStream::connect(d.join("sealed.sock")).ok()).map(|c| Box::new(c) as Box<dyn ReadWrite>) }
     #[cfg(windows)]
     {
