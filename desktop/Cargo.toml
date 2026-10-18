@@ -34,6 +34,12 @@ aes = "0.9"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 base64 = "0.22"
 age = { version = "0.11", features = ["armor"] }
+# agefido.rs: the FIDO2 key format of age-plugin-fido2-hmac, done in the app (all already in the tree through age)
+age-core = "0.11"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+bech32 = "0.9"
+secrecy = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
 crypto_box = { version = "0.9", default-features = false, features = ["alloc", "salsa20"] }
 fancy-regex = "0.19.2"
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"], optional = true }
@@ -46,9 +52,14 @@ portable-pty = "0.9"
 tauri-plugin-opener = "2"
 # a phone has no git program: the vault is downloaded and updated by libgit2 inside the app (phonegit.rs says why this one)
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+# fidokey.rs: the security key on the phone's USB port, through KeyUsb.kt (both already in the tree through tao)
+jni = "0.21"
+ndk-context = "0.1"
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# fidokey.rs: lists security keys (macOS and Windows) and talks to them (macOS)
+hidapi = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
@@ -59,4 +70,4 @@ secret-service = { version = "5", features = ["rt-tokio-crypto-rust"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading", "Win32_Networking_WindowsWebServices", "Win32_UI_WindowsAndMessaging"] }

@@ -85,7 +85,8 @@ function badge(s) {
     way("temporary", "Temporary credential", "m-temporary", "circle-alert", "clock"),
     glyph("method m-off", "key-round", "Security key", "Security key: another way to sign in, not in use"));
   if (a.protocol) methods.append(el("span", "sub", `git over ${a.protocol.toUpperCase()}`));
-  who.append(methods, labLine(s), ...(onPhone() ? [] : [claudeLine(), gstackLine(), sealedLine(s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null))]));
+  who.append(methods, labLine(s), ...(onPhone() ? [sealedLines(false, s.user, teamPeople(s), s.vaults)]
+      : [claudeLine(), gstackLine(), sealedLines(s.vaults.some(v => v.access && (v.access.people[s.user] || {}).grants === null), s.user, teamPeople(s), s.vaults)]));
   const out = iconButton("log-out", "Sign out of GitHub", "ghost small", true);
   out.onclick = async () => {
     const others = s.accounts.filter(x => !x.active).map(x => x.login);
@@ -307,11 +308,25 @@ function gstackLine() {
   return line;
 }
 
-// Sealed notes (*.age, sealed.rs): shown when a vault on this computer has a keyring, or (to owners) when a new key
-// board is plugged in. Unlock asks the hardware key's PIN once; Obsidian then opens every sealed note until Lock, the
-// key is unplugged, or this app quits. A key still on the PIN it was handed out with asks for the holder's own first.
+// Sealed notes (*.age, sealed.rs): one line per vault on this computer that has a keyring, or (to owners) that could
+// start one; and, to owners, a new key board when one is plugged in. Unlock asks the hardware key's PIN once (Windows
+// asks it in its own window); Obsidian then opens that vault's sealed notes until Lock, the key is unplugged, or this
+// app quits. A board still on the PIN it was handed out with asks for the holder's own first.
 let firstPinAsked = false;
-function sealedLine(owner) {
+function sealedLines(owner, user, people, vaults) {
+  const box = el("div");
+  const copies = Object.entries(local.copies || {}).map(([repo, path]) => ({ path, name: (vaults.find(v => v.repo === repo) || {}).name || repo.split("/").pop() }));
+  copies.forEach((v, i) => box.append(sealedLine(owner, user, people, v, i === 0, copies.length > 1)));
+  return box;
+}
+
+const KIND = { yubikey: "YubiKey", board: "board" };
+const keyKind = k => KIND[k.kind] || "key";
+// Windows asks the PIN itself; elsewhere this app does
+const askingPin = () => OS !== "windows";
+
+function sealedLine(owner, user, people, vault, first, named) {
+  const path = vault.path;
   const line = el("div", "claude-line"), msg = el("span", "sub");
   line.hidden = true;
   // asked of the key once, and again after an action: each question flickers its light
@@ -319,38 +334,96 @@ function sealedLine(owner) {
   const paint = async () => {
     if (busy || !line.isConnected && line.dataset.drawn) return;
     line.dataset.drawn = 1;
-    let path = null, s = null;
-    for (const p of Object.values(local.copies || {})) {
-      const st = await invoke("sealed_state", { path: p }).catch(() => null);
-      if (st && st.keyring) { path = p; s = st; break; }
-    }
-    const board = owner && await invoke("sealed_new_board").catch(() => false);
-    const parts = [lineLabel("Sealed notes", "key-round")];
-    if (s) {
-      if (force === null) force = !s.unlocked && await invoke("sealed_key").catch(() => false);
+    const s = await invoke("sealed_state", { path }).catch(() => null);
+    if (!s) return line.hidden = true;
+    const board = owner && first && !s.yubikey_only && await invoke("sealed_new_board").catch(() => false);
+    const parts = [lineLabel(named ? `Sealed notes, ${vault.name}` : "Sealed notes", "file-lock")];
+    if (s.keyring && (await keyHolders(path)).has(String(user).toLowerCase())) parts.push(keyGlyph(owner));
+    if (s.yubikey_only) parts.push(glyph("tag", "shield", "YubiKeys only", "YubiKeys only: this vault's key is sealed for YubiKeys and opens with one"));
+    if (!s.keyring) {
+      if (!owner) return line.hidden = true;
+      // an owner starts sealed notes in a vault that has none, with their plugged-in key as its first holder
+      const start = el("button", "small ghost", "Start sealed notes");
+      start.onclick = async () => {
+        const only = el("input"); only.type = "checkbox"; only.checked = /corp/i.test(vault.name);
+        const lab = el("label", "sub"); lab.append(only, " Only YubiKeys may hold this vault's key");
+        if (await ask(`Start sealed notes in ${vault.name}?`, "A new group key is made for this vault and sealed for the key you plug in, which becomes its first holder. Others join through Give access.",
+          [["cancel", "Cancel"], ["go", "Start", true]], lab) !== "go") return;
+        const dev = await pickKey("Start with which key?", null);
+        if (dev === undefined) return;
+        const pin = askingPin() ? await askPin() : "";
+        if (pin === null) return;
+        msg.textContent = ""; busy = true;
+        try { toast(await working(start, TOUCH, () => invoke("sealed_create", { path, pin, dev, yubikeysOnly: only.checked }))); } catch (e) { msg.textContent = e; } finally { busy = false; paint(); }
+      };
+      parts.push(start);
+    } else {
+      if (force === null) force = !s.unlocked && await invoke("sealed_key", { dev: null }).catch(() => false);
       const state = s.unlocked ? stateText(el("span", "method m-key"), "lock-open", "Unlocked") : stateText(el("span", "method m-off"), "lock", "Locked");
       const b = el("button", "small", s.unlocked ? "Lock" : force ? "Choose your PIN" : "Unlock");
       const go = async () => {
         msg.textContent = ""; busy = true;
         try {
-          if (s.unlocked) return await invoke("sealed_lock");
+          if (s.unlocked) return await invoke("sealed_lock", { path });
+          const dev = await pickKey("Unlock with which key?", null);
+          if (dev === undefined) return;
           // asked again on each click: the key may have been plugged in, unplugged or handed out since
-          force = await invoke("sealed_key");
-          const pin = await (force ? newPin() : askPin());
-          if (pin) await working(b, "Touch your key", () => invoke("sealed_unlock", { path, pin }));
+          force = await invoke("sealed_key", { dev });
+          const pin = force ? await newPin("", dev) : askingPin() ? await askPin() : "";
+          if (pin !== null) {
+            await working(b, TOUCH, () => invoke("sealed_unlock", { path, pin, dev }));
+            // a phone: the service whose notification keeps Android from stopping the app while unlocked
+            if (onPhone() && window.aiwalkFiles) window.aiwalkFiles.work("Sealed notes unlocked", await invoke("sealed_keepalive"));
+          }
         } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
       };
       b.onclick = go;
-      parts.push(state, b);
+      parts.push(state, b, welcomeButton(s, path, people, msg));
       // keys set up since the keyring was last sealed get access from an unlocked owner
       const h = owner && s.unlocked ? await invoke("sealed_holders", { path }).catch(() => null) : null;
-      if (h && h.waiting) {
+      const waiting = h ? h.keys.filter(k => !k.working) : [];
+      if (h && (waiting.length || h.removed)) {
         const give = el("button", "small", "Give access");
         give.onclick = async () => {
+          // each new key is bound to its holder here, and who added it is said: a key slipped in by hand stands out
+          const box = el("div", "seal-list"), picks = [];
+          for (const k of waiting) {
+            const wrong = h.yubikey_only && k.kind !== "yubikey";
+            const row = el("div", "seal-row" + (k.by_app && !wrong ? "" : " warn")), sel = el("select");
+            sel.append(new Option("Who holds this key?", ""), ...people.map(p => new Option(p.name && p.name !== p.login ? `${p.name} (${p.login})` : p.login, p.login)));
+            sel.value = people.some(p => p.login === k.account) ? k.account : "";
+            sel.disabled = wrong;
+            const said = wrong ? "not a YubiKey, and this vault takes YubiKeys only"
+              : k.added_by ? (k.by_app ? `set up by ${k.added_by} in this app` : `added by hand by ${k.added_by}, not through this app`) : "added on this computer, not shipped yet";
+            row.append(el("span", "sub", `${keyKind(k)} ${k.fp.slice(0, 8)}: ${said}`), sel);
+            box.append(row); picks.push([k, sel]);
+          }
+          if (h.removed) box.append(el("p", "sub", `${h.removed} key${h.removed > 1 ? "s" : ""} taken off the list lose${h.removed > 1 ? "" : "s"} access from now on.`));
+          if (await ask("Give these keys access?", "Choose who holds each key. Each one opens every sealed note once the keyring is sealed for it and shipped, and its holder is recorded with it.",
+            [["cancel", "Cancel"], ["give", "Give access", true]], box) !== "give") return;
+          if (picks.some(([, sel]) => !sel.value)) return msg.textContent = "Choose who holds each key, then give access again.";
           msg.textContent = ""; busy = true;
-          try { toast(await working(give, "Sealing the keyring", () => invoke("sealed_reseal", { path }))); } catch (e) { msg.textContent = e; } finally { busy = false; paint(); }
+          try { toast(await working(give, "Sealing the keyring", () => invoke("sealed_reseal", { path, assign: picks.map(([k, sel]) => [k.fp, sel.value]) }))); } catch (e) { msg.textContent = e; } finally { busy = false; paint(); }
         };
-        parts.push(stateText(el("span", "method m-temporary"), "circle-alert", "New keys waiting for access"), give);
+        parts.push(stateText(el("span", "method m-temporary"), "circle-alert", waiting.length ? `${waiting.length} key${waiting.length > 1 ? "s" : ""} waiting for access` : "Keys taken off the list"), give);
+      }
+      // a key that needs no flashing (a YubiKey): owners add it here, and choose its holder in Give access
+      if (owner) {
+        const add = iconButton("plus", "Add a key I already have", "small ghost", true);
+        add.onclick = async () => {
+          msg.textContent = "";
+          // a key with no PIN yet gets one here: typed twice, so a slip does not lock its holder out
+          const plugged = await invoke("sealed_devices");
+          const dev = await pickKey("Which key do you add?", plugged.unlocked_by);
+          if (dev === undefined) return;
+          let hasPin;
+          try { hasPin = await invoke("sealed_key_has_pin", { dev }); } catch (e) { return msg.textContent = e; }
+          const pin = !askingPin() ? "" : hasPin ? await askKeyPin() : await askNewKeyPin("");
+          if (pin === null) return;
+          busy = true;
+          try { toast(await working(add, TOUCH, () => invoke("sealed_add_key", { path, pin, dev }))); } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
+        };
+        parts.push(add);
       }
       // the first time a handed-out key is seen, ask for the holder's own PIN without waiting for a click
       if (force && !firstPinAsked) { firstPinAsked = true; setTimeout(go, 0); }
@@ -358,23 +431,102 @@ function sealedLine(owner) {
     if (board) {
       const setup = el("button", "small", "Set up the new key");
       setup.onclick = async () => {
-        const who = el("label", "pin-field"), login = el("input");
-        login.autocomplete = "off"; login.spellcheck = false;
-        who.append(el("span", "sub", "GitHub account of the person who gets it"), login);
-        if (await ask("Set up the new key?", "The board plugged in is flashed with the team's key firmware, given the PIN keys are handed out with, and registered for sealed notes: touch it when it blinks. Its holder chooses their own PIN the first time they unlock. Unplug any other security key first.",
-          [["cancel", "Cancel"], ["go", "Set up", true]], who) !== "go" || !login.value.trim()) return;
+        if (await ask("Set up the new key?", "The board plugged in is flashed with the team's key firmware, given the PIN keys are handed out with, and registered for sealed notes: touch it when it blinks. Who holds it is chosen in Give access; its holder picks their own PIN the first time they unlock.",
+          [["cancel", "Cancel"], ["go", "Set up", true]]) !== "go") return;
         msg.textContent = ""; busy = true;
-        try { toast(await working(setup, "Flashing, then touch the key", () => invoke("sealed_setup_board", { path, holder: login.value }))); } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
+        try { toast(await working(setup, "Flashing, then touch the key's BOOT button", () => invoke("sealed_setup_board", { path: s.keyring ? path : null }))); } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
       };
       parts.push(stateText(el("span", "method m-temporary"), "circle-alert", "New key board plugged in"), setup);
     }
-    if (!s && !board) line.hidden = true;
-    else { line.hidden = false; line.replaceChildren(...parts, msg); }
+    line.hidden = false; line.replaceChildren(...parts, msg);
     // follow the app: it locks by itself when the key is unplugged, and an owner sees a new board when it appears
-    if (s && s.unlocked || owner) setTimeout(() => { if (line.isConnected) paint(); }, s && s.unlocked ? 500 : 2000);
+    if (s.unlocked || owner) setTimeout(() => { if (line.isConnected) paint(); }, s.unlocked ? 500 : 2000);
   };
   paint();
   return line;
+}
+
+// The vault's sealed welcome page, always there to try: decrypted here when unlocked (this key and computer read
+// sealed notes) with the group around it, and a plain "no access" when locked, the way a sealed note answers.
+function welcomeButton(s, path, people, msg) {
+  const w = iconButton("mail-open", "Welcome", "small ghost");
+  w.onclick = async () => {
+    if (!s.unlocked) return ask("No access", "This page is sealed. Unlock sealed notes with your key, then open Welcome again.", [["ok", "Close", true]]);
+    let html;
+    try { html = await invoke("sealed_welcome", { path }); } catch (e) { return msg.textContent = e; }
+    if (!html) return msg.textContent = "This vault has no welcome page.";
+    const f = el("iframe", "welcome-frame"); f.setAttribute("sandbox", ""); f.srcdoc = html;
+    const [h, plugged] = await Promise.all([invoke("sealed_holders", { path }).catch(() => null), invoke("sealed_devices").catch(() => null)]);
+    const box = el("div"), facts = el("dl", "welcome-facts");
+    const fact = (k, v) => facts.append(el("dt", null, k), el("dd", null, v));
+    const by = plugged && plugged.keys.find(d => d.id === plugged.unlocked_by);
+    fact("Unlocked with", by ? by.name : "this computer's key");
+    fact("Vault", path);
+    if (h && h.yubikey_only) fact("Keys allowed", "YubiKeys only");
+    if (h) {
+      const working = h.keys.filter(k => k.working), waiting = h.keys.length - working.length;
+      fact("Keys", `${working.length} working${waiting ? `, ${waiting} waiting for access` : ""}`);
+      box.append(f, facts, el("h3", null, "Holders"), holderRows(h, people));
+    } else box.append(f, facts);
+    ask("Sealed notes are unlocked", "Decrypted on this computer with your key:", [["ok", "Close", true]], box);
+  };
+  return w;
+}
+
+// Every key on a vault's list as rows: holder, working or waiting, kind, fingerprint and who set it up; first, who
+// sealed the keyring last, marked when that was not through this app.
+function holderRows(h, people) {
+  const rows = el("div", "list");
+  if (h.sealed_by) rows.append(h.sealed_in_app ? el("p", "sub", `Keyring last sealed by ${h.sealed_by} in this app.`)
+    : stateText(el("p", "method m-temporary"), "circle-alert", `Keyring last sealed by ${h.sealed_by} outside this app: check that it was meant.`));
+  for (const k of h.keys) {
+    const who = people.find(p => p.login.toLowerCase() === (k.account || "").toLowerCase());
+    const state = k.working ? keyGlyph(who ? who.owner : false) : stateText(el("span", "method m-temporary"), "circle-alert", "Waiting for access");
+    const by = k.added_by ? (k.by_app ? `set up by ${k.added_by}` : `added by hand by ${k.added_by}`) : "not shipped yet";
+    const note = el("span", "sub", `${keyKind(k)} ${k.fp.slice(0, 8)}, ${by}`);
+    rows.append(k.account ? personRow(k.account, who ? who.name : "", state, note)
+      : kind(item("Not given to anyone yet", "An owner with a key chooses its holder in Give access", null, state, note), "key-round"));
+  }
+  return rows;
+}
+
+// Where to touch: a YubiKey has no button, only its gold ring; the team's boards use their BOOT button.
+const TOUCH = "Touch the key: a YubiKey's gold ring, a board's BOOT button";
+
+// The accounts holding a working key for sealed notes in the vault at `path` (any vault here when none is given).
+async function keyHolders(path) {
+  for (const p of path ? [path] : Object.values(local.copies || {})) {
+    const h = await invoke("sealed_holders", { path: p }).catch(() => null);
+    if (h && h.keys.length) return new Set(h.keys.filter(k => k.working && k.account).map(k => k.account.toLowerCase()));
+  }
+  return new Set();
+}
+const keyGlyph = owner => owner
+  ? glyph("tag", "key-round", "Owner with key", "Owner with key: holds a key for sealed notes, and can set up new keys and give them access")
+  : glyph("tag", "key-round", "Member with key", "Member with key: holds a key for sealed notes, and can read and write them");
+
+// The organisation's own people (members and owners, not outside interns or guests), for choosing a key's holder.
+function teamPeople(s) {
+  const a = (s.vaults.find(v => v.access) || {}).access;
+  if (!a) return [];
+  return Object.entries(a.people).filter(([, p]) => !p.outside).map(([login, p]) => ({ login, name: p.name || login, owner: p.grants === null }))
+    .sort((x, y) => (y.owner - x.owner) || x.name.localeCompare(y.name));
+}
+
+// Owners' People page: every key for sealed notes, per vault, whose it is and whether it works yet.
+async function keysSection(people, vaults) {
+  const sec = el("div", "section"), head = el("header");
+  head.append(el("h2", null, "Keys for sealed notes"), info("Each holder's key opens every sealed note in that vault. A key works once an owner with a key gives it access; new keys are set up on Team access."));
+  sec.append(head);
+  let any = false;
+  for (const [repo, p] of Object.entries(local.copies || {})) {
+    const h = await invoke("sealed_holders", { path: p }).catch(() => null);
+    if (!h || !h.keys.length) continue;
+    any = true;
+    const name = (vaults.find(v => v.repo === repo) || {}).name || repo;
+    sec.append(el("h3", null, h.yubikey_only ? `${name} (YubiKeys only)` : name), holderRows(h, people));
+  }
+  return any ? sec : el("span");
 }
 
 // A PIN field with its label and a button that shows or hides what was typed.
@@ -396,16 +548,43 @@ async function askPin() {
   return await ask("Unlock sealed notes", "Enter your key's PIN, then touch the key. Sealed notes then open in Obsidian until you lock them or quit this app.",
     [["cancel", "Cancel"], ["unlock", "Unlock", true]], f) === "unlock" && f.value() || null;
 }
+const ADD_KEY_SAYS = "For a key that needs no flashing, such as a YubiKey. Touch it when it blinks; other keys may stay plugged in. Its holder is chosen in Give access.";
+async function askKeyPin() {
+  const f = pinField("The key's PIN");
+  return await ask("Add a key you already have?", ADD_KEY_SAYS, [["cancel", "Cancel"], ["add", "Add key", true]], f) === "add" && f.value() || null;
+}
+async function askNewKeyPin(reason) {
+  const a = pinField("New PIN for this key, at least 4 characters"), again = pinField("New PIN again");
+  const box = el("div", "pin-fields"); box.append(a, again);
+  if (await ask("Add a key you already have?", (reason ? reason + " " : "") + "This key has no PIN yet; the one you type becomes its PIN. " + ADD_KEY_SAYS,
+    [["cancel", "Cancel"], ["add", "Add key", true]], box) !== "add") return null;
+  if (a.value().length < 4) return askNewKeyPin("The PIN needs at least 4 characters.");
+  if (a.value() !== again.value()) return askNewKeyPin("The two PINs were different.");
+  return a.value();
+}
+
+// Which plugged-in key to use: null when there is only one (the app takes it), undefined when cancelled. `not` is the
+// key that unlocked: it is listed last and not chosen first, since adding a key means the other one.
+async function pickKey(title, not) {
+  const { keys } = await invoke("sealed_devices");
+  if (keys.length < 2) return null;
+  const sel = el("select");
+  const label = d => `${d.name}${d.id === not ? " (unlocked the notes)" : ""}`;
+  keys.slice().sort((a, b) => (a.id === not) - (b.id === not)).forEach(d => sel.append(new Option(label(d), d.id)));
+  const box = el("label", "pin-field"); box.append(el("span", "sub", "Keys plugged in"), sel);
+  return await ask(title, "More than one security key is plugged in.", [["cancel", "Cancel"], ["ok", "Use this key", true]], box) === "ok" ? sel.value : undefined;
+}
+
 // A key just handed out carries the shared PIN and refuses to work until it gets one of the holder's own.
-async function newPin(reason = "") {
+async function newPin(reason = "", dev = null) {
   const a = pinField("New PIN, at least 4 characters"), again = pinField("New PIN again");
   const box = el("div", "pin-fields"); box.append(a, again);
   if (await ask("Choose your own PIN", (reason ? reason + " " : "") + "This key still has the PIN it was handed out with. Choose your own; you will use it to unlock sealed notes from now on.",
     [["cancel", "Cancel"], ["set", "Change PIN", true]], box) !== "set") return null;
-  if (a.value().length < 4) return newPin("The new PIN needs at least 4 characters.");
-  if (a.value() !== again.value()) return newPin("The two new PINs were different.");
-  await invoke("sealed_change_pin", { old: null, new: a.value() });
-  toast("PIN changed. Touch your key to unlock.");
+  if (a.value().length < 4) return newPin("The new PIN needs at least 4 characters.", dev);
+  if (a.value() !== again.value()) return newPin("The two new PINs were different.", dev);
+  await invoke("sealed_change_pin", { old: null, new: a.value(), dev });
+  toast(`PIN changed. ${TOUCH} to unlock.`);
   return a.value();
 }
 
@@ -1669,6 +1848,8 @@ async function peopleSection(org, user, teams, tree, hosts = []) {
       act(() => invoke("set_role", { org, login: m.login, owner: toOwner }), () => role.value = m.owner ? "owner" : "member")();
     };
     const right = [role];
+    // an owner whose key the keyring is sealed for can set up keys and give them access (sealed notes)
+    { const k = el("span"); right.unshift(k); keyHolders().then(h => { if (h.has(m.login.toLowerCase())) k.replaceWith(keyGlyph(m.owner)); }); }
     if (m.login !== user) {
       const rm = iconButton("user-minus", `Remove ${m.login} from ${org}`, "small ghost row-act", true);
       rm.onclick = async () => {
@@ -2086,7 +2267,7 @@ async function loadPeople() {
   if (first) page.replaceChildren(...parts, stage("Reading the organisation's people"));
   const people = await peopleSection(org.org, s.user, org.teams.filter(layerTeam), org.tree,
     [...new Set(s.vaults.flatMap(v => (v.access && v.access.machines) || []).filter(m => m.tunnel).map(m => m.host))]);
-  parts.push(requestsSection(org), people, prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
+  parts.push(requestsSection(org), people, await keysSection(teamPeople(s), s.vaults), prSection(org, s.user, s.vaults.flatMap(v => (v.access && v.access.machines) || [])));
   if (current !== "people") return;
   page.replaceChildren(...parts);
   // the page opens with how many people, how many wait for you, and the invitations and interns

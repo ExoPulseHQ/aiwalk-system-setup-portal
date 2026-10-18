@@ -634,3 +634,11 @@ html.phone .sheet-actions > button, html.phone .sync-go > button:not(.ghost) { m
 .pin-field { display: grid; gap: var(--s1); }
 .pin-row { display: flex; gap: var(--s2); align-items: center; }
 .pin-row input { flex: 1; }
+.seal-list { margin: 0 0 var(--s3); display: grid; gap: var(--s3); font-size: var(--fs-s); }
+.seal-row { display: grid; gap: var(--s1); }
+.seal-row.warn > .sub { color: var(--amber-ink); }
+.welcome-frame { display: block; width: 100%; height: 220px; border: 1px solid var(--line); border-radius: var(--r-control); background: #f7f6fa; margin-bottom: var(--s3); }
+.welcome-facts { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); margin: 0 0 var(--s4); font-size: var(--fs-s); }
+.welcome-facts dt { color: var(--muted); }
+.welcome-facts dd { margin: 0; overflow-wrap: anywhere; }
+.welcome-holders { margin-bottom: var(--s3); }
