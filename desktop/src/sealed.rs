@@ -81,12 +81,17 @@ pub fn sealed_new_board() -> bool {
     #[cfg(not(target_os = "linux"))] { false }
 }
 
-/// Flashes the waiting board, waits for it to come back as a key, and hands it out: the shared PIN, and a new PIN
-/// required on first use. The words to show when done.
+const RECIPIENTS: &str = ".keyring.recipients";
+
+/// Flashes the waiting board, waits for it to come back as a key, and hands it out: the shared PIN, a credential for
+/// sealed notes whose public key joins the vault's `.keyring.recipients` under `holder`, and a new PIN required on first
+/// use. The holder can open sealed notes once an unlocked owner gives the waiting keys access (sealed_reseal).
 #[tauri::command(async)]
-pub fn sealed_setup_board() -> Result<String, String> {
+pub fn sealed_setup_board(path: Option<String>, holder: String) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
+        let holder = holder.trim().trim_start_matches('@').to_string();
+        if holder.is_empty() || holder.contains(char::is_whitespace) { return Err("Name the GitHub account this key is for.".into()) }
         let drive = bootsel_drive().ok_or("No board waiting: hold BOOT while plugging it in.")?;
         // the key set up next is whichever key is plugged in, so it must be the only one
         if crate::fidokey::present() { return Err("Unplug any other security key first, so the new one is the only key here.".into()) }
@@ -98,41 +103,140 @@ pub fn sealed_setup_board() -> Result<String, String> {
             std::thread::sleep(std::time::Duration::from_millis(300));
         }
         std::thread::sleep(std::time::Duration::from_millis(800));   // its USB settles before the first request
-        return match crate::fidokey::hand_out(HANDED_OUT_PIN)? {
-            Some(kept) => Ok(format!("Flashed. {kept}")),
-            None => Ok("The key is ready: hand it out. Its holder chooses their own PIN the first time they unlock.".into()),
+        if !crate::fidokey::set_pin_if_none(HANDED_OUT_PIN)? {
+            return Ok("Flashed. This key already had a PIN, which was kept (flashing keeps a key's data); nothing else was changed.".into())
         }
+        let recipient = new_credential(HANDED_OUT_PIN)?;
+        let joined = match path.map(PathBuf::from).filter(|v| v.join(KEYRING).is_file()) {
+            Some(vault) => { add_recipient(&vault, &holder, &recipient)?; true }
+            None => false,
+        };
+        crate::fidokey::force_pin_change(HANDED_OUT_PIN)?;
+        return Ok(if joined { format!("The key for {holder} is ready. Give it access with Give access while unlocked, then ship .keyring.age and .keyring.recipients.") }
+            else { format!("The key for {holder} is ready. No vault here has sealed notes; its public key is {recipient}") })
     }
     #[cfg(not(target_os = "linux"))]
-    Err("Setting up a key works on Linux for now.".into())
+    { let _ = (path, holder); Err("Setting up a key works on Linux for now.".into()) }
+}
+
+/// A credential for sealed notes on the plugged-in key (age-plugin-fido2-hmac -g: the PIN, a touch, PIN required to
+/// decrypt, no separate identity file); its public key (recipient).
+fn new_credential(pin: &str) -> Result<String, String> {
+    let age = age().ok_or("age is not installed on this computer.")?;
+    let plugin = age.with_file_name(if cfg!(windows) { "age-plugin-fido2-hmac.exe" } else { "age-plugin-fido2-hmac" });
+    if !plugin.is_file() { return Err("age-plugin-fido2-hmac is not installed beside age.".into()) }
+    // the two choices are read one key at a time: a newline would answer the next question
+    let (ok, seen, _) = on_pty(&plugin, &["-g".as_ref()], &[("pin", format!("{pin}\r").as_bytes()), ("require a pin", b"1"), ("separate identity", b"2")])?;
+    let r = seen.split_whitespace().find(|w| w.starts_with("age1fido2-hmac1")).map(String::from);
+    match r { Some(r) if ok => Ok(r), _ => Err("The key did not make a credential (was it touched?).".into()) }
+}
+
+/// Adds `recipient` under `# holder` to the vault's `.keyring.recipients`, the list `.keyring.age` is sealed for.
+fn add_recipient(vault: &Path, holder: &str, recipient: &str) -> Result<(), String> {
+    let p = vault.join(RECIPIENTS);
+    let mut text = std::fs::read_to_string(&p).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') { text.push('\n') }
+    text.push_str(&format!("# {holder}\n{recipient}\n"));
+    std::fs::write(&p, text).map_err(|e| e.to_string())
+}
+
+/// The holders' public keys in `.keyring.recipients`, and whether `.keyring.age` is sealed for exactly that list (the
+/// last line `# sealed for: <sha256>` says which list it was sealed for).
+fn recipients(vault: &Path) -> (Vec<String>, bool) {
+    use ring::digest;
+    let text = std::fs::read_to_string(vault.join(RECIPIENTS)).unwrap_or_default();
+    let keys: Vec<String> = text.lines().map(str::trim).filter(|l| l.starts_with("age1")).map(String::from).collect();
+    let hash = hex(digest::digest(&digest::SHA256, keys.join("\n").as_bytes()).as_ref());
+    let sealed = text.lines().rev().find_map(|l| l.strip_prefix("# sealed for: ")).is_some_and(|h| h.trim() == hash);
+    (keys, sealed)
+}
+
+fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
+
+#[derive(Serialize)]
+pub struct Holders { keys: usize, waiting: bool }
+
+#[tauri::command]
+pub fn sealed_holders(path: String) -> Holders {
+    let (keys, sealed) = recipients(Path::new(&path));
+    Holders { keys: keys.len(), waiting: !keys.is_empty() && !sealed }
+}
+
+/// Seals the unlocked group key again, for every key in `.keyring.recipients`: keys set up since get access, keys
+/// taken off the list lose it for the keyring from now on (not for copies they already have; see the summary).
+#[tauri::command(async)]
+pub fn sealed_reseal(path: String) -> Result<String, String> {
+    let vault = PathBuf::from(&path);
+    let (keys, _) = recipients(&vault);
+    if keys.is_empty() { return Err("No keys in .keyring.recipients.".into()) }
+    let guard = KEY.lock().unwrap();
+    let Some((root, key)) = guard.as_ref().filter(|(r, _)| same(r, &vault)) else { return Err("Unlock sealed notes first.".into()) };
+    let age = age().ok_or("age is not installed on this computer.")?;
+    let tmp = root.join(".keyring.age.saving");
+    let mut p = std::process::Command::new(&age).arg("-a").args(keys.iter().flat_map(|k| ["-r", k.as_str()])).arg("-o").arg(&tmp).env("PATH", path_with(&age))
+        .stdin(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("Could not start age: {e}"))?;
+    let _ = p.stdin.take().unwrap().write_all(format!("{key}\n").as_bytes());
+    drop(guard);
+    let out = p.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() { let _ = std::fs::remove_file(&tmp); return Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+    std::fs::rename(&tmp, vault.join(KEYRING)).map_err(|e| e.to_string())?;
+    // record which list it is sealed for, replacing the previous record
+    let p = vault.join(RECIPIENTS);
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut lines: Vec<&str> = text.lines().filter(|l| !l.starts_with("# sealed for: ")).collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) { lines.pop(); }
+    let hash = hex(ring::digest::digest(&ring::digest::SHA256, keys.join("\n").as_bytes()).as_ref());
+    std::fs::write(&p, format!("{}\n# sealed for: {hash}\n", lines.join("\n"))).map_err(|e| e.to_string())?;
+    Ok(format!("The keyring is sealed for {} key{}. Ship .keyring.age and .keyring.recipients so the others get it.", keys.len(), if keys.len() == 1 { "" } else { "s" }))
 }
 
 /// Forgets the group key; the key's light goes back to the locked colour. Also run when the app quits.
 #[tauri::command(async)]
-pub fn sealed_lock() { if KEY.lock().unwrap().take().is_some() { light(2) } }
+pub fn sealed_lock() { if KEY.lock().unwrap().take().is_some() { eprintln!("sealed: locked (Lock or quit)"); light(2) } }
 
 /// Opens the vault's `.keyring.age` with the plugged-in key: the PIN goes in on a pseudo-terminal (age reads it from
 /// nowhere else), then the person touches the key.
 #[tauri::command(async)]
 pub fn sealed_unlock(path: String, pin: String) -> Result<(), String> {
-    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     let root = PathBuf::from(&path);
     let keyring = root.join(KEYRING);
     if !keyring.is_file() { return Err("This vault has no sealed notes.".into()) }
+    // age's plugin waits quietly for a key that is not there; say so at once instead
+    #[cfg(target_os = "linux")]
+    if !crate::fidokey::present() { return Err("Plug in your key, then unlock.".into()) }
     let age = age().ok_or("age is not installed on this computer.")?;
-    let pair = native_pty_system().openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
-    let mut c = CommandBuilder::new(&age);
-    c.args(["-d", "-j", "fido2-hmac"]);
-    c.arg(&keyring);
-    c.env("PATH", path_with(&age));
-    let mut child = pair.slave.spawn_command(c).map_err(|e| format!("Could not start age: {e}"))?;
+    let run = on_pty(&age, &["-d".as_ref(), "-j".as_ref(), "fido2-hmac".as_ref(), keyring.as_os_str()], &[("pin", format!("{pin}\r").as_bytes())]);
+    let (ok, mut seen, answered) = match run { Ok(r) => r, Err(why) => { eprintln!("sealed: unlock stopped: {why}"); light(0); return Err(why.into()) } };
+    eprintln!("sealed: unlock exit ok={ok} answered={answered} key lines={}", identities(&seen).lines().count());
+    let key = identities(&seen);
+    seen.clear();
+    light((ok && !key.is_empty()) as u8);
+    if !ok || key.is_empty() {
+        return Err(if answered == 0 { "The key did not ask for a PIN; this vault's keyring may not be for this key." }
+            else { "The key refused: a wrong PIN, or this key is not one of the vault's holders." }.into())
+    }
+    *KEY.lock().unwrap() = Some((root, key));
+    eprintln!("sealed: unlocked {path}");
+    watch_key();
+    Ok(())
+}
+
+/// Runs `program` on a pseudo-terminal (age and its fido2 plugin read PINs and choices from nowhere else) and answers
+/// its prompts in order: each (words, reply) is sent once the words appear after the previous answer. Gives up when
+/// the key is not plugged in or after a minute. (exit success, everything the terminal showed, answers sent).
+fn on_pty(program: &Path, args: &[&std::ffi::OsStr], answers: &[(&str, &[u8])]) -> Result<(bool, String, usize), &'static str> {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    let pair = native_pty_system().openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 }).map_err(|_| "This computer gave no pseudo-terminal.")?;
+    let mut c = CommandBuilder::new(program);
+    c.args(args);
+    c.env("PATH", path_with(program));
+    let mut child = pair.slave.spawn_command(c).map_err(|_| "Could not start age.")?;
     drop(pair.slave);
-    let (mut from, mut to) = (pair.master.try_clone_reader().map_err(|e| e.to_string())?, pair.master.take_writer().map_err(|e| e.to_string())?);
+    let (mut from, mut to) = (pair.master.try_clone_reader().map_err(|_| "The terminal could not be read.")?, pair.master.take_writer().map_err(|_| "The terminal could not be written.")?);
     let mut killer = child.clone_killer();
-    // the terminal's text arrives on a thread; this one answers the PIN prompt and gives up after a minute
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || { let mut b = [0u8; 4096]; while let Ok(n) = from.read(&mut b) { if n == 0 || tx.send(b[..n].to_vec()).is_err() { break } } });
-    let (mut seen, mut sent) = (String::new(), false);
+    let (mut seen, mut next, mut from_at) = (String::new(), 0usize, 0usize);
     let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let why = loop {
         match rx.recv_timeout(std::time::Duration::from_millis(200)) {
@@ -140,24 +244,16 @@ pub fn sealed_unlock(path: String, pin: String) -> Result<(), String> {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
             Err(_) => {}
         }
-        let low = seen.to_lowercase();
-        if low.contains("insert your token") { break Some("Plug in your key, then unlock again.") }
-        if !sent && low.contains("pin") { let _ = to.write_all(format!("{pin}\r").as_bytes()); sent = true; }
+        let low = seen[from_at..].to_lowercase();
+        if low.contains("insert your token") { break Some("Plug in the key, then try again.") }
+        if let Some((words, reply)) = answers.get(next) {
+            if low.contains(words) { let _ = to.write_all(reply).and_then(|_| to.flush()); next += 1; from_at = seen.len(); }
+        }
         if std::time::Instant::now() > end { break Some("The key was not touched in time.") }
         if let Ok(Some(_)) = child.try_wait() { while let Ok(b) = rx.recv_timeout(std::time::Duration::from_millis(300)) { seen.push_str(&String::from_utf8_lossy(&b)) } break None }
     };
-    if let Some(why) = why { let _ = killer.kill(); let _ = child.wait(); light(0); return Err(why.into()) }
-    let ok = child.wait().map(|s| s.success()).unwrap_or(false);
-    let key = identities(&seen);
-    seen.clear();
-    light((ok && !key.is_empty()) as u8);
-    if !ok || key.is_empty() {
-        return Err(if !sent { "The key did not ask for a PIN; this vault's keyring may not be for this key." }
-            else { "The key refused: a wrong PIN, or this key is not one of the vault's holders." }.into())
-    }
-    *KEY.lock().unwrap() = Some((root, key));
-    watch_key();
-    Ok(())
+    if let Some(why) = why { let _ = killer.kill(); let _ = child.wait(); return Err(why) }
+    Ok((child.wait().map(|s| s.success()).unwrap_or(false), seen, next))
 }
 
 fn light(state: u8) {
@@ -175,7 +271,7 @@ fn watch_key() {
         std::thread::sleep(std::time::Duration::from_millis(200));
         let mut k = KEY.lock().unwrap();
         if k.is_none() { return }
-        if !crate::fidokey::present() { *k = None; return }
+        if !crate::fidokey::present() { *k = None; eprintln!("sealed: locked (key unplugged)"); return }
     });
 }
 
@@ -191,7 +287,7 @@ fn same(a: &Path, b: &Path) -> bool {
 /// The note's text, when `file` is a sealed file of the unlocked vault.
 fn open(file: &Path) -> Result<Vec<u8>, Reply> {
     let guard = KEY.lock().unwrap();
-    let Some((root, key)) = guard.as_ref() else { return Err(Reply::Locked) };
+    let Some((root, key)) = guard.as_ref() else { eprintln!("sealed: open {} while locked", file.display()); return Err(Reply::Locked) };
     let (Ok(f), Ok(r)) = (file.canonicalize(), root.canonicalize()) else { return Err(Reply::Error("No such file.".into())) };
     if !f.starts_with(&r) || f.extension().is_none_or(|e| e != "age") || f.file_name().is_some_and(|n| n == KEYRING) {
         return Err(Reply::Error("Only sealed notes of the unlocked vault are opened.".into()))
@@ -273,6 +369,22 @@ pub fn cli(args: &[String]) -> i32 {
     }
     // `sealed save <file>`: the note's new text on stdin, sealed again for the vault's group key. Sealing needs only the
     // public key (.keyring.pub), so it works locked too; the text never touches the disk unsealed.
+    // `sealed seal <file>`: stdin sealed for the vault's group key, on stdout, for a note not written yet (the plugin
+    // creates the file with this text, so a new sealed note is never plain on disk)
+    if let (Some("seal"), Some(file)) = (args.first().map(String::as_str), args.get(1)) {
+        let run = || -> Result<Vec<u8>, String> {
+            let abs = std::path::absolute(file).map_err(|e| e.to_string())?;
+            let pubkey = abs.ancestors().skip(1).map(|d| d.join(".keyring.pub")).find(|p| p.is_file()).ok_or("No .keyring.pub above this note: the vault has no group key.")?;
+            let age = age().ok_or("age is not installed on this computer.")?;
+            let mut p = std::process::Command::new(&age).args(["-a", "-R"]).arg(&pubkey).env("PATH", path_with(&age))
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("Could not start age: {e}"))?;
+            std::io::copy(&mut std::io::stdin(), p.stdin.as_mut().unwrap()).map_err(|e| e.to_string())?;
+            drop(p.stdin.take());
+            let out = p.wait_with_output().map_err(|e| e.to_string())?;
+            if out.status.success() { Ok(out.stdout) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+        };
+        return match run() { Ok(text) => { let _ = std::io::stdout().write_all(&text); 0 } Err(e) => { eprintln!("{e}"); 1 } }
+    }
     if let (Some("save"), Some(file)) = (args.first().map(String::as_str), args.get(1)) {
         return match save(Path::new(file)) { Ok(()) => 0, Err(e) => { eprintln!("{e}"); 1 } }
     }
@@ -283,7 +395,7 @@ pub fn cli(args: &[String]) -> i32 {
         if let Ok(mut c) = sock.and_then(std::os::unix::net::UnixStream::connect) { let _ = c.write_all(b"WAIT\n"); let _ = c.read(&mut [0u8; 1]); }
         return 0;
     }
-    let (Some("open"), Some(file)) = (args.first().map(String::as_str), args.get(1)) else { eprintln!("usage: aiwalk-setup sealed open <file> | save <file> | wait | key | change-pin"); return 2 };
+    let (Some("open"), Some(file)) = (args.first().map(String::as_str), args.get(1)) else { eprintln!("usage: aiwalk-setup sealed open <file> | save <file> | seal <file> | wait | key | change-pin"); return 2 };
     #[cfg(unix)]
     {
         let locked = "Sealed notes are locked: unlock them on Team access in aIwalk System Setup.";

@@ -334,22 +334,37 @@ function sealedLine(owner) {
         msg.textContent = ""; busy = true;
         try {
           if (s.unlocked) return await invoke("sealed_lock");
+          // asked again on each click: the key may have been plugged in, unplugged or handed out since
+          force = await invoke("sealed_key");
           const pin = await (force ? newPin() : askPin());
           if (pin) await working(b, "Touch your key", () => invoke("sealed_unlock", { path, pin }));
         } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
       };
       b.onclick = go;
       parts.push(state, b);
+      // keys set up since the keyring was last sealed get access from an unlocked owner
+      const h = owner && s.unlocked ? await invoke("sealed_holders", { path }).catch(() => null) : null;
+      if (h && h.waiting) {
+        const give = el("button", "small", "Give access");
+        give.onclick = async () => {
+          msg.textContent = ""; busy = true;
+          try { toast(await working(give, "Sealing the keyring", () => invoke("sealed_reseal", { path }))); } catch (e) { msg.textContent = e; } finally { busy = false; paint(); }
+        };
+        parts.push(stateText(el("span", "method m-temporary"), "circle-alert", "New keys waiting for access"), give);
+      }
       // the first time a handed-out key is seen, ask for the holder's own PIN without waiting for a click
       if (force && !firstPinAsked) { firstPinAsked = true; setTimeout(go, 0); }
     }
     if (board) {
       const setup = el("button", "small", "Set up the new key");
       setup.onclick = async () => {
-        if (await ask("Set up the new key?", "The board plugged in is flashed with the team's key firmware and given the PIN keys are handed out with. Its holder chooses their own PIN the first time they unlock. Unplug any other security key first.",
-          [["cancel", "Cancel"], ["go", "Set up", true]]) !== "go") return;
+        const who = el("label", "pin-field"), login = el("input");
+        login.autocomplete = "off"; login.spellcheck = false;
+        who.append(el("span", "sub", "GitHub account of the person who gets it"), login);
+        if (await ask("Set up the new key?", "The board plugged in is flashed with the team's key firmware, given the PIN keys are handed out with, and registered for sealed notes: touch it when it blinks. Its holder chooses their own PIN the first time they unlock. Unplug any other security key first.",
+          [["cancel", "Cancel"], ["go", "Set up", true]], who) !== "go" || !login.value.trim()) return;
         msg.textContent = ""; busy = true;
-        try { toast(await working(setup, "Flashing, about 20 s", () => invoke("sealed_setup_board"))); } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
+        try { toast(await working(setup, "Flashing, then touch the key", () => invoke("sealed_setup_board", { path, holder: login.value }))); } catch (e) { msg.textContent = e; } finally { busy = false; force = null; paint(); }
       };
       parts.push(stateText(el("span", "method m-temporary"), "circle-alert", "New key board plugged in"), setup);
     }
