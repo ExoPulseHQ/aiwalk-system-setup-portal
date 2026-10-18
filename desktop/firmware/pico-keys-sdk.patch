@@ -1,16 +1,21 @@
 diff --git a/src/led/led.c b/src/led/led.c
-index 145cafb..7d3cdf4 100644
+index 145cafb..72078bf 100644
 --- a/src/led/led.c
 +++ b/src/led/led.c
-@@ -34,8 +34,23 @@ static volatile uint8_t blink_color = LED_COLOR_GREEN;
+@@ -34,8 +34,28 @@ static volatile uint8_t blink_color = LED_COLOR_GREEN;
  static volatile uint32_t blink_on_ms = 0;
  static volatile uint32_t blink_off_ms = 0;
  
 +/* the colour of the idle (mounted) breathing: white while sealed notes are locked, green once the host unlocked them */
 +static uint8_t idle_color = LED_COLOR_WHITE;
 +
++/* idle means mounted, or the smartcard interface powered off (MODE_SUSPENDED, blue): the computer's card service does
++   that after every look, which turned the light blue over the lock state; both show the lock state instead */
 +static uint32_t with_idle_color(uint32_t mode) {
-+    return mode == MODE_MOUNTED ? (mode & ~LED_COLOR_MASK) | ((uint32_t)idle_color << LED_COLOR_SHIFT) : mode;
++    if (mode != MODE_MOUNTED && mode != MODE_SUSPENDED) {
++        return mode;
++    }
++    return ((uint32_t)MODE_MOUNTED & ~LED_COLOR_MASK) | ((uint32_t)idle_color << LED_COLOR_SHIFT);
 +}
 +
  void led_set_mode(uint32_t mode) {
@@ -49,10 +54,20 @@ index 220ebd5..d54a440 100644
  extern void led_blink_n_times(uint8_t count, uint8_t color, uint32_t on_ms, uint32_t off_ms);
  extern void led_blinking_task(void);
 diff --git a/src/led/led_ws2812.c b/src/led/led_ws2812.c
-index edb4b49..63475e7 100644
+index edb4b49..ff45f9b 100644
 --- a/src/led/led_ws2812.c
 +++ b/src/led/led_ws2812.c
-@@ -128,13 +128,15 @@ static inline void ws2812_put_pixel(uint32_t u32_pixel) {
+@@ -106,7 +106,8 @@ static inline uint32_t urgb_ordered_u32(uint8_t first, uint8_t second, uint8_t t
+ }
+ 
+ static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
+-    uint8_t order = phy_data.led_order_present ? phy_data.led_order : PHY_LED_ORDER_GRB;
++    /* the Waveshare RP2350-Zero's LED takes red first (RGB): with the usual GRB, green showed red and red green */
++    uint8_t order = phy_data.led_order_present ? phy_data.led_order : PHY_LED_ORDER_RGB;
+     switch (order) {
+         case PHY_LED_ORDER_RBG:
+             return urgb_ordered_u32(r, b, g);
+@@ -128,13 +129,15 @@ static inline void ws2812_put_pixel(uint32_t u32_pixel) {
      pio_sm_put_blocking(pio0, 0, u32_pixel << 8u);
  }
  

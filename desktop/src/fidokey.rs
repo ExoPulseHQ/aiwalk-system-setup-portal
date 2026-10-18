@@ -132,23 +132,28 @@ fn agree(h: &mut Hid) -> Result<([u8; 32], Vec<u8>), Option<String>> {
     Ok((shared, platform_key))
 }
 
-/// Sets up a key that has just been flashed: the PIN it is handed out with (when it has none yet), and
-/// forcePINChange, so its holder must choose their own PIN before anything else. Some(message) when the key already
-/// had a PIN (flashing keeps the key's data), which is kept.
-pub fn hand_out(pin: &str) -> Result<Option<String>, String> {
-    use ring::{digest, hmac};
+/// Gives a key that has just been flashed the PIN it is handed out with; false when it already had a PIN (flashing
+/// keeps a key's data), which is then kept.
+pub fn set_pin_if_none(pin: &str) -> Result<bool, String> {
+    use ring::hmac;
     let mut h = Hid::open()?;
     let info = h.ctap(0x04, None).map_err(refused)?;
     let has_pin = matches!(info.get(4).and_then(|o| { let Value::Map(m) = o else { return None }; m.iter().find(|(k, _)| *k == Value::Text("clientPin".into())).map(|(_, v)| v) }), Some(Value::Bool(true)));
-    if has_pin { return Ok(Some("This key already had a PIN, which was kept: flashing keeps a key's data. Reset the key to start it over.".into())) }
-    // setPIN
+    if has_pin { return Ok(false) }
     let (shared, platform_key) = agree(&mut h).map_err(|e| e.unwrap_or_else(|| "The key agreement failed.".into()))?;
     let mut padded = pin.as_bytes().to_vec();
     padded.resize(64, 0);
     let pin_enc = aes256_cbc_zero_iv(&shared, &padded);
     let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &shared), &pin_enc);
     h.ctap(0x06, Some(&enc_map(&[(1, Cb::U(1)), (2, Cb::U(3)), (3, Cb::Raw(&platform_key)), (4, Cb::B(&tag.as_ref()[..16])), (5, Cb::B(&pin_enc))]))).map_err(refused)?;
-    // a token for authenticatorConfig (permission acfg, 0x20), then setMinPINLength with forceChangePin
+    Ok(true)
+}
+
+/// forcePINChange: the key refuses to work until its holder chose their own PIN. A token with the acfg permission
+/// (0x20), then authenticatorConfig setMinPINLength with forceChangePin.
+pub fn force_pin_change(pin: &str) -> Result<(), String> {
+    use ring::{digest, hmac};
+    let mut h = Hid::open()?;
     let (shared, platform_key) = agree(&mut h).map_err(|e| e.unwrap_or_else(|| "The key agreement failed.".into()))?;
     let hash = digest::digest(&digest::SHA256, pin.as_bytes());
     let hash_enc = aes256_cbc_zero_iv(&shared, &hash.as_ref()[..16]);
@@ -161,7 +166,7 @@ pub fn hand_out(pin: &str) -> Result<Option<String>, String> {
     msg.extend_from_slice(&params);
     let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &token), &msg);
     h.ctap(0x0D, Some(&enc_map(&[(1, Cb::U(3)), (2, Cb::Raw(&params)), (3, Cb::U(1)), (4, Cb::B(&tag.as_ref()[..16]))]))).map_err(refused)?;
-    Ok(None)
+    Ok(())
 }
 
 fn aes256_cbc_zero_iv_decrypt(key: &[u8; 32], data: &[u8]) -> Vec<u8> {

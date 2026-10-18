@@ -14,8 +14,10 @@ folder is where the source of the firmware we hand out lives.
 
 What the patch changes, all in the light:
 
+- Colour order RGB by default: this board's LED takes red first, and the usual GRB swapped red and green.
 - The idle light breathes instead of blinking, at 12% of full brightness (`LED_WS2812_PEAK`), white while sealed notes
-  are locked and green once they are unlocked.
+  are locked and green once they are unlocked. The smartcard interface's "card off" state (blue upstream, set after
+  every look by the computer's card service) shows the same lock colour.
 - Vendor command `CTAPHID 0xF0` (0x70 with the init bit), one byte from the computer: 1 unlocked (green 3 s, then
   green breathing), 0 an unlock failed (red blinks), 2 locked (red blinks, then white breathing). It only changes the
   light: any program on the computer can send it, so it proves nothing.
