@@ -39,6 +39,11 @@ mod sealed;
 #[cfg(not(target_os = "android"))]
 mod fidokey;
 #[cfg(not(target_os = "android"))]
+mod agefido;
+// Windows: security keys only through webauthn.dll
+#[cfg(windows)]
+mod winauthn;
+#[cfg(not(target_os = "android"))]
 mod vault;
 #[cfg(not(target_os = "android"))]
 mod vaultcli;
@@ -560,7 +565,7 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
-                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, sealed::sealed_new_board, sealed::sealed_setup_board, sealed::sealed_holders, sealed::sealed_reseal, set_team, request_access, approve_request, decline_request,
+                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, sealed::sealed_new_board, sealed::sealed_setup_board, sealed::sealed_holders, sealed::sealed_reseal, sealed::sealed_add_key, sealed::sealed_key_has_pin, sealed::sealed_devices, sealed::sealed_welcome, sealed::sealed_create, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, vm::vm_state, vm::vm_action]
 }
 /// Android: sign-in, the machines, the owners' tools and the vault's download and Get latest (phonegit.rs, git inside
@@ -588,7 +593,7 @@ pub fn run() {
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
-                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, sealed::sealed_new_board, sealed::sealed_setup_board, sealed::sealed_holders, sealed::sealed_reseal, set_team, request_access, approve_request, decline_request]
+                             vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, sealed::sealed_new_board, sealed::sealed_setup_board, sealed::sealed_holders, sealed::sealed_reseal, sealed::sealed_add_key, sealed::sealed_key_has_pin, sealed::sealed_devices, sealed::sealed_welcome, sealed::sealed_create, set_team, request_access, approve_request, decline_request]
 }
 
 /// Windows: the release build is a GUI program, so a console it is started from is not given to it. A command-line
@@ -815,7 +820,6 @@ fn main() {
         std::process::exit(2);
     }
     std::thread::spawn(login::repair_git);
-    #[cfg(unix)]
     sealed::serve();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -823,5 +827,5 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while starting aIwalk System Setup")
         // desktop forwards are ssh processes; none outlives the app
-        .run(|_, event| if let tauri::RunEvent::Exit = event { machines::close_all(); sealed::sealed_lock() });
+        .run(|_, event| if let tauri::RunEvent::Exit = event { machines::close_all(); sealed::sealed_lock(None) });
 }
