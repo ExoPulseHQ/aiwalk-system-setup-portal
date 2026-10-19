@@ -141,6 +141,18 @@ impl Port {
         match got { Some(v) if v.len() == 64 => { p.copy_from_slice(&v); Ok(()) } _ => Err(std::io::Error::other("no answer from the key in 30 s")) }
     }
 }
+/// Each operation opens the key and lets it go at the end. Android names a key by its port, so a key unplugged and
+/// plugged back (or another key in the same port) has the same name; a connection kept between operations would be
+/// to the device that is gone, and the key would never answer.
+#[cfg(target_os = "android")]
+impl Drop for Port {
+    fn drop(&mut self) {
+        let _ = usb::call(|env, class| {
+            let i = env.new_string(&self.0)?;
+            env.call_static_method(class, "close", "(Ljava/lang/String;)V", &[(&i).into()]).map(|_| ())
+        });
+    }
+}
 
 /// The open device: 65-byte reports out (report id 0 first), 64-byte reports in.
 #[cfg(target_os = "linux")]

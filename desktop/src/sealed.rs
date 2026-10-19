@@ -388,7 +388,9 @@ pub fn sealed_unlock(path: String, pin: String, dev: Option<String>) -> Result<(
     if yubikey_only(&root) && d.kind != "yubikey" && d.kind != "any" { return Err("This vault opens with a YubiKey only.".into()) }
     // the keyring opened in the app: the key is asked for the secret of each holder's stanza until one is its own
     let id = crate::agefido::Identity { dev: Some(&d.id), pin: &pin, why: Default::default() };
-    let opened = std::fs::read(&keyring).map_err(|e| e.to_string()).and_then(|f| crate::agefido::decrypt(&id, &f));
+    // a keyring that cannot be read is not a wrong key: say so (on Android, the app without All files access)
+    let file = std::fs::read(&keyring).map_err(|e| format!("Could not read {KEYRING}: {e}. On Android, give aIwalk System Setup access to all files."))?;
+    let opened = crate::agefido::decrypt(&id, &file);
     let key = opened.as_deref().map(|t| identities(&String::from_utf8_lossy(t))).unwrap_or_default();
     light(Some(&d.id), (!key.is_empty()) as u8);
     if key.is_empty() {
