@@ -21,7 +21,7 @@ import org.json.JSONObject
  */
 object KeyUsb {
   private var app: Context? = null
-  private class Open(val conn: UsbDeviceConnection, val iface: UsbInterface, val out: UsbEndpoint, val inp: UsbEndpoint)
+  private class Open(val conn: UsbDeviceConnection, val iface: UsbInterface, val out: UsbEndpoint, val inp: UsbEndpoint, val plugged: Int)
   private val open = HashMap<String, Open>()
 
   @JvmStatic fun init(context: Context) { app = context.applicationContext }
@@ -55,9 +55,11 @@ object KeyUsb {
 
   /** Opens the key for this app: "" when ready, or what stops it (Android asks permission once; then try again). */
   @JvmStatic fun open(id: String): String {
-    if (open.containsKey(id)) return ""
     val m = manager() ?: return "No USB on this phone."
     val d = m.deviceList[id] ?: return "That key is not plugged in any more."
+    // a key unplugged and plugged back gets the same name but a new deviceId; the old connection then answers nothing
+    if (open[id]?.plugged == d.deviceId) return ""
+    close(id)
     val (iface, out, inp) = fido(d) ?: return "That device is not a security key."
     if (!m.hasPermission(d)) {
       val flags = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
@@ -66,7 +68,7 @@ object KeyUsb {
     }
     val conn = m.openDevice(d) ?: return "Android would not open the key."
     if (!conn.claimInterface(iface, true)) { conn.close(); return "Another app is using the key." }
-    open[id] = Open(conn, iface, out, inp)
+    open[id] = Open(conn, iface, out, inp, d.deviceId)
     return ""
   }
 
