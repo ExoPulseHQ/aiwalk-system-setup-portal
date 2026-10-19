@@ -35,6 +35,7 @@ mod ptycli;
 mod sessioncli;
 // sealed notes: the vault's *.age files, unlocked once with a hardware key
 mod sealed;
+mod phonehttp;
 mod fidokey;
 mod agefido;
 // Windows: security keys only through webauthn.dll

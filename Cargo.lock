@@ -82,6 +82,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "aiwalk-sealed-vm"
+version = "0.3.32"
+dependencies = [
+ "aes",
+ "age",
+ "age-core",
+ "base64 0.22.1",
+ "bech32",
+ "rand_core 0.6.4",
+ "ring",
+ "secrecy",
+ "serde",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "aiwalk-setup"
 version = "0.3.31"
 dependencies = [

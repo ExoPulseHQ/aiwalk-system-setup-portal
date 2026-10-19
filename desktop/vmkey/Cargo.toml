@@ -1,0 +1,21 @@
+# aiwalk-sealed-vm: sealed notes on a phone when Android's Linux Terminal holds the key (src/main.rs says why).
+# It shares fidokey.rs, agefido.rs and phonehttp.rs with the app and leaves tauri out, so it builds for the Terminal's
+# Debian (aarch64 Linux) with a plain cross compiler.
+[package]
+name = "aiwalk-sealed-vm"
+version = "0.3.32"
+edition = "2021"
+publish = false
+
+[dependencies]
+ring = "0.17"
+aes = "0.9"
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+age = { version = "0.11", features = ["armor"] }
+age-core = "0.11"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+bech32 = "0.9"
+secrecy = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
