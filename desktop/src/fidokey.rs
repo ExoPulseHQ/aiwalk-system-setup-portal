@@ -254,6 +254,7 @@ pub fn change_pin(id: Option<&str>, old: &str, new: &str) -> Result<(), String> 
 
 fn refused(s: u8) -> String {
     match s {
+        0x27 | 0x2F | 0x3A => "The key was not touched in time.".into(),
         0x31 => "The current PIN is wrong.".into(),
         0x32 | 0x34 => "The key is locked after too many wrong PINs; unplug it and plug it in again (it may need a reset).".into(),
         0x37 => "The key does not accept this new PIN (too short, or the same as before).".into(),
@@ -358,7 +359,7 @@ pub fn make_credential(id: Option<&str>, pin: &str) -> Result<Vec<u8>, String> {
         (c_int(8), c_bytes(&pin_auth(&token, &cdh))),
         (c_int(9), c_int(1)),
     ]);
-    let r = h.ctap(0x01, Some(&req)).map_err(|s| if s == 0x2F || s == 0x27 { "The key was not touched in time.".into() } else { refused(s) })?;
+    let r = h.ctap(0x01, Some(&req)).map_err(refused)?;
     let Some(Value::Bytes(ad)) = r.get(2) else { return Err("The key gave no credential.".into()) };
     // authData: rpIdHash 32, flags 1, signCount 4, AAGUID 16, credential ID length 2, credential ID
     if ad.len() < 55 { return Err("The key gave a short credential.".into()) }
@@ -389,7 +390,6 @@ pub fn hmac_secret(id: Option<&str>, pin: Option<&str>, cred: &[u8], salt: &[u8;
     if let Some(t) = &token { pairs.push((c_int(6), c_bytes(&pin_auth(t, &cdh)))); pairs.push((c_int(7), c_int(1))); }
     let r = h.ctap(0x02, Some(&c_map(pairs))).map_err(|s| match s {
         0x2E => Miss::NotThisKey,
-        0x2F | 0x27 => Miss::Failed("The key was not touched in time.".into()),
         s => Miss::Failed(refused(s)),
     })?;
     let Some(Value::Bytes(ad)) = r.get(2) else { return Err(fail("The key gave no assertion.".into())) };
@@ -541,5 +541,10 @@ mod tests {
         let two: Vec<u8> = (0..32).collect();
         assert_eq!(aes256_cbc_zero_iv_decrypt(&key, &aes256_cbc_zero_iv(&key, &two)), two);
         assert_eq!(aes256_cbc_zero_iv(&key, &pt), [0x8e, 0xa2, 0xb7, 0xca, 0x51, 0x67, 0x45, 0xbf, 0xea, 0xfc, 0x49, 0x90, 0x4b, 0x49, 0x60, 0x89]);
+    }
+
+    #[test]
+    fn every_touch_timeout_says_so() {
+        for s in [0x27, 0x2F, 0x3A] { assert_eq!(refused(s), "The key was not touched in time.") }
     }
 }
