@@ -150,7 +150,14 @@ jobs:
           cd desktop && cargo tauri android build --apk --target aarch64 --config "{\"version\":\"$version\"}"
           apk=$(find gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
           # an unsigned file would upload fine and install nowhere
-          "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify "$apk"
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$tools/apksigner" verify "$apk"
+          # Rust reaches the key only through KeyUsb's methods over JNI, which R8 cannot see; 0.3.31 shipped with them
+          # stripped and found no key. proguard-rules.pro keeps them; this stops a release that lost them again.
+          "$tools/dexdump" "$apk" | awk "/Class descriptor  : 'Lcom\/aiwalk\/setup\/KeyUsb;'/{k=1} /Class descriptor/&&!/KeyUsb/{k=0} k" > "$RUNNER_TEMP/keyusb.txt"
+          for m in devices open send recv; do
+            grep -q "name *: '$m'" "$RUNNER_TEMP/keyusb.txt" || { echo "::error::KeyUsb.$m is missing from the APK"; exit 1; }
+          done
           cp "$apk" "$RUNNER_TEMP/aIwalk.System.Setup_${version}_android_arm64.apk"
           rm -f gen/android/keystore.properties "$RUNNER_TEMP/release.jks"
       - name: Add it to the release
@@ -158,3 +165,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP"/*.apk --clobber
+
+  # aiwalk-sealed-vm: unlocks sealed notes inside Android's Linux Terminal, whose VM takes the key from the phone while
+  # it runs (desktop/vmkey). The Terminal is Debian on aarch64; a plain cross compiler builds it, as it has no tauri.
+  vm-unlock:
+    needs: build
+    if: contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch, 2026-10
+        with: { targets: aarch64-unknown-linux-gnu }
+      - name: Build and add to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          cargo build --release -p aiwalk-sealed-vm --target aarch64-unknown-linux-gnu
+          version=$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)
+          cp target/aarch64-unknown-linux-gnu/release/aiwalk-sealed-vm "$RUNNER_TEMP/aiwalk-sealed-vm_${version}_linux_arm64"
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/aiwalk-sealed-vm_${version}_linux_arm64" --clobber

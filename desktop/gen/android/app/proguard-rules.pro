@@ -24,3 +24,7 @@
 -keepclassmembers class com.aiwalk.setup.MainActivity$Files {
    @android.webkit.JavascriptInterface public *;
 }
+
+# KeyUsb is called only from Rust through JNI (fidokey.rs), which R8 cannot see: without this the release APK keeps
+# the class but drops devices/open/send/recv, and the app never finds a plugged-in key (0.3.31).
+-keep class com.aiwalk.setup.KeyUsb { *; }

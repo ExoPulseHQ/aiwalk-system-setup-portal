@@ -466,17 +466,10 @@ fn save(file: &Path) -> Result<(), String> {
     if f.extension().is_none_or(|e| e != "age") || f.file_name().is_some_and(|n| n == KEYRING) { return Err("Only sealed notes (*.age) are saved here.".into()) }
     let mut text = Vec::new();
     std::io::stdin().read_to_end(&mut text).map_err(|e| e.to_string())?;
-    let sealed = seal_for_vault(&f, &text)?;
+    let sealed = crate::phonehttp::seal_for_vault(&f, &text)?;
     let tmp = f.with_extension("age.saving");
     std::fs::write(&tmp, sealed).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &f).map_err(|e| e.to_string())
-}
-
-/// `text` sealed for the group key of the vault `file` is in (its `.keyring.pub`, the nearest above it).
-fn seal_for_vault(file: &Path, text: &[u8]) -> Result<Vec<u8>, String> {
-    let pubkey = file.ancestors().skip(1).map(|d| d.join(PUBLIC)).find(|p| p.is_file()).ok_or("No .keyring.pub above this note: the vault has no group key.")?;
-    let lines: Vec<String> = std::fs::read_to_string(pubkey).map_err(|e| e.to_string())?.lines().map(str::trim).filter(|l| l.starts_with("age1")).map(String::from).collect();
-    crate::agefido::encrypt(&crate::agefido::recipients(&lines)?, text)
 }
 
 /// One request from the plugin: a line, then the answer. `<path>` answers one byte (O text, L locked, E message) and
@@ -527,7 +520,7 @@ pub fn serve() {
             .and_then(|port| std::net::TcpStream::connect(format!("127.0.0.1:{port}")).ok()).is_some() { return }
         let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") else { return };
         let Ok(port) = listener.local_addr().map(|a| a.port()) else { return };
-        let token: String = { let mut b = [0u8; 16]; let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b); hex(&b) };
+        let token = crate::phonehttp::token();
         if std::fs::create_dir_all(ticket.parent().unwrap()).and_then(|_| std::fs::write(&ticket, format!("{port} {token}"))).is_err() { return }
         std::thread::spawn(move || for mut c in listener.incoming().flatten() {
             let mut got = [0u8; 33];
@@ -537,10 +530,9 @@ pub fn serve() {
     }
 }
 
-/// Android: Obsidian cannot start this app's command line, so the app answers it over HTTP on 127.0.0.1 (port 47170):
-/// `GET /open?file=`, `POST /save?file=` (the text as the body), `GET /state?file=`, each with `token=`. The file is
-/// relative to the vault. The token is new each time the app starts and is written, at unlock, to `.sealed-token` at
-/// the vault's root (kept out of git), where the plugin reads it.
+/// Android: Obsidian cannot start this app's command line, so the app answers it over HTTP (phonehttp.rs) on port
+/// 47170. The token is new each time the app starts and is written, at unlock, to `.sealed-token` at the vault's root
+/// (kept out of git), where the plugin reads it.
 // ponytail: an app with "All files access" could read the token too and ask while unlocked; a pairing step closes that
 #[cfg(target_os = "android")]
 pub const PHONE_PORT: u16 = 47170;
@@ -548,67 +540,18 @@ pub const PHONE_PORT: u16 = 47170;
 static PHONE_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 #[cfg(target_os = "android")]
-fn phone_token() -> &'static str {
-    PHONE_TOKEN.get_or_init(|| { let mut b = [0u8; 16]; let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b); hex(&b) })
-}
+fn phone_token() -> &'static str { PHONE_TOKEN.get_or_init(crate::phonehttp::token) }
+
+#[cfg(target_os = "android")]
+fn phone_file(rel: &str) -> Option<PathBuf> { OPEN.lock().unwrap().iter().map(|u| u.root.join(rel)).find(|f| f.is_file()) }
+
+#[cfg(target_os = "android")]
+fn phone_open(f: &Path) -> Result<Vec<u8>, Option<String>> { open(f).map_err(|r| match r { Reply::Locked => None, Reply::Error(e) => Some(e) }) }
 
 #[cfg(target_os = "android")]
 pub fn serve_phone() {
-    let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", PHONE_PORT)) else { return };
-    std::thread::spawn(move || for c in listener.incoming().flatten() { std::thread::spawn(move || { let _ = phone_request(c); }); });
-}
-
-#[cfg(target_os = "android")]
-fn phone_request(mut c: std::net::TcpStream) -> std::io::Result<()> {
-    let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-    let mut buf = Vec::new();
-    let mut b = [0u8; 4096];
-    // the head, then a body as long as Content-Length says
-    let head_end = loop {
-        let n = c.read(&mut b)?;
-        if n == 0 { return Ok(()) }
-        buf.extend_from_slice(&b[..n]);
-        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") { break i + 4 }
-        if buf.len() > 1 << 16 { return Ok(()) }
-    };
-    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let len: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
-    while buf.len() < head_end + len { let n = c.read(&mut b)?; if n == 0 { break } buf.extend_from_slice(&b[..n]); }
-    let body = buf[head_end..].to_vec();
-    let target = head.split_whitespace().nth(1).unwrap_or("/");
-    let (route, query) = target.split_once('?').unwrap_or((target, ""));
-    let param = |k: &str| query.split('&').find_map(|p| p.strip_prefix(&format!("{k}="))).map(percent_decode).unwrap_or_default();
-    let (code, out): (u16, Vec<u8>) = if param("token") != phone_token() { (403, b"bad token".to_vec()) } else {
-        let rel = param("file");
-        let file = OPEN.lock().unwrap().iter().map(|u| u.root.join(&rel)).find(|f| f.is_file());
-        match (route, file) {
-            ("/state", f) => (200, if f.is_some() { b"unlocked".to_vec() } else { b"locked".to_vec() }),
-            (_, None) => (423, b"locked".to_vec()),
-            ("/open", Some(f)) => match open(&f) { Ok(t) => (200, t), Err(Reply::Locked) => (423, b"locked".to_vec()), Err(Reply::Error(e)) => (400, e.into_bytes()) },
-            ("/save", Some(f)) => match seal_for_vault(&f, &body).and_then(|sealed| { let tmp = f.with_extension("age.saving"); std::fs::write(&tmp, sealed).and_then(|_| std::fs::rename(&tmp, &f)).map_err(|e| e.to_string()) }) {
-                Ok(()) => (200, b"saved".to_vec()), Err(e) => (400, e.into_bytes()),
-            },
-            _ => (404, b"no such request".to_vec()),
-        }
-    };
-    let reason = match code { 200 => "OK", 403 => "Forbidden", 404 => "Not Found", 423 => "Locked", _ => "Bad Request" };
-    c.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len()).as_bytes())?;
-    c.write_all(&out)
-}
-
-#[cfg(target_os = "android")]
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'%' if i + 2 < b.len() => { out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap_or(b'?')); i += 3 }
-            b'+' => { out.push(b' '); i += 1 }
-            c => { out.push(c); i += 1 }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file: phone_file, open: phone_open };
+    crate::phonehttp::serve(PHONE_PORT, phone_token(), &VAULTS);
 }
 
 /// Android: the file the app's foreground service watches (WorkService.kt): it is there while a vault is unlocked, so
@@ -673,7 +616,7 @@ pub fn cli(args: &[String]) -> i32 {
             let abs = std::path::absolute(file).map_err(|e| e.to_string())?;
             let mut text = Vec::new();
             std::io::stdin().read_to_end(&mut text).map_err(|e| e.to_string())?;
-            seal_for_vault(&abs, &text)
+            crate::phonehttp::seal_for_vault(&abs, &text)
         };
         return match run() { Ok(text) => { let _ = std::io::stdout().write_all(&text); 0 } Err(e) => { eprintln!("{e}"); 1 } }
     }
