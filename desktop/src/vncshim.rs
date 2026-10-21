@@ -19,7 +19,7 @@ pub fn front(target: u16) -> std::io::Result<u16> {
     let port = listener.local_addr()?.port();
     std::thread::spawn(move || {
         for viewer in listener.incoming().flatten() {
-            std::thread::spawn(move || { let _ = serve(viewer, target); });
+            std::thread::spawn(move || { if let Err(e) = serve(viewer, target) { eprintln!("vncshim: {e}") } });
         }
     });
     Ok(port)
@@ -45,16 +45,17 @@ fn serve(mut viewer: TcpStream, target: u16) -> std::io::Result<()> {
     desk.read_exact(&mut result)?;
     if result != [0, 0, 0, 0] { return Err(bad("the desktop refused")) }
 
-    // the viewer's side: one method offered, "password" (2); the challenge is answered with anything. A 3.3 viewer
-    // (macOS Screen Sharing) is told the method as a U32 and picks nothing; later versions get a list and pick.
+    // the viewer's side: one method offered, "password" (2); the challenge is answered with anything. Only a 3.7 or
+    // 3.8 viewer gets a list and picks; any other version is read as 3.3 (RFC 6143, section 7.1.1), so it is told the
+    // method as a U32 and picks nothing. macOS Screen Sharing answers 3.3 or Apple's own 3.889.
     viewer.write_all(VERSION)?;
     viewer.read_exact(&mut twelve)?;
-    if &twelve == b"RFB 003.003\n" {
-        viewer.write_all(&[0, 0, 0, 2])?;
-    } else {
+    if &twelve == b"RFB 003.007\n" || &twelve == b"RFB 003.008\n" {
         viewer.write_all(&[1, 2])?;
         viewer.read_exact(&mut n)?;
         if n[0] != 2 { return Err(bad("the viewer chose a method that was not offered")) }
+    } else {
+        viewer.write_all(&[0, 0, 0, 2])?;
     }
     viewer.write_all(&[0x5a; 16])?;
     let mut answer = [0u8; 16];
@@ -74,10 +75,10 @@ fn serve(mut viewer: TcpStream, target: u16) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    /// A stand-in desktop that asks for no password, then a viewer that is asked for one: the viewer gets through
-    /// and what each side sends afterwards reaches the other.
-    #[test]
-    fn a_viewer_asked_for_a_password_reaches_a_desktop_that_asks_for_none() {
+    /// A stand-in desktop that asks for no password, then a viewer that answers with `version` and is asked for one:
+    /// the viewer gets through and what each side sends afterwards reaches the other. `list` is whether that version
+    /// gets the 3.7/3.8 list of methods and picks, or the 3.3 U32 and picks nothing (RFC 6143, section 7.1.1).
+    fn a_viewer_reaches_the_desktop(version: &[u8; 12], list: bool) {
         let desk = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let target = desk.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -91,11 +92,16 @@ mod tests {
             s.write_all(b"server-init").unwrap();
         });
         let mut v = TcpStream::connect(("127.0.0.1", front(target).unwrap())).unwrap();
+        v.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
         let mut b = [0u8; 12];
         v.read_exact(&mut b).unwrap(); assert_eq!(&b, VERSION);
-        v.write_all(VERSION).unwrap();
-        let mut kinds = [0u8; 2]; v.read_exact(&mut kinds).unwrap(); assert_eq!(kinds, [1, 2]);
-        v.write_all(&[2]).unwrap();
+        v.write_all(version).unwrap();
+        if list {
+            let mut kinds = [0u8; 2]; v.read_exact(&mut kinds).unwrap(); assert_eq!(kinds, [1, 2]);
+            v.write_all(&[2]).unwrap();
+        } else {
+            let mut kind = [0u8; 4]; v.read_exact(&mut kind).unwrap(); assert_eq!(kind, [0, 0, 0, 2]);
+        }
         let mut challenge = [0u8; 16]; v.read_exact(&mut challenge).unwrap();
         v.write_all(&[7; 16]).unwrap();
         let mut ok = [9u8; 4]; v.read_exact(&mut ok).unwrap(); assert_eq!(ok, [0, 0, 0, 0]);
@@ -103,32 +109,18 @@ mod tests {
         let mut init = [0u8; 11]; v.read_exact(&mut init).unwrap(); assert_eq!(&init, b"server-init");
     }
 
-    /// macOS Screen Sharing answers with version 3.3, where the server names the one method as a U32 and the viewer
-    /// picks nothing (RFC 6143, appendix on 3.3); sent the 3.8 list instead, it waited forever (issue #6).
     #[test]
-    fn a_viewer_that_speaks_version_3_3_reaches_the_desktop_too() {
-        let desk = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let target = desk.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            let (mut s, _) = desk.accept().unwrap();
-            let mut b = [0u8; 12];
-            s.write_all(VERSION).unwrap(); s.read_exact(&mut b).unwrap();
-            s.write_all(&[1, 1]).unwrap();
-            let mut pick = [0u8; 1]; s.read_exact(&mut pick).unwrap(); assert_eq!(pick, [1]);
-            s.write_all(&[0, 0, 0, 0]).unwrap();
-            let mut init = [0u8; 1]; s.read_exact(&mut init).unwrap(); assert_eq!(init, [1]);
-            s.write_all(b"server-init").unwrap();
-        });
-        let mut v = TcpStream::connect(("127.0.0.1", front(target).unwrap())).unwrap();
-        v.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
-        let mut b = [0u8; 12];
-        v.read_exact(&mut b).unwrap(); assert_eq!(&b, VERSION);
-        v.write_all(b"RFB 003.003\n").unwrap();
-        let mut kind = [0u8; 4]; v.read_exact(&mut kind).unwrap(); assert_eq!(kind, [0, 0, 0, 2]);
-        let mut challenge = [0u8; 16]; v.read_exact(&mut challenge).unwrap();
-        v.write_all(&[7; 16]).unwrap();
-        let mut ok = [9u8; 4]; v.read_exact(&mut ok).unwrap(); assert_eq!(ok, [0, 0, 0, 0]);
-        v.write_all(&[1]).unwrap();
-        let mut init = [0u8; 11]; v.read_exact(&mut init).unwrap(); assert_eq!(&init, b"server-init");
+    fn a_viewer_asked_for_a_password_reaches_a_desktop_that_asks_for_none() {
+        a_viewer_reaches_the_desktop(b"RFB 003.008\n", true);
+        a_viewer_reaches_the_desktop(b"RFB 003.007\n", true);
+    }
+
+    /// macOS Screen Sharing answers with version 3.3, or on newer Macs Apple's 3.889 (connection failed, "incompatible
+    /// software"); both are read as 3.3. Sent the 3.8 list instead, it waited forever (issue #6).
+    #[test]
+    fn a_viewer_that_speaks_version_3_3_or_another_version_reaches_the_desktop_too() {
+        a_viewer_reaches_the_desktop(b"RFB 003.003\n", false);
+        a_viewer_reaches_the_desktop(b"RFB 003.889\n", false);
+        a_viewer_reaches_the_desktop(b"RFB 003.005\n", false);
     }
 }
