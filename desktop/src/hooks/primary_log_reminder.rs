@@ -59,6 +59,26 @@ fn ownership(fp: &str, root: &str, t: &serde_json::Value) -> Option<String> {
     Some(fill(&text(t, "ownership"), &[("state", &state), ("path", &rel)]))
 }
 
+/// A Dev Topic heading that carries a range (`# 2026/10/15~2026/10/16 ...` or `# 2026/01/31~ ...`): the plugin and
+/// sync-ownership read only the first date, so a range there dates the line by its start (CLAUDE.md: one date, the
+/// last update; the range lives in the Navigation Index and the first sentence).
+fn range_headings(text: &str) -> Vec<String> {
+    let re = fancy_regex::Regex::new(r"^# 20\d\d/\d\d/\d\d\s*~").unwrap();
+    text.lines().filter(|l| re.is_match(l).unwrap_or(false)).map(|l| l.trim_end().to_string()).collect()
+}
+
+/// The range headings this edit brings in that were not there before: Edit and MultiEdit compare what they put in with
+/// what they take out, Write compares with the file on disk. One already in the log is left alone (it is reported by
+/// the plugin's check), so an edit elsewhere in the log is never blocked by it.
+fn new_range_headings(ti: &serde_json::Value, fp: &str) -> Vec<String> {
+    let pairs: Vec<(String, String)> = if let Some(c) = ti["content"].as_str() {
+        vec![(std::fs::read_to_string(fp).unwrap_or_default(), c.to_string())]
+    } else if let Some(es) = ti["edits"].as_array() {
+        es.iter().map(|e| (e["old_string"].as_str().unwrap_or_default().to_string(), e["new_string"].as_str().unwrap_or_default().to_string())).collect()
+    } else { vec![(ti["old_string"].as_str().unwrap_or_default().to_string(), ti["new_string"].as_str().unwrap_or_default().to_string())] };
+    pairs.iter().flat_map(|(old, new)| { let had = range_headings(old); range_headings(new).into_iter().filter(move |h| !had.contains(h)) }).collect()
+}
+
 pub fn run(stdin: &[u8]) -> Out {
     let Some(ti) = tool_input(stdin) else { return Out::quiet() };
     let Some(fp) = py_or(&ti, &["file_path", "path"]) else { return Out::quiet() };
@@ -66,6 +86,11 @@ pub fn run(stdin: &[u8]) -> Out {
     if !is_primary_log(base) { return Out::quiet() }
 
     let t = texts("primary_log_reminder", EMBEDDED);
+    let ranged = new_range_headings(&serde_json::Value::Object(ti.clone()), &fp);
+    if !ranged.is_empty() {
+        let why = fill(&text(&t, "deny_range_heading"), &[("headings", &ranged.join("\n"))]);
+        return Out { stdout: exo_core::root_guard::deny_json(&why) + "\n", ..Out::default() };
+    }
     let mut reminder = fill(&text(&t, "reminder"), &[("file", base)]);
     if let Some(root) = super::project_dir().map(|p| p.to_string_lossy().into_owned()) {
         if Path::new(&fp).exists() {
@@ -86,6 +111,18 @@ mod tests {
         assert_eq!(basename("/v/L1/_Log.md"), "_Log.md");
         assert_eq!(basename("_Log.md"), "_Log.md");
         assert_eq!(basename("/v/"), "");
+    }
+
+    #[test]
+    fn range_headings_are_refused_when_new() {
+        assert_eq!(range_headings("# 2026/10/15~2026/10/16 a (X-EL)\n# 2026/10/16 b (Y-EL)\n# 2026/01/31~ c\n| 2026/10/15~2026/10/16 | row |"),
+            vec!["# 2026/10/15~2026/10/16 a (X-EL)", "# 2026/01/31~ c"]);
+        let edit = |old: &str, new: &str| serde_json::json!({ "file_path": "/v/_Log.md", "old_string": old, "new_string": new });
+        assert_eq!(new_range_headings(&edit("# 2026/10/15 a", "# 2026/10/15~2026/10/23 a"), "/v/_Log.md").len(), 1, "a heading turned into a range");
+        assert!(new_range_headings(&edit("# 2026/10/15~2026/10/16 a\nold", "# 2026/10/15~2026/10/16 a\nnew"), "/v/_Log.md").is_empty(), "one already there is left alone");
+        assert!(new_range_headings(&edit("| 2026/10/15 |", "| 2026/10/15~2026/10/23 |"), "/v/_Log.md").is_empty(), "the index row may carry a range");
+        let multi = serde_json::json!({ "file_path": "/v/_Log.md", "edits": [{ "old_string": "x", "new_string": "# 2026/10/01~2026/10/02 m" }] });
+        assert_eq!(new_range_headings(&multi, "/v/_Log.md").len(), 1);
     }
 
     #[cfg(not(windows))]

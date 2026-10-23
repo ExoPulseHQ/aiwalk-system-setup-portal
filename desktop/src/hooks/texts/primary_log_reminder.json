@@ -3,5 +3,6 @@
   "ownership": " ⚠ 分工區塊（CLAUDE.md §主幹分工表硬規則）：這條主幹最下方有分工區塊，其中「實際活動」{state}。改完 Dev Topic 後跑 `sh scripts/aiwalk vault sync-ownership \"{path}\"`。「近期的分工」與「長遠要做的事情」是人寫的，不新增、不改寫、不刪除項目文字。",
   "state_stale": "已經過期",
   "state_ok": "和主幹一致",
-  "state_failed": "檢查失敗：{stderr}"
+  "state_failed": "檢查失敗：{stderr}",
+  "deny_range_heading": "⛔ Dev Topic 標題只放一個日期（最後更新日），不寫區間（CLAUDE.md §同一條線跨天延續）：\n{headings}\n請把標題改成 `# 今天日期 標題 (CODE-DEV)` 並移到最上面；區間 `起始日~今天` 寫在 Navigation Index 那一列，正文第一句寫「這條線 起始日 啟動，今天 最後更新。」。plugin 與分工腳本只讀標題的第一個日期，標題寫區間會被當成起始日。"
 }
