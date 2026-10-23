@@ -224,7 +224,7 @@ fn state_file(tmp: &str, session: &str, key: &str) -> String {
 }
 
 /// True the first time this session tries this creation; leaves the marker so the retry passes.
-fn first_attempt(key: &str, session: &str) -> R<bool> {
+pub(crate) fn first_attempt(key: &str, session: &str) -> R<bool> {
     let tmp = gettempdir()?;
     std::fs::create_dir_all(join(&tmp, "exopulse_newdoc_ack")).map_err(|e| format!("OSError: {e}"))?;
     let m = state_file(&tmp, session, key);

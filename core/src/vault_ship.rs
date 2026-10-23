@@ -388,12 +388,14 @@ pub fn people(json: &str) -> Vec<Person> {
     }).collect()
 }
 
-/// `^# (20\d\d/\d\d/\d\d)(.*)$` -> the date
+/// `^# (20\d\d/\d\d/\d\d)(~20\d\d/\d\d/\d\d)?(.*)$` -> the last activity: the date after `~` when the heading
+/// carries the line's span (`# 2026/10/17~2026/10/23 ...`), else its one date
 fn topic_date(line: &str) -> Option<String> {
-    let c: Vec<char> = line.chars().take(12).collect();
-    let ok = c.len() == 12 && c[0] == '#' && c[1] == ' ' && c[2] == '2' && c[3] == '0'
-        && [4, 5, 7, 8, 10, 11].iter().all(|&i| digit(c[i]).is_some()) && c[6] == '/' && c[9] == '/';
-    ok.then(|| c[2..].iter().collect())
+    let date = |c: &[char]| c.len() == 10 && c[0] == '2' && c[1] == '0' && c[4] == '/' && c[7] == '/'
+        && [2, 3, 5, 6, 8, 9].iter().all(|&i| digit(c[i]).is_some());
+    let c: Vec<char> = line.chars().take(23).collect();
+    if c.len() < 12 || c[0] != '#' || c[1] != ' ' || !date(&c[2..12]) { return None }
+    Some(if c.len() == 23 && c[12] == '~' && date(&c[13..23]) { c[13..23].iter().collect() } else { c[2..12].iter().collect() })
 }
 
 /// (date, heading, body lines) of every Dev Topic above the ownership block.
@@ -591,6 +593,13 @@ pub fn cjk_and_lines(text: &str) -> (usize, usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn topic_date_takes_the_last_day_of_a_span() {
+        assert_eq!(topic_date("# 2026/10/17~2026/10/23 a (BD-EL)").as_deref(), Some("2026/10/23"));
+        assert_eq!(topic_date("# 2026/10/19 b (KHQ-SL)").as_deref(), Some("2026/10/19"));
+        assert_eq!(topic_date("# 2026/01/31~ c").as_deref(), Some("2026/01/31"));
+        assert_eq!(topic_date("# 2026/1/31 d"), None);
+    }
     #[test]
     fn private_routes() {
         let repos = serde_json::json!({"routes": [

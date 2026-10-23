@@ -1,8 +1,9 @@
 {
-  "reminder": "⚠ 主幹編輯規則（CLAUDE.md §Primary Log Editing Rule）— 你正在改 primary log `{file}`。若新增／編輯 Dev Topic 請確認：(1) 每個 `# YYYY/MM/DD` heading 前有 `---` 分隔；(2) 母文件只留 3–5 句 + 單一 `- **Summary & Control**: [[sub-doc]]` wikilink；(3) 長內容／H2/H3／表格／清單一律先抽 sub-doc（frontmatter 帶 parent_log）；(4) Summary 行不得出現 >1 個 [[...]]；(5) 代碼用該開發者既有 `-DEV`（勿自編）。",
+  "reminder": "⚠ 主幹編輯規則（CLAUDE.md §Primary Log Editing Rule）— 你正在改 primary log `{file}`。若新增／編輯 Dev Topic 請確認：(1) 每個 `# YYYY/MM/DD` heading 前有 `---` 分隔；(2) 母文件只留 3–5 句 + 單一 `- **Summary & Control**: [[sub-doc]]` wikilink；(3) 長內容／H2/H3／表格／清單一律先抽 sub-doc（frontmatter 帶 parent_log）；(4) Summary 行不得出現 >1 個 [[...]]；(5) 代碼用該開發者既有 `-DEV`（勿自編）；(6) 新工作屬於已有的 Dev Topic（同一問題、同一份 Summary）時不另開條目：併回原條目，標題日期寫成 `起始日~今天` 並移到最上面，正文首句寫「這條線 起始日 啟動，今天 最後更新。」，Navigation 那列移到第一列、日期欄同樣寫 `起始日~今天`，新開發者代碼併進標題結尾（CLAUDE.md §同一條線跨天延續）。",
   "ownership": " ⚠ 分工區塊（CLAUDE.md §主幹分工表硬規則）：這條主幹最下方有分工區塊，其中「實際活動」{state}。改完 Dev Topic 後跑 `sh scripts/aiwalk vault sync-ownership \"{path}\"`。「近期的分工」與「長遠要做的事情」是人寫的，不新增、不改寫、不刪除項目文字。",
   "state_stale": "已經過期",
   "state_ok": "和主幹一致",
   "state_failed": "檢查失敗：{stderr}",
-  "deny_range_heading": "⛔ Dev Topic 標題只放一個日期（最後更新日），不寫區間（CLAUDE.md §同一條線跨天延續）：\n{headings}\n請把標題改成 `# 今天日期 標題 (CODE-DEV)` 並移到最上面；區間 `起始日~今天` 寫在 Navigation Index 那一列，正文第一句寫「這條線 起始日 啟動，今天 最後更新。」。plugin 與分工腳本只讀標題的第一個日期，標題寫區間會被當成起始日。"
+  "deny_new_topic": "⛔ 這次編輯新開了 Dev Topic，它的代碼在這條主幹還沒有出現過：\n{headings}\n先對下面既有的 Dev Topic 逐條確認是不是同一條線（同一個問題、同一份 Summary、同一群人）：\n{existing}\n是同一條線就併回原條目（CLAUDE.md §同一條線跨天延續）：標題日期改今天並移到最上面，正文首句寫「這條線 起始日 啟動，今天 最後更新。」，Navigation 那列移到第一列並寫 `起始日~今天`，新文件收進原 Summary 的 Related Sub-docs。確定是完全不同的新問題，同一個編輯再送一次即放行。",
+  "deny_bash_write": "⛔ 不要用 Bash 改主幹 {files}（sed -i、重導向、tee、cp/mv、Python 寫檔）：主幹的提醒與檢查（新 Dev Topic、標題區間、分工區塊）只在 Edit／Write 生效。請改用 Edit 或 MultiEdit。只是讀主幹、寫別的檔，就把讀和寫拆成兩個指令。"
 }
