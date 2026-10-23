@@ -970,7 +970,7 @@ mod tests {
         let m: super::Machine = serde_json::from_str(r#"{"host": "otter", "tunnel": "ssh-otter.example.org", "cert": true}"#).unwrap();
         assert_eq!((m.account.as_str(), m.repo.as_str(), m.via.as_deref(), m.teams.len()), ("", "", None, 0));
         let block = super::ssh_block(&[m], "/opt/aiwalk-setup");
-        assert!(block.contains(r#"Match originalhost otter exec "'/opt/aiwalk-setup' --ssh-cert ssh-otter.example.org --quiet""#)
+        assert!(block.contains(&format!(r#"Match originalhost otter exec "{} --ssh-cert ssh-otter.example.org --quiet""#, super::exec_program("/opt/aiwalk-setup", cfg!(windows))))
             && block.contains("HostName ssh-otter.example.org") && block.contains("IdentityFile ~/.cloudflared/ssh-otter.example.org-cf_key"), "{block}");
     }
 
@@ -1206,7 +1206,8 @@ mod tests {
         let rules = r#"{"machines": {"hosts": [{"host": "host-20", "repos": {"NTKCAP": "ntkcap", "ExoPulse": "exopulse"}, "tunnel": "ssh-host-20.example.com"},
             {"host": "kd240", "repos": {"firmware_layer": "firmware"}}]}}"#;
         let signed = ssh_block(&machines(&rules.replace(r#""tunnel": "ssh-host-20"#, r#""cert": true, "tunnel": "ssh-host-20"#)), "/opt/a app/aiwalk-setup");
-        assert!(signed.contains(r#"Match originalhost host-20 exec "'/opt/a app/aiwalk-setup' --ssh-cert ssh-host-20.example.com --quiet""#)
+        assert!(signed.contains(&format!(r#"Match originalhost host-20 exec "{} --ssh-cert ssh-host-20.example.com --quiet""#, super::exec_program("/opt/a app/aiwalk-setup", cfg!(windows))))
+            && super::exec_program("/opt/a app/aiwalk-setup", false) == "'/opt/a app/aiwalk-setup'"
             && signed.contains("CertificateFile ~/.cloudflared/ssh-host-20.example.com-cf_key-cert.pub") && !signed.contains("Host host-20"), "{signed}");
         assert_eq!(super::exec_program(r"C:\Program Files\aIwalk System Setup\aiwalk-setup.exe", true),
             r#"\"C:\Program Files\aIwalk System Setup\aiwalk-setup.exe\""#, "Windows: cmd.exe takes double quotes, not single");
