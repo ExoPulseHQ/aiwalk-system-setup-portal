@@ -45,12 +45,13 @@ fn serve(mut viewer: TcpStream, target: u16) -> std::io::Result<()> {
     desk.read_exact(&mut result)?;
     if result != [0, 0, 0, 0] { return Err(bad("the desktop refused")) }
 
-    // the viewer's side: one method offered, "password" (2); the challenge is answered with anything. Only a 3.7 or
-    // 3.8 viewer gets a list and picks; any other version is read as 3.3 (RFC 6143, section 7.1.1), so it is told the
-    // method as a U32 and picks nothing. macOS Screen Sharing answers 3.3 or Apple's own 3.889.
+    // the viewer's side: one method offered, "password" (2); the challenge is answered with anything. A 3.7 or 3.8
+    // viewer gets a list and picks, and so does Apple's 3.889, which libvncserver gives the list like 3.7/3.8; any
+    // other version is read as 3.3 (RFC 6143, section 7.1.1), so it is told the method as a U32 and picks nothing.
+    // macOS Screen Sharing 15.7.9 answers 3.3.
     viewer.write_all(VERSION)?;
     viewer.read_exact(&mut twelve)?;
-    if &twelve == b"RFB 003.007\n" || &twelve == b"RFB 003.008\n" {
+    if matches!(&twelve, b"RFB 003.007\n" | b"RFB 003.008\n" | b"RFB 003.889\n") {
         viewer.write_all(&[1, 2])?;
         viewer.read_exact(&mut n)?;
         if n[0] != 2 { return Err(bad("the viewer chose a method that was not offered")) }
@@ -77,7 +78,7 @@ mod tests {
 
     /// A stand-in desktop that asks for no password, then a viewer that answers with `version` and is asked for one:
     /// the viewer gets through and what each side sends afterwards reaches the other. `list` is whether that version
-    /// gets the 3.7/3.8 list of methods and picks, or the 3.3 U32 and picks nothing (RFC 6143, section 7.1.1).
+    /// gets the 3.7/3.8/3.889 list of methods and picks, or the 3.3 U32 and picks nothing (RFC 6143, section 7.1.1).
     fn a_viewer_reaches_the_desktop(version: &[u8; 12], list: bool) {
         let desk = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let target = desk.local_addr().unwrap().port();
@@ -109,18 +110,18 @@ mod tests {
         let mut init = [0u8; 11]; v.read_exact(&mut init).unwrap(); assert_eq!(&init, b"server-init");
     }
 
+    /// Apple's 3.889 is the known exception to "any other version is 3.3": libvncserver gives it the list like 3.7/3.8.
     #[test]
     fn a_viewer_asked_for_a_password_reaches_a_desktop_that_asks_for_none() {
         a_viewer_reaches_the_desktop(b"RFB 003.008\n", true);
         a_viewer_reaches_the_desktop(b"RFB 003.007\n", true);
+        a_viewer_reaches_the_desktop(b"RFB 003.889\n", true);
     }
 
-    /// macOS Screen Sharing answers with version 3.3, or on newer Macs Apple's 3.889 (connection failed, "incompatible
-    /// software"); both are read as 3.3. Sent the 3.8 list instead, it waited forever (issue #6).
+    /// macOS Screen Sharing 15.7.9 answers with version 3.3. Sent the 3.8 list instead, it waited forever (issue #6).
     #[test]
     fn a_viewer_that_speaks_version_3_3_or_another_version_reaches_the_desktop_too() {
         a_viewer_reaches_the_desktop(b"RFB 003.003\n", false);
-        a_viewer_reaches_the_desktop(b"RFB 003.889\n", false);
         a_viewer_reaches_the_desktop(b"RFB 003.005\n", false);
     }
 }
