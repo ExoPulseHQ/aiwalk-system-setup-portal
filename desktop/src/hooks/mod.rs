@@ -16,6 +16,7 @@ pub(crate) mod writing_style_reminder;
 mod git_discipline_reminder;
 mod new_repo_worktree_check;
 mod primary_log_reminder;
+mod pet_waiting;
 
 use serde_json::Value;
 use std::io::Read;
@@ -62,6 +63,7 @@ pub fn main(args: &[String]) -> i32 {
     let Some(name) = args.first().map(String::as_str) else { eprintln!("usage: aiwalk-setup hook <name>"); return 2 };
     let mut stdin = vec![];
     let _ = std::io::stdin().read_to_end(&mut stdin);
+    let stdin = as_bash(stdin);
     let out = match name {
         // one line per hook, in the order of the vault's .claude/hooks folder
         "file_location_reminder" => file_location_reminder::run(&stdin),
@@ -73,11 +75,31 @@ pub fn main(args: &[String]) -> i32 {
         "new_repo_worktree_check" => new_repo_worktree_check::run(&stdin),
         "primary_log_reminder" => primary_log_reminder::run(&stdin),
         "biz_neutral_reminder" => biz_neutral_reminder::run(&stdin),
+        "pet_waiting" => pet_waiting::run(&stdin),
         _ => { eprintln!("aiwalk-setup hook: no hook called {name}"); return 2 }
     };
     #[allow(unreachable_code)]
     { let out: Out = out; print!("{}", out.stdout); eprint!("{}", out.stderr); out.code }
 }
 
+/// Windows' PowerShell tool runs commands as Bash does; each hook reads it as Bash, so a command there is checked the
+/// same way. The writers each hook looks for include PowerShell's own where they differ (Set-Content, Out-File, ...).
+fn as_bash(stdin: Vec<u8>) -> Vec<u8> {
+    match serde_json::from_slice::<Value>(&stdin) {
+        Ok(mut v) if v["tool_name"] == "PowerShell" => { v["tool_name"] = "Bash".into(); serde_json::to_vec(&v).unwrap_or(stdin) }
+        _ => stdin,
+    }
+}
+
 /// The hooks this build runs, for `--can` and for whoever writes the vault's settings.json.
-pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder", "writing_style_reminder", "git_discipline_reminder", "new_repo_worktree_check", "primary_log_reminder", "biz_neutral_reminder"];
+pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder", "writing_style_reminder", "git_discipline_reminder", "new_repo_worktree_check", "primary_log_reminder", "biz_neutral_reminder", "pet_waiting"];
+
+#[cfg(test)]
+mod powershell {
+    #[test]
+    fn powershell_reads_as_bash() {
+        let v: serde_json::Value = serde_json::from_slice(&super::as_bash(br#"{"tool_name":"PowerShell","tool_input":{"command":"ls"}}"#.to_vec())).unwrap();
+        assert_eq!(v["tool_name"], "Bash");
+        assert_eq!(super::as_bash(b"not json".to_vec()), b"not json");
+    }
+}

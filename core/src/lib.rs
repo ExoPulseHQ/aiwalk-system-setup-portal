@@ -302,6 +302,12 @@ pub fn edit_machines(text: &str, edit: &dyn Fn(&Value, &str) -> Option<Option<St
     Ok(out)
 }
 
+/// The app's path as the first word of a `Match exec` command. Unix runs it through sh, which takes single quotes;
+/// Windows' OpenSSH runs it through cmd.exe, which does not, so a path with a space ("aIwalk System Setup") broke
+/// there, the Match never held and ssh said "Could not resolve hostname". cmd takes double quotes, escaped as \" inside
+/// the quoted exec argument (ssh_config's own escape).
+fn exec_program(app: &str, windows: bool) -> String { if windows { format!("\\\"{app}\\\"") } else { format!("'{app}'") } }
+
 /// The block the app keeps in ~/.ssh/config: one alias per tunnelled machine, reached through the app itself
 /// (`app` is its program's path, used as ssh's ProxyCommand). Machines without a tunnel are left out.
 pub fn ssh_block(machines: &[Machine], app: &str) -> String {
@@ -319,8 +325,8 @@ pub fn ssh_block(machines: &[Machine], app: &str) -> String {
         if m.cert {
             // the certificate lasts minutes, so ssh asks the app for a fresh one before every connection (Match exec);
             // the person's own keys are still tried after it, for as long as the machine keeps them
-            out += &format!("Match originalhost {} exec \"'{app}' --ssh-cert {t} --quiet\"\n  HostName {t}\n  ProxyCommand \"{app}\" --ssh-proxy %h\n  \
-                             IdentityFile ~/.cloudflared/{t}-cf_key\n  CertificateFile ~/.cloudflared/{t}-cf_key-cert.pub\n", m.host);
+            out += &format!("Match originalhost {} exec \"{} --ssh-cert {t} --quiet\"\n  HostName {t}\n  ProxyCommand \"{app}\" --ssh-proxy %h\n  \
+                             IdentityFile ~/.cloudflared/{t}-cf_key\n  CertificateFile ~/.cloudflared/{t}-cf_key-cert.pub\n", m.host, exec_program(&app, cfg!(windows)));
         } else {
             out += &format!("Host {}\n  HostName {t}\n  ProxyCommand \"{app}\" --ssh-proxy %h\n", m.host);
         }
@@ -1202,6 +1208,8 @@ mod tests {
         let signed = ssh_block(&machines(&rules.replace(r#""tunnel": "ssh-host-20"#, r#""cert": true, "tunnel": "ssh-host-20"#)), "/opt/a app/aiwalk-setup");
         assert!(signed.contains(r#"Match originalhost host-20 exec "'/opt/a app/aiwalk-setup' --ssh-cert ssh-host-20.example.com --quiet""#)
             && signed.contains("CertificateFile ~/.cloudflared/ssh-host-20.example.com-cf_key-cert.pub") && !signed.contains("Host host-20"), "{signed}");
+        assert_eq!(super::exec_program(r"C:\Program Files\aIwalk System Setup\aiwalk-setup.exe", true),
+            r#"\"C:\Program Files\aIwalk System Setup\aiwalk-setup.exe\""#, "Windows: cmd.exe takes double quotes, not single");
         let block = ssh_block(&machines(rules), "/opt/aiwalk-setup");
         assert_eq!(block.matches("Host ").count(), 1, "one alias per tunnelled machine: {block}");
         assert!(block.contains("HostName ssh-host-20.example.com") && block.contains("\"/opt/aiwalk-setup\" --ssh-proxy %h"));
