@@ -17,6 +17,7 @@ mod git_discipline_reminder;
 mod new_repo_worktree_check;
 mod primary_log_reminder;
 mod pet_waiting;
+mod skill_usage;
 
 use serde_json::Value;
 use std::io::Read;
@@ -76,6 +77,7 @@ pub fn main(args: &[String]) -> i32 {
         "primary_log_reminder" => primary_log_reminder::run(&stdin),
         "biz_neutral_reminder" => biz_neutral_reminder::run(&stdin),
         "pet_waiting" => pet_waiting::run(&stdin),
+        "skill_usage" => skill_usage::run(&stdin),
         _ => { eprintln!("aiwalk-setup hook: no hook called {name}"); return 2 }
     };
     #[allow(unreachable_code)]
@@ -92,7 +94,7 @@ fn as_bash(stdin: Vec<u8>) -> Vec<u8> {
 }
 
 /// The hooks this build runs, for `--can` and for whoever writes the vault's settings.json.
-pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder", "writing_style_reminder", "git_discipline_reminder", "new_repo_worktree_check", "primary_log_reminder", "biz_neutral_reminder", "pet_waiting"];
+pub const NAMES: &[&str] = &["root-only-guard", "file_location_reminder", "skills_registry_reminder", "slide_layout_reminder", "training_run_reminder", "writing_style_reminder", "git_discipline_reminder", "new_repo_worktree_check", "primary_log_reminder", "biz_neutral_reminder", "pet_waiting", "skill_usage"];
 
 #[cfg(test)]
 mod powershell {

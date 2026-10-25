@@ -131,6 +131,22 @@ fn update_index(vault: &Path) -> bool {
     true
 }
 
+/// System/skill_usage/<login>.json: this computer's `.claude/skill_usage.local.json` (the skill_usage hook's counts)
+/// under the computer's name, so one person's machines do not overwrite each other. The path when it changed.
+fn update_usage(vault: &Path, login: &str) -> Option<String> {
+    let local = read_json(&vault.join(".claude/skill_usage.local.json")).filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))?;
+    let rel = format!("System/skill_usage/{login}.json");
+    let path = vault.join(&rel);
+    let mut all = read_json(&path).filter(Value::is_object).unwrap_or(Value::Object(Default::default()));
+    let host = sh(vault, &["hostname"], false);
+    let host = if host.is_empty() { "computer".to_string() } else { host };
+    if all[&host] == local { return None }
+    all[&host] = local;
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    write_text(&path, &(serde_json::to_string_pretty(&all).ok()? + "\n")).ok()?;
+    Some(rel)
+}
+
 /// llms.txt: its primary-log section rebuilt from every `_*.md` with a `layer` in its frontmatter. A log inside a
 /// submodule this computer has not checked out keeps its line from the last version.
 fn update_llms(vault: &Path) -> bool {
@@ -256,6 +272,9 @@ fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     }
     if update_llms(vault) {
         if !paths.is_empty() { paths.push(vs::LLMS.into()) } else { sh(vault, &["git", "add", "--", vs::LLMS], true); }
+    }
+    if let Some(u) = update_usage(vault, &name) {
+        if !paths.is_empty() { paths.push(u) } else { sh(vault, &["git", "add", "--", &u], true); }
     }
     ship_repo(vault, None, &book_msg, paths, &name, &email, true);
 }
