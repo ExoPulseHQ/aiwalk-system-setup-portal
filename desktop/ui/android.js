@@ -83,6 +83,32 @@ function phoneSection(p) {
   return sec;
 }
 
+// A new phone over Wi-Fi, without a cable: the two pairings Wireless debugging offers (Android 11+). The phone must be on
+// this computer's Wi-Fi; after pairing once it reconnects by itself.
+const PAIR_WHERE = "On the phone: Settings › System › Developer options › Wireless debugging, turned on.";
+async function paired(run) {
+  phonesBusy = true;
+  try { toast(await run()); } catch (e) { if (e !== "Pairing stopped") toast(String(e)); }
+  finally { phonesBusy = false; phonesSig = null; refreshPhones(true); }
+}
+async function pairQr() {
+  const [text, code] = await invoke("phone_pair_qr");
+  const box = el("div"); box.append(await qrOf(text), el("div", "sub", "Waiting for the phone to scan it"));
+  const d = document.getElementById("dialog");
+  let done = false;
+  paired(() => invoke("phone_pair", { code, name: text.split(";")[1].slice(2) }).finally(() => { done = true; if (d.open) d.close(); }));
+  await ask("Pair with QR code", `${PAIR_WHERE} Tap Pair device with QR code and scan this.`, [["cancel", "Cancel"]], box);
+  if (!done) invoke("phone_pair_stop");
+}
+async function pairCode() {
+  const addr = el("input"), code = el("input");
+  addr.placeholder = "IP address and port, e.g. 192.168.1.23:37123"; code.placeholder = "Six-digit code"; code.inputMode = "numeric";
+  const box = el("div", "pin-fields"); box.append(addr, code);
+  if (await ask("Pair with code", `${PAIR_WHERE} Tap Pair device with pairing code, then type what it shows.`,
+    [["cancel", "Cancel"], ["pair", "Pair", true]], box) !== "pair") return;
+  paired(() => invoke("phone_pair", { addr: addr.value, code: code.value }));
+}
+
 async function refreshPhones(force) {
   if (current !== "android" || (phonesBusy && !force)) return;
   const { phones, waiting } = await invoke("phones");
@@ -102,7 +128,10 @@ async function refreshPhones(force) {
       el("p", null, "On the phone, turn on USB debugging (Settings › System › Developer options) and connect it with a USB cable. For Wi-Fi, turn on Wireless debugging there instead and keep the phone on the same Wi-Fi as this computer."));
     const b = el("button", null, "Reconnect over Wi-Fi");
     b.onclick = () => phoneAction("reconnect", null, {}, b);
-    empty.append(b);
+    const qr = el("button", "ghost", "Pair with QR code"), code = el("button", "ghost", "Pair with code");
+    qr.onclick = pairQr; code.onclick = pairCode;
+    const row = el("div", "buttons"); row.append(b, qr, code);
+    empty.append(row);
     page.append(empty);
   }
   phones.forEach(p => page.append(phoneSection(p)));
