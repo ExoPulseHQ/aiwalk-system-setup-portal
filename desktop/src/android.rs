@@ -132,7 +132,7 @@ pub struct Phones {
 /// Connects every phone that offers wireless debugging on this network (they advertise themselves; adb accepts only
 /// the ones paired with this computer), else the last address a phone was seen at. How many connected.
 fn reconnect() -> usize {
-    let (_, out) = adb(None, &["mdns", "services"], 20);
+    let out = mdns_services();
     let mut targets: Vec<String> = out.lines().filter(|l| l.contains("_adb-tls-connect"))
         .filter_map(|l| l.split_whitespace().last().map(String::from)).collect();
     if targets.is_empty() {
@@ -140,6 +140,77 @@ fn reconnect() -> usize {
         if let Ok(ip) = std::fs::read_to_string(ipfile()) { targets.push(format!("{}:5555", ip.trim())) }
     }
     targets.iter().filter(|t| adb(None, &["connect", t], 20).1.contains("connected")).count()
+}
+
+/// The QR pairing waiting for a phone to scan it (its service name), so a closed dialog or a newer QR stops the wait.
+static PAIRING: Mutex<String> = Mutex::new(String::new());
+
+/// The text of a QR code that the phone's Wireless debugging (Android 11+, Pair device with QR code) takes: a name the
+/// phone then advertises its pairing service under, and the password it pairs with. Starts no wait; `phone_pair` does.
+#[tauri::command]
+pub fn phone_pair_qr() -> Result<(String, String), String> {
+    use ring::rand::SecureRandom;
+    let mut raw = [0u8; 9];
+    ring::rand::SystemRandom::new().fill(&mut raw).map_err(|_| "this computer gave no random numbers")?;
+    let name = format!("aiwalk-{}", raw[..3].iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let password: String = raw[3..].iter().map(|b| char::from(b'0' + b % 10)).collect();
+    *PAIRING.lock().unwrap() = name.clone();
+    Ok((format!("WIFI:T:ADB;S:{name};P:{password};;"), password))
+}
+
+/// Pairs a phone over Wi-Fi, then connects it. With `addr` (the IP address and port the phone shows beside its pairing
+/// code) it pairs there at once; without, it waits up to two minutes for the phone that scanned the QR code of `name`.
+#[tauri::command(async)]
+pub fn phone_pair(addr: Option<String>, code: String, name: Option<String>) -> Result<String, String> {
+    let addr = match (addr.map(|a| a.trim().to_string()).filter(|a| !a.is_empty()), name) {
+        (Some(a), _) => a,
+        (None, Some(name)) => {
+            let at = std::time::Instant::now();
+            loop {
+                if *PAIRING.lock().unwrap() != name { return Err("Pairing stopped".into()) }
+                let out = mdns_services();
+                if let Some(a) = pairing_address(&out, &name) { break a }
+                if at.elapsed() > Duration::from_secs(120) { return Err("No phone scanned the code within two minutes".into()) }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+        (None, None) => return Err("Enter the IP address and port shown with the code".into()),
+    };
+    let (_, said) = adb(None, &["pair", &addr, code.trim()], 30);
+    if !said.contains("Successfully paired") { return Err(format!("Could not pair: {}", said.lines().last().unwrap_or("no answer from the phone"))) }
+    // the phone advertises its connect service a moment after pairing
+    for _ in 0..5 { if reconnect() > 0 { return Ok("Paired and connected over Wi-Fi".into()) } std::thread::sleep(Duration::from_secs(2)) }
+    Ok("Paired. If the phone does not show up, press Reconnect over Wi-Fi".into())
+}
+
+#[tauri::command]
+pub fn phone_pair_stop() { PAIRING.lock().unwrap().clear() }
+
+/// The adb services phones advertise on this network, one "name\ttype\taddress:port" per line as `adb mdns services`
+/// writes them. On a Linux desktop avahi already holds the mDNS port and adb's own discovery then sees nothing, so
+/// avahi is asked as well when it is there.
+fn mdns_services() -> String {
+    let mut out = adb(None, &["mdns", "services"], 10).1;
+    if !out.contains("_adb-tls") && crate::on_path("avahi-browse").is_some() {
+        for ty in ["_adb-tls-connect._tcp", "_adb-tls-pairing._tcp"] {
+            out.push_str(&avahi_services(&crate::sh("avahi-browse", &["-rpt", ty], 10).1));
+        }
+    }
+    out
+}
+
+/// `avahi-browse -rpt` resolved IPv4 rows ("=;iface;IPv4;name;type;domain;host;address;port;txt") as adb writes them.
+fn avahi_services(said: &str) -> String {
+    said.lines().filter_map(|l| {
+        let f: Vec<&str> = l.split(';').collect();
+        (f.len() > 8 && f[0] == "=" && f[2] == "IPv4").then(|| format!("\n{}\t{}\t{}:{}", f[3], f[4], f[7], f[8]))
+    }).collect()
+}
+
+/// The address of the pairing service the phone that scanned `name`'s QR code advertises, from `adb mdns services`.
+fn pairing_address(services: &str, name: &str) -> Option<String> {
+    services.lines().find(|l| l.contains("_adb-tls-pairing") && l.split_whitespace().next() == Some(name))
+        .and_then(|l| l.split_whitespace().last().map(String::from))
 }
 
 /// When the list last tried to reconnect by itself: the page asks every few seconds, a look-up takes about one.
@@ -340,5 +411,15 @@ mod tests {
         assert!(root.desk_on && root.wireless && root.ip == "10.0.0.2");
         assert_eq!(parse_probe("S", "", false, "").model, "S");
         assert!(!parse_probe("S", out, false, "").phonedesk_outdated);
+    }
+
+    #[test]
+    fn pairing_address_matches_the_scanned_name() {
+        let out = "List of discovered mdns services\nadb-1A2B-x\t_adb-tls-connect._tcp\t10.0.0.7:41000\naiwalk-0a0b0c\t_adb-tls-pairing._tcp\t10.0.0.7:37123";
+        assert_eq!(pairing_address(out, "aiwalk-0a0b0c").as_deref(), Some("10.0.0.7:37123"));
+        assert_eq!(pairing_address(out, "aiwalk-ffffff"), None);
+        assert_eq!(pairing_address(out, "adb-1A2B-x"), None);
+        let avahi = "+;wlp6s0;IPv4;aiwalk-0a0b0c;_adb-tls-pairing._tcp;local\n=;wlp6s0;IPv6;aiwalk-0a0b0c;_adb-tls-pairing._tcp;local;h.local;fe80::1;37123;\n=;wlp6s0;IPv4;aiwalk-0a0b0c;_adb-tls-pairing._tcp;local;h.local;192.168.0.108;37123;\"name=Pixel\"";
+        assert_eq!(pairing_address(&avahi_services(avahi), "aiwalk-0a0b0c").as_deref(), Some("192.168.0.108:37123"));
     }
 }

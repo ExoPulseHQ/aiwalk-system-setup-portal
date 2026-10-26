@@ -258,6 +258,7 @@ h2 > .icon { color: var(--muted); }
 .place .title { font-weight: 500; }
 .place .path { overflow-wrap: anywhere; font-family: var(--mono); font-size: var(--fs-s); }
 .place .buttons { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.empty .buttons { display: flex; gap: var(--s2); flex-wrap: wrap; }
 .place .cmd { overflow-wrap: anywhere; }
 .banner { color: var(--ink); padding: var(--s3) 0; border-top: 1px solid var(--amber); border-bottom: 1px solid var(--line); margin: 0 0 var(--s6); }
 .warn { display: flex; align-items: center; gap: 6px; color: var(--amber-ink); font-size: var(--fs-s); margin: 6px 0 0; }
