@@ -10,5 +10,7 @@
   "push": "• `git push`：若推的是共用 code repo，先確認變更都在 branch、已過測試集 merge gate。",
   "merge": "• `git merge`：共用 code repo（NTKCAP/depRL/Patient Cloud）merge 回 main 前**必過回歸測試集 merge gate**（見 [[Function_Validation_Protocol]] §2/§3；事件與歸屬見 [[Test_dataset_CICD_Preservation_Summary]]），且 merge 在 **worktree 副本內**執行、不切回 `~/NTKCAP` 本體。",
   "merge_worktree": "• **worktree 是拋棄式的**：清理要和 merge／push 在**同一串指令**裡 —— `… && git -C <repo> worktree remove ~/<repo>-<feature> && git -C <repo> branch -d feat/<feature>`。git 不會自動回收，`worktree prune` 也只清目錄已消失的，所以「等等再刪」＝永遠不刪。驗收：`git worktree list` 除本體外不留已 merge 的 `<repo>-*`。",
-  "commit": "• `git commit`：共用 code repo 的版本變更**必走 worktree 副本 + branch**（`~/NTKCAP` 停 main、勿直接動）；詳見 [[Git_Worktree_Protocol]]。**例外**：本 docs vault（ExoPulse_docs）自身不套此規範，可直接在主工作樹 commit。"
+  "commit": "• `git commit`：共用 code repo 的版本變更**必走 worktree 副本 + branch**（`~/NTKCAP` 停 main、勿直接動）；詳見 [[Git_Worktree_Protocol]]。**例外**：本 docs vault（ExoPulse_docs）自身不套此規範，可直接在主工作樹 commit。",
+  "review": "🔍 push 之前先審查：跑 vault 的 `/remote-review {dest} {worktree}`（Skill 工具，skill: remote-review，args: \"{dest} {worktree}\"）。它讀這個 worktree 還沒推上去的 diff，交給沒有前情的 opus subagent 做 code review 與 security review，你核對後向使用者回報。必修的先修好、重新 commit，再 push 會對新的 commit 重審；沒有要改的，重跑同一個 push 指令就會放行。",
+  "review_raw": "🔍 這是繞過 exo 的 push（EXO_RAW=1），推之前一樣先跑 vault 的 `/remote-review {host} <這個 repo 的路徑>`（Skill 工具，skill: remote-review），做 code review 與 security review 並回報。審完重跑同一個 push 指令就會放行。"
 }

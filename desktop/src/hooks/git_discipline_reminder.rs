@@ -71,6 +71,46 @@ fn lab_target(scan: &str, hosts: &[String]) -> Option<(String, bool, bool)> {
     })
 }
 
+/// `exo code push <worktree>` sent over ssh to a lab machine: (host, ssh destination as typed, worktree).
+fn exo_push(scan: &str, hosts: &[String]) -> Option<(String, String, String)> {
+    let w = b();
+    let masked = super::pycompat::mask_quotes(scan);
+    super::pycompat::segments(&masked).into_iter().find_map(|(a, b)| {
+        let seg = if masked[a..b].contains("<<") { &scan[a..] } else { &scan[a..b] };
+        let host = lab_host(seg, hosts)?;
+        let m = re(&format!(r"{w}exo{w}{S}+code{S}+push{S}+([^\s'\x22;&|]+)")).captures(seg).ok()??;
+        Some((host.clone(), dest(seg, &host), m.get(1)?.as_str().to_string()))
+    })
+}
+
+/// `user@host` as the ssh command wrote it, else the bare host.
+fn dest(seg: &str, host: &str) -> String {
+    re(&format!(r"([\p{{L}}\p{{N}}_.-]+)@{}{}", fancy_regex::escape(host), b())).captures(seg).ok().flatten()
+        .and_then(|c| c.get(1)).map_or(host.to_string(), |u| format!("{}@{host}", u.as_str()))
+}
+
+/// The commit a worktree on a lab machine is at, so a push is reviewed again once new commits are in it; empty when
+/// the machine does not answer, and then the worktree is reviewed once per session.
+fn remote_head(dest: &str, wt: &str) -> String {
+    program("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", dest, &format!("git -C {wt} rev-parse HEAD")], 25)
+        .filter(|(c, _, _)| *c == 0).map(|(_, o, _)| py_strip(&o).to_string()).unwrap_or_default()
+}
+
+/// A push of code from a lab machine waits, the first time for what it sends, for a code and security review by a
+/// fresh agent of this session: the code never reaches GitHub unread, and the vault is never sent to a reviewer.
+fn review_gate(stdin: &[u8], cmd: &str, scan: &str, t: &Value) -> Option<Out> {
+    let hosts = machines();
+    let (key, why) = if let Some((host, dest, wt)) = exo_push(scan, &hosts) {
+        let head = remote_head(&dest, &wt);
+        (format!("review:{host}:{wt}:{head}"), fill(&text(t, "review"), &[("dest", &dest), ("worktree", &wt)]))
+    } else if let Some((host, _, true)) = lab_target(scan, &hosts).filter(|_| cmd.contains("EXO_RAW=1")) {
+        (format!("review-raw:{host}:{cmd}"), fill(&text(t, "review_raw"), &[("host", &host)]))
+    } else { return None };
+    let session = serde_json::from_slice::<Value>(stdin).ok().and_then(|v| v["session_id"].as_str().map(String::from)).unwrap_or_default();
+    super::writing_style_reminder::first_attempt(&key, &session).unwrap_or(false)
+        .then(|| Out { stdout: exo_core::root_guard::deny_json(&why) + "\n", ..Out::default() })
+}
+
 /// (login, noreply address) of the account gh is signed in to; None when there is none or GitHub does not answer.
 fn gh_identity() -> Option<(String, String)> {
     let u = crate::github::get("user").ok()?;
@@ -85,6 +125,8 @@ pub fn run(stdin: &[u8]) -> Out {
     let Some(cmd) = py_or(&ti, &["command"]) else { return Out::quiet() };
     if cmd.is_empty() { return Out::quiet() }
     let scan = strip_msg(&cmd);
+    // code changes are made on lab machines and leave through `exo code push`
+    if let Some(out) = review_gate(stdin, &cmd, &scan, &t) { return out }
     let (push, merge, commit) = (has(&scan, "push"), has(&scan, "merge"), has(&scan, "commit"));
     if !(push || merge || commit) { return Out::quiet() }
 
@@ -226,6 +268,26 @@ mod tests {
         assert_eq!(strip_msg("git commit --message=push"), "git commit --message");
         assert_eq!(strip_msg("git commit -F\x1c\"a push\""), "git commit -F");
         assert!(!has(&strip_msg(r#"git commit -m "push""#), "push"));
+    }
+
+    #[test]
+    fn exo_pushes() {
+        let h = ["dragon", "ox"].map(String::from).to_vec();
+        let t = |c: &str| exo_push(c, &h);
+        assert_eq!(t(r#"ssh ntk@ox "~/.local/bin/exo code push ~/Askesis-x""#), Some(("ox".into(), "ntk@ox".into(), "~/Askesis-x".into())));
+        assert_eq!(t("ssh -o ConnectTimeout=20 ntk@dragon '~/.local/bin/exo code push /home/ntk/r-a && echo ok'"), Some(("dragon".into(), "ntk@dragon".into(), "/home/ntk/r-a".into())));
+        assert_eq!(t(r#"ssh ntk@ox "exo code commit ~/r --name a --email b -m x f""#), None);
+        assert_eq!(t("exo code push ~/r"), None);   // not on a lab machine
+        assert_eq!(dest("ssh -o X=1 ntk@ox 'exo code push r'", "ox"), "ntk@ox");
+        assert_eq!(dest("ssh ox 'exo code push r'", "ox"), "ox");
+        // a machine that does not answer: reviewed once per session; EXO_RAW pushes too
+        let run1 = |s: &str, c: &str| run(format!(r#"{{"session_id":"{s}","tool_input":{{"command":"{c}"}}}}"#).as_bytes()).stdout.contains("\"deny\"");
+        let s = format!("t{}", std::process::id());
+        let push = r#"ssh nobody@dragon.invalid.example \"exo code push ~/r-test\""#;
+        assert!(run1(&s, push), "the first push waits for the review");
+        assert!(!run1(&s, push), "the second goes through");
+        let raw = r#"ssh ntk@dragon 'cd r && EXO_RAW=1 git push'"#;
+        assert!(run1(&s, raw) && !run1(&s, raw), "a raw push is reviewed once as well");
     }
 
     #[test]
