@@ -30,6 +30,9 @@ fn keep(k: &Kept) -> Result<(), String> {
     crate::secrets::save("github", &serde_json::to_string(k).map_err(|e| e.to_string())?)
 }
 
+/// The login of the account git and this app use, without touching its token (no renewal, no network).
+pub fn active_login() -> Option<String> { let k = kept(); k.accounts.contains_key(&k.active).then_some(k.active) }
+
 /// (login, token) of the account git and this app use. GitHub's sign-ins for this app last eight hours: one that is
 /// about to run out is renewed here first, so git, the vault's tools and the app's window all get a token that works
 /// without the person signing in again.

@@ -2,14 +2,19 @@
 //! Sealed notes for Obsidian on a phone, which cannot start a program: it asks over HTTP on 127.0.0.1. Two servers
 //! answer the same way: the Android app (sealed.rs, port 47170) and `aiwalk-sealed-vm` in Android's Linux Terminal
 //! (vmkey/, port 47171), for when the Terminal's VM holds the key. `GET /open?file=`, `POST /save?file=` (the text
-//! as the body), `GET /state?file=`, each with `token=`; the file is relative to the vault. Kept free of tauri so the
-//! VM program can share it.
+//! as the body), `GET /state?file=`, each with `token=`; the file is relative to the vault. `GET /whoami` names the
+//! GitHub account the app is signed in with (never its token), for the plugin, which cannot run gh on a phone. Kept
+//! free of tauri so the VM program can share it. The app adds `/sync/...` through `more` (phonegit.rs phone_sync): Sync
+//! vault from inside Obsidian.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The unlocked vaults: the file a vault-relative path names (None while locked), and a note's text (Err(None): locked).
-pub struct Vaults { pub file: fn(&str) -> Option<PathBuf>, pub open: fn(&Path) -> Result<Vec<u8>, Option<String>> }
+/// `who`: the GitHub login signed in here, if any. `more`: routes this server alone answers (route, query, body), None
+/// for the rest.
+pub type More = fn(&str, &dyn Fn(&str) -> String, &[u8]) -> Option<(u16, Vec<u8>)>;
+pub struct Vaults { pub file: fn(&str) -> Option<PathBuf>, pub open: fn(&Path) -> Result<Vec<u8>, Option<String>>, pub who: fn() -> Option<String>, pub more: More }
 
 /// Answers on 127.0.0.1:`port` from a thread; false when the port is taken.
 pub fn serve(port: u16, token: &'static str, v: &'static Vaults) -> bool {
@@ -37,7 +42,11 @@ fn request(mut c: std::net::TcpStream, token: &str, v: &Vaults) -> std::io::Resu
     let target = head.split_whitespace().nth(1).unwrap_or("/");
     let (route, query) = target.split_once('?').unwrap_or((target, ""));
     let param = |k: &str| query.split('&').find_map(|p| p.strip_prefix(&format!("{k}="))).map(percent_decode).unwrap_or_default();
-    let (code, out): (u16, Vec<u8>) = if param("token") != token { (403, b"bad token".to_vec()) } else {
+    // pairing hands out the token, so it is the one route asked without it (the server checks its own one-time code)
+    let (code, out): (u16, Vec<u8>) = if route == "/pair" { (v.more)(route, &param, &body).unwrap_or((404, b"no such request".to_vec())) }
+    else if param("token") != token { (403, b"bad token".to_vec()) } else if route == "/whoami" {
+        match (v.who)() { Some(l) => (200, l.into_bytes()), None => (404, b"not signed in".to_vec()) }
+    } else if let Some(r) = (v.more)(route, &param, &body) { r } else {
         match (route, (v.file)(&param("file"))) {
             ("/state", f) => (200, if f.is_some() { b"unlocked".to_vec() } else { b"locked".to_vec() }),
             (_, None) => (423, b"locked".to_vec()),
@@ -49,7 +58,8 @@ fn request(mut c: std::net::TcpStream, token: &str, v: &Vaults) -> std::io::Resu
         }
     };
     let reason = match code { 200 => "OK", 403 => "Forbidden", 404 => "Not Found", 423 => "Locked", _ => "Bad Request" };
-    c.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len()).as_bytes())?;
+    let kind = if out.first().is_some_and(|b| *b == b'{' || *b == b'[') { "application/json" } else { "text/plain; charset=utf-8" };
+    c.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len()).as_bytes())?;
     c.write_all(&out)
 }
 
@@ -86,5 +96,16 @@ mod tests {
     #[test]
     fn percent_decode_reads_paths() {
         assert_eq!(super::percent_decode("a%2Fb%20c+d.md.age"), "a/b c d.md.age");
+    }
+
+    #[test]
+    fn whoami_needs_the_token_and_names_the_login() {
+        use std::io::{Read, Write};
+        static V: super::Vaults = super::Vaults { file: |_| None, open: |_| Err(None), who: || Some("octo".into()), more: |_, _, _| None };
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        assert!(super::serve(port, "t0k", &V));
+        let get = |q: &str| { let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap(); write!(c, "GET /whoami?{q} HTTP/1.1\r\n\r\n").unwrap(); let mut s = String::new(); c.read_to_string(&mut s).unwrap(); s };
+        let ok = get("token=t0k"); assert!(ok.starts_with("HTTP/1.1 200") && ok.ends_with("\r\n\r\nocto"), "{ok}");
+        assert!(get("token=nope").starts_with("HTTP/1.1 403"));
     }
 }
