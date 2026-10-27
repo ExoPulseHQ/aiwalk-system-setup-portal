@@ -53,7 +53,7 @@ pub fn main() {
     };
     let _ = (ROOT.set(root.clone()), KEY.set(key));
     let token: &'static str = crate::phonehttp::token().leak();
-    static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file, open };
+    static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file, open, who: || None, more: |_, _, _| None };
     if !crate::phonehttp::serve(PORT, token, &VAULTS) { eprintln!("Port {PORT} is taken: is this already running?"); std::process::exit(1) }
     let ticket = root.join(".sealed-token");
     let _ = std::fs::write(&ticket, format!("{PORT} {token}"));

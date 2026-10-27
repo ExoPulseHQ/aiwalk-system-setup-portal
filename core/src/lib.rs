@@ -302,11 +302,16 @@ pub fn edit_machines(text: &str, edit: &dyn Fn(&Value, &str) -> Option<Option<St
     Ok(out)
 }
 
-/// The app's path as the first word of a `Match exec` command. Unix runs it through sh, which takes single quotes;
-/// Windows' OpenSSH runs it through cmd.exe, which does not, so a path with a space ("aIwalk System Setup") broke
-/// there, the Match never held and ssh said "Could not resolve hostname". cmd takes double quotes, escaped as \" inside
-/// the quoted exec argument (ssh_config's own escape).
-fn exec_program(app: &str, windows: bool) -> String { if windows { format!("\\\"{app}\\\"") } else { format!("'{app}'") } }
+/// The app's path as the first word of a `Match exec` command. Unix runs it through sh, which takes single quotes.
+/// On Windows two different programs run it: Git Bash's ssh (what Claude Code and the vault's scripts use) through
+/// sh, Windows' own OpenSSH through cmd.exe, and no quoting reads the same in both: single quotes are not quotes to
+/// cmd, and an escaped double quote inside the exec argument is read by neither ssh (issue #9, every alias broken).
+/// So on Windows the app hands over a path without a space (desktop machines.rs ssh_app) and it goes in unquoted,
+/// with forward slashes, which sh leaves alone (a backslash is its escape) and cmd.exe accepts. A path that still has a
+/// space keeps single quotes: Git Bash's ssh then works, Windows' own does not.
+fn exec_program(app: &str, windows: bool) -> String {
+    if windows && !app.contains(' ') { app.replace('\\', "/") } else { format!("'{app}'") }
+}
 
 /// The block the app keeps in ~/.ssh/config: one alias per tunnelled machine, reached through the app itself
 /// (`app` is its program's path, used as ssh's ProxyCommand). Machines without a tunnel are left out.
@@ -1209,8 +1214,10 @@ mod tests {
         assert!(signed.contains(&format!(r#"Match originalhost host-20 exec "{} --ssh-cert ssh-host-20.example.com --quiet""#, super::exec_program("/opt/a app/aiwalk-setup", cfg!(windows))))
             && super::exec_program("/opt/a app/aiwalk-setup", false) == "'/opt/a app/aiwalk-setup'"
             && signed.contains("CertificateFile ~/.cloudflared/ssh-host-20.example.com-cf_key-cert.pub") && !signed.contains("Host host-20"), "{signed}");
+        assert_eq!(super::exec_program(r"C:\Users\a\AppData\Local\aIwalk\bin\aiwalk-setup.exe", true),
+            "C:/Users/a/AppData/Local/aIwalk/bin/aiwalk-setup.exe", "Windows: no space, so no quotes for sh and cmd.exe to disagree on");
         assert_eq!(super::exec_program(r"C:\Program Files\aIwalk System Setup\aiwalk-setup.exe", true),
-            r#"\"C:\Program Files\aIwalk System Setup\aiwalk-setup.exe\""#, "Windows: cmd.exe takes double quotes, not single");
+            r"'C:\Program Files\aIwalk System Setup\aiwalk-setup.exe'", "a space left: single quotes, which Git Bash's ssh reads");
         let block = ssh_block(&machines(rules), "/opt/aiwalk-setup");
         assert_eq!(block.matches("Host ").count(), 1, "one alias per tunnelled machine: {block}");
         assert!(block.contains("HostName ssh-host-20.example.com") && block.contains("\"/opt/aiwalk-setup\" --ssh-proxy %h"));

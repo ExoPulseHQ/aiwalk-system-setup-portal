@@ -337,14 +337,27 @@ pub(crate) fn bash_targets(cmd: &str, cwd: &str) -> Vec<String> {
     bash_targets_os(cmd, cwd).into_iter().map(|p| p.replace('\\', "/")).collect()
 }
 
+/// The folder a command is in at byte `pos` of `text`: `cwd`, moved by every `cd <dir>` before that point. A relative
+/// name after a cd is returned joined to where the cd went (the scratchpad, a lab worktree), never to the session's folder.
+fn cwd_at(text: &str, pos: usize, cwd: &str) -> String {
+    let mut at = cwd.to_string();
+    for c in re(r#"(?:^|&&|;|\|\||\n)\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)"#).captures_iter(&text[..pos]).flatten() {
+        at = join(&at, &expanduser(g(&c, 1).trim_matches(['"', '\''])));
+    }
+    at
+}
+
 fn bash_targets_os(cmd: &str, cwd: &str) -> Vec<String> {
-    // a remote command creates files on the other machine; its heredoc is not ours to gate
-    if re(r"^\s*(?:\w+=\S+\s+)*ssh\s").is_match(cmd).unwrap_or(false) { return vec![] }
-    let mut out: Vec<String> = re(r#"open\(\s*['"]([^'"]+)['"]\s*,\s*['"][wax]"#).captures_iter(cmd).flatten().map(|c| g(&c, 1).to_string()).collect();
     // heredoc bodies and quoted strings are text, not shell; keep the tail of a heredoc's opener line
     let heredoc = re(r#"(?s)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n.*?\n\1[ \t]*(?=\n|$)"#);
     let shell = heredoc.try_replacen(cmd, 0, |c: &fancy_regex::Captures<str>| g(c, 2).to_string()).map(|s| s.into_owned()).unwrap_or_else(|_| cmd.to_string());
     let masked = super::pycompat::mask_quotes(&shell);
+    // a remote command creates files on the other machine, wherever ssh comes in the line (after cd, timeout, a pipe):
+    // its quoted command and its heredoc are not ours to gate
+    if re(r"(?:^|[;&|(\n])\s*(?:\w+=\S+\s+)*(?:(?:timeout|nohup|env|time)\s+(?:-\S+\s+)*(?:\d\S*\s+)?)*ssh\s").is_match(&masked).unwrap_or(false) { return vec![] }
+    // relative to where the command has cd'd by then; unchanged (still relative) when it has not
+    let here = |text: &str, pos: usize, name: String| { let at = cwd_at(text, pos, cwd); if at == cwd || name.starts_with(['/', '~']) { name } else { join(&at, &name) } };
+    let mut out: Vec<String> = re(r#"open\(\s*['"]([^'"]+)['"]\s*,\s*['"][wax]"#).captures_iter(cmd).flatten().map(|c| here(cmd, c.get(0).unwrap().start(), g(&c, 1).to_string())).collect();
     // a `>` outside quotes; what it writes to is one bare word or one quoted string
     for m in re(r"(?<![<>=])>>?\s*").find_iter(&masked).flatten() {
         let tail = &shell[m.end()..];
@@ -352,11 +365,12 @@ fn bash_targets_os(cmd: &str, cwd: &str) -> Vec<String> {
             Some(q @ ('\'' | '"')) => tail[1..].split(q).next().unwrap_or(""),
             _ => tail.split(|c: char| py_space(c) || "\"'&|;)".contains(c)).next().unwrap_or(""),
         };
-        if !word.is_empty() { out.push(word.to_string()) }
+        if !word.is_empty() { out.push(here(&shell, m.start(), word.to_string())) }
     }
     for (a, b) in super::pycompat::segments(&masked) {
         let Some(argv) = shlex_split(shell[a..b].trim_matches(py_space)) else { continue };
         let Some(prog) = argv.first().map(|f| basename(f)) else { continue };
+        let (at, start) = (cwd_at(&shell, a, cwd), out.len());
         // options that take the next word as their value; -t names the folder everything else goes into
         let valued: &[&str] = match prog { "touch" => &["-d", "-r", "-t"], "cp" | "mv" => &["-S", "-t"], "install" => &["-m", "-o", "-g", "-S", "-t"], _ => &[] };
         let (mut names, mut into, mut it) = (vec![], None, argv[1..].iter());
@@ -380,7 +394,7 @@ fn bash_targets_os(cmd: &str, cwd: &str) -> Vec<String> {
             ("cp" | "mv" | "install", Some(dir)) => out.extend(names.iter().map(|s| join(&dir, basename(s)))),
             ("cp" | "mv" | "install", None) if names.len() > 1 => {
                 let dst = &names[names.len() - 1];
-                if std::path::Path::new(&join(cwd, &expanduser(dst))).is_dir() {
+                if std::path::Path::new(&join(&at, &expanduser(dst))).is_dir() {
                     out.extend(names[..names.len() - 1].iter().map(|s| join(dst, basename(s))));
                 } else {
                     out.push(dst.clone());
@@ -388,6 +402,7 @@ fn bash_targets_os(cmd: &str, cwd: &str) -> Vec<String> {
             }
             _ => {}
         }
+        if at != cwd { for t in &mut out[start..] { if !t.starts_with(['/', '~']) { *t = join(&at, t) } } }
     }
     let mut seen = std::collections::HashSet::new();
     out.into_iter().filter(|t| seen.insert(t.clone()))
@@ -448,15 +463,11 @@ fn hook(stdin: &[u8]) -> R<String> {
     // Bash creating vault files: same gate as Write, keyed on the exact command.
     if tool == "Bash" {
         let cmd = or_str(&[ti.get("command")])?;
-        // relative targets resolve against a single leading cd; with a second cd we fall back to the session cwd
-        let cds = re(r"(?:^|&&|;|\|\|)\s*cd\s").find_iter(cmd.as_str()).flatten().count();
-        if cds == 1 {
-            if let Ok(Some(m)) = re(r#"^\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)"#).captures(cmd.as_str()) {
-                cwd = abspath(&join(&cwd, &expanduser(g(&m, 1).trim_matches(['"', '\'']))));
-            }
-        }
-        let new: Vec<String> = bash_targets(&cmd, &cwd).into_iter().filter(|t| is_new_doc(t, &cwd, root.as_deref())).collect();
-        if !new.is_empty() && first_attempt(&cmd, &session)? {
+        // relative targets come back joined to wherever the command cd'd (bash_targets)
+        let mut new: Vec<String> = bash_targets(&cmd, &cwd).into_iter().filter(|t| is_new_doc(t, &cwd, root.as_deref())).collect();
+        new.sort();
+        // keyed on the files, not the command's text: the retry that passes may be worded differently
+        if !new.is_empty() && first_attempt(&format!("bash:{}", new.iter().map(|t| abspath(&join(&cwd, t))).collect::<Vec<_>>().join("\n")), &session)? {
             let names: Vec<&str> = new.iter().map(|t| basename(t)).collect();
             return Ok(deny(&texts, &names));
         }
@@ -583,6 +594,12 @@ mod tests {
         assert_eq!(t("cp -t out a.md b.md && mv --target-directory=o2 c.md"), ["out/a.md", "out/b.md", "o2/c.md"]);
         assert_eq!(t("touch a.md > log.txt 2>&1"), ["log.txt", "a.md"]);
         assert_eq!(t("echo 'touch no.md; x > no2.md'"), Vec::<String>::new());
+        // ssh anywhere in the line writes on the other machine; a cd moves where relative names land
+        assert_eq!(t("cd ~/w && timeout 60 ssh ntk@ox 'python3 - <<E\nopen(\"r.js\",\"w\")\nE'"), Vec::<String>::new());
+        assert_eq!(t("scp a ox: && ssh ox 'cat > b.md'"), Vec::<String>::new());
+        assert_eq!(t("cd /tmp/s/scratchpad && cat a.js b.js > R.new.js"), ["/tmp/s/scratchpad/R.new.js"]);
+        assert_eq!(t("cd /a && touch x.md && cd b && cp y z.md"), ["/a/x.md", "/a/b/z.md"]);
+        assert_eq!(t("cd /a && python3 - <<'E'\nopen('n.md','w')\nE"), ["/a/n.md"]);
     }
 
     #[test]

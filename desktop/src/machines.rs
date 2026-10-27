@@ -15,6 +15,27 @@ fn app() -> Option<String> {
     crate::lasting_exe().map(|e| e.to_string_lossy().into_owned()).filter(|e| !e.contains('"'))
 }
 
+/// The app's path as the ssh block names it. On Windows a path with a space ("aIwalk System Setup") cannot go into
+/// `Match exec` in a way both Git Bash's ssh and Windows' own read (core exec_program, issue #9), so the block names a
+/// copy at a path without one, %LOCALAPPDATA%\aIwalk\bin\aiwalk-setup.exe, made again when the app changes (size or
+/// time differ). `copy` false only names it (ssh_status compares, and must not write). A copy that cannot be made
+/// (the old one in use by a running ssh, or a user folder with a space in its name) leaves the app's own path.
+fn ssh_app(copy: bool) -> Option<String> {
+    let app = app()?;
+    #[cfg(windows)]
+    if app.contains(' ') {
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("aIwalk").join("bin")) {
+            let shim = dir.join("aiwalk-setup.exe");
+            let stamp = |p: &std::path::Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+            if copy && stamp(&shim) != stamp(std::path::Path::new(&app)) { let _ = std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&app, &shim)); }
+            let s = shim.to_string_lossy().into_owned();
+            if shim.is_file() && !s.contains(' ') && !s.contains('"') { return Some(s) }
+        }
+    }
+    let _ = copy;
+    Some(app)
+}
+
 /// ssh options that reach `tunnel` through Cloudflare, carried by this app itself (`--ssh-proxy`, access.rs).
 /// Where the machine's Access application signs SSH certificates, a fresh one is fetched (they last minutes) and
 /// offered first, so the machine's log names the person; where it does not, or the machine does not trust them yet,
@@ -169,7 +190,7 @@ pub(crate) fn ssh_config() -> PathBuf { home().join(".ssh/config") }
 /// Whether ~/.ssh/config already holds exactly the aliases the app would write.
 #[tauri::command(async)]
 pub fn ssh_status(machines: Vec<Machine>) -> &'static str {
-    let Some(app) = app() else { return "nothing" };
+    let Some(app) = ssh_app(false) else { return "nothing" };
     let block = ssh_block(&machines, &app);
     // no tunnel exists yet. Every entry has a HostName line; a machine that signs certificates is written as a
     // `Match originalhost` block, with no `Host ` line at all, so looking for "Host " said "nothing" once every
@@ -181,7 +202,7 @@ pub fn ssh_status(machines: Vec<Machine>) -> &'static str {
 /// Writes (or refreshes) the app's block in ~/.ssh/config, keeping everything else; the old file is kept as config.bak.
 #[tauri::command(async)]
 pub fn ssh_setup(machines: Vec<Machine>) -> Result<String, String> {
-    let app = app().ok_or("This app's own path cannot be written into an ssh config")?;
+    let app = ssh_app(true).ok_or("This app's own path cannot be written into an ssh config")?;
     let file = ssh_config();
     // the person's own file is never replaced unread: one that cannot be read, or is not text this can edit, is left
     // exactly as it is. The copy kept beside it is made from the bytes as they are.

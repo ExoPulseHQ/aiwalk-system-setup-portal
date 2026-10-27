@@ -887,6 +887,10 @@ pub fn work_file() -> String { work_path().to_string_lossy().into_owned() }
 #[cfg(target_os = "android")]
 const SHARED: &str = "/storage/emulated/0/Documents/aIwalk";
 
+/// The vault copies on this phone (each folder under SHARED with a git repository).
+#[cfg(target_os = "android")]
+pub fn copies() -> Vec<std::path::PathBuf> { std::fs::read_dir(SHARED).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.join(".git").exists()).collect() }
+
 #[cfg(target_os = "android")]
 fn dest(repo: &str) -> std::path::PathBuf { Path::new(SHARED).join(repo.rsplit('/').next().unwrap_or(repo)) }
 
@@ -916,7 +920,9 @@ pub fn vault_download(app: tauri::AppHandle, repo: String, small: bool) -> Resul
     use_token(crate::login::active().map(|(_, t)| t));
     self::small(small);
     let w = Working::new(&app, &repo, "Downloading the vault");
-    Ok(exo_core::exo_repos::summary("Downloaded", &clone(&format!("https://github.com/{repo}.git"), &dest(&repo), &|f, text| w.say(f, text))?))
+    let rows = clone(&format!("https://github.com/{repo}.git"), &dest(&repo), &|f, text| w.say(f, text))?;
+    crate::sealed::ticket_to(&dest(&repo));
+    Ok(exo_core::exo_repos::summary("Downloaded", &rows))
 }
 
 #[cfg(target_os = "android")]
@@ -998,6 +1004,34 @@ pub fn vault_send(app: tauri::AppHandle, repo: String, path: String, message: St
     if files.is_empty() { return Err("Tick at least one file".into()) }
     let w = Working::new(&app, &repo, "Uploading");
     send(Path::new(&path), message.trim(), (login, &format!("{id}+{login}@users.noreply.github.com")), Some(&files), &|f, text| w.say(f, text))
+}
+
+/// Obsidian on this phone asks over phonehttp: Sync vault without leaving it. `vault` is the copy's folder name (what
+/// Obsidian calls the vault). `/sync/incoming` and `/sync/changes` look; `/sync/pull` brings in the team's changes;
+/// `/sync/send?message=` uploads the files listed in the body (a JSON array), as `vault_send` does from the app's page.
+// ponytail: whoever can read .app-token can also ask for an upload of what is in the vault; the same app could already edit those files
+#[cfg(target_os = "android")]
+pub fn phone_sync(route: &str, param: &dyn Fn(&str) -> String, body: &[u8]) -> Option<(u16, Vec<u8>)> {
+    if !route.starts_with("/sync/") { return None }
+    let name = param("vault"); let path = Path::new(SHARED).join(&name);
+    if name.is_empty() || name.contains('/') || name.starts_with('.') || !path.join(".git").exists() { return Some((404, b"This vault is not one aIwalk System Setup downloaded on this phone.".to_vec())) }
+    use_token(crate::login::active().map(|(_, t)| t));
+    let json = |v: Result<serde_json::Value, String>| match v { Ok(v) => (200, v.to_string().into_bytes()), Err(e) => (400, e.into_bytes()) };
+    let done = |text: String| serde_json::json!({ "text": text });
+    Some(match route {
+        "/sync/incoming" => json(incoming(&path, &|_| {}).map(|(new, recent)| serde_json::json!({ "incoming": new, "recent": recent }))),
+        "/sync/changes" => json(serde_json::to_value(vault_changes(path.to_string_lossy().into())).map_err(|e| e.to_string())),
+        "/sync/pull" => { let (book, rows) = pull(&path, &|_, _| {}); json(book.map(|_| done(exo_core::exo_repos::summary("Up to date", &rows)))) }
+        "/sync/send" => json((|| {
+            let user = crate::github::get("user").map_err(|_| "Sign in first".to_string())?;
+            let (Some(login), Some(id)) = (user["login"].as_str(), user["id"].as_u64()) else { return Err("Sign in first".to_string()) };
+            let (msg, files) = (param("message"), serde_json::from_slice::<Vec<String>>(body).unwrap_or_default());
+            if msg.trim().is_empty() { return Err("Say what changed in one line first".into()) }
+            if files.is_empty() { return Err("Tick at least one file".into()) }
+            send(&path, msg.trim(), (login, &format!("{id}+{login}@users.noreply.github.com")), Some(&files), &|_, _| {}).map(done)
+        })()),
+        _ => (404, b"no such request".to_vec()),
+    })
 }
 
 // ---------------------------------------------------------------- test

@@ -552,9 +552,16 @@ fn phone_open(f: &Path) -> Result<Vec<u8>, Option<String>> { open(f).map_err(|r|
 
 #[cfg(target_os = "android")]
 pub fn serve_phone() {
-    static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file: phone_file, open: phone_open };
+    static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file: phone_file, open: phone_open, who: crate::login::active_login, more: crate::phonegit::phone_sync };
     crate::phonehttp::serve(PHONE_PORT, phone_token(), &VAULTS);
+    crate::phonegit::copies().iter().for_each(|d| ticket_to(d));
 }
+
+/// Android: "47170 <token>" at a vault's root (kept out of git), so the plugin can ask who is signed in without the
+/// notes being unlocked. A new token each start, so every copy gets it again then, and a new copy when downloaded.
+/// `.sealed-token` stays for unlocking: the Linux Terminal's VM may hold that one.
+#[cfg(target_os = "android")]
+pub fn ticket_to(root: &Path) { let _ = std::fs::write(root.join(".app-token"), format!("{PHONE_PORT} {}", phone_token())); }
 
 /// Android: the file the app's foreground service watches (WorkService.kt): it is there while a vault is unlocked, so
 /// Android does not stop the app and lose the unlocked key; the page starts the service after an unlock.

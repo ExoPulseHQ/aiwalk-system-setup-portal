@@ -186,4 +186,6 @@ jobs:
           cargo build --release -p aiwalk-sealed-vm --target aarch64-unknown-linux-gnu
           version=$(grep -m1 '^version' desktop/Cargo.toml | cut -d'"' -f2)
           cp target/aarch64-unknown-linux-gnu/release/aiwalk-sealed-vm "$RUNNER_TEMP/aiwalk-sealed-vm_${version}_linux_arm64"
-          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/aiwalk-sealed-vm_${version}_linux_arm64" --clobber
+          # the same package also builds aiwalk-claude-vm: Claude in the Terminal for Obsidian on the phone (cite, the pet)
+          cp target/aarch64-unknown-linux-gnu/release/aiwalk-claude-vm "$RUNNER_TEMP/aiwalk-claude-vm_${version}_linux_arm64"
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/aiwalk-sealed-vm_${version}_linux_arm64" "$RUNNER_TEMP/aiwalk-claude-vm_${version}_linux_arm64" --clobber
