@@ -555,6 +555,7 @@ pub fn serve_phone() {
     static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file: phone_file, open: phone_open, who: crate::login::active_login, more: crate::phonegit::phone_sync };
     crate::phonehttp::serve(PHONE_PORT, phone_token(), &VAULTS);
     crate::phonegit::copies().iter().for_each(|d| ticket_to(d));
+    crate::linuxterm::put(&Path::new(crate::phonegit::SHARED).join("linux-terminal"));
 }
 
 /// Android: "47170 <token>" at a vault's root (kept out of git), so the plugin can ask who is signed in without the

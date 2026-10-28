@@ -133,7 +133,7 @@ jobs:
         with: { distribution: temurin, java-version: 21 }
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch, 2026-10
         if: steps.key.outputs.have == 'yes'
-        with: { targets: aarch64-linux-android }
+        with: { targets: "aarch64-linux-android,aarch64-unknown-linux-gnu" }
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.key.outputs.have == 'yes'
       - name: Build and sign
@@ -142,6 +142,13 @@ jobs:
           # as a cargo command, not the npm one: the Gradle project calls `cargo tauri` itself while it builds, and
           # the first release with this job failed on "no such command: tauri"
           cargo install tauri-cli --version "^2" --locked
+          # aiwalk-claude-vm goes into the APK (build.rs): the app puts it, with setup.sh, where Android's Linux Terminal
+          # sees it (linuxterm.rs), so one line in the Terminal sets Claude up with nothing to download
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+            cargo build --release -p aiwalk-sealed-vm --bin aiwalk-claude-vm --target aarch64-unknown-linux-gnu
+          export AIWALK_CLAUDE_VM="$PWD/target/aarch64-unknown-linux-gnu/release/aiwalk-claude-vm"
+          test -s "$AIWALK_CLAUDE_VM"
           export NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           printf 'storeFile=%s\npassword=%s\nkeyAlias=aiwalk\n' "$RUNNER_TEMP/release.jks" "$KEYSTORE_PASSWORD" > desktop/gen/android/keystore.properties

@@ -23,22 +23,38 @@ pub fn serve(port: u16, token: &'static str, v: &'static Vaults) -> bool {
     true
 }
 
+/// One connection, answering request after request (keep-alive) until the client closes it or is quiet for two minutes.
+/// Android's Linux Terminal starts a socat in its VM for each connection it forwards and never reaps it: one connection
+/// per request (the Claude pane asks every second) filled the VM's process table in two hours, and then no port of the
+/// VM reached the phone at all. A phone's HTTP client reuses a connection the server keeps open.
 fn request(mut c: std::net::TcpStream, token: &str, v: &Vaults) -> std::io::Result<()> {
-    let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let _ = c.set_read_timeout(Some(std::time::Duration::from_secs(120)));
     let mut buf = Vec::new();
     let mut b = [0u8; 4096];
-    // the head, then a body as long as Content-Length says
-    let head_end = loop {
-        let n = c.read(&mut b)?;
-        if n == 0 { return Ok(()) }
-        buf.extend_from_slice(&b[..n]);
-        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") { break i + 4 }
-        if buf.len() > 1 << 16 { return Ok(()) }
-    };
-    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let len: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
-    while buf.len() < head_end + len { let n = c.read(&mut b)?; if n == 0 { break } buf.extend_from_slice(&b[..n]); }
-    let body = buf[head_end..].to_vec();
+    loop {
+        // the head, then a body as long as Content-Length says
+        let head_end = loop {
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") { break i + 4 }
+            if buf.len() > 1 << 16 { return Ok(()) }
+            let n = c.read(&mut b)?;
+            if n == 0 { return Ok(()) }
+            buf.extend_from_slice(&b[..n]);
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+        let len: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+        while buf.len() < head_end + len { let n = c.read(&mut b)?; if n == 0 { return Ok(()) } buf.extend_from_slice(&b[..n]); }
+        let body = buf[head_end..head_end + len].to_vec();
+        buf.drain(..head_end + len);
+        // HTTP/1.0, or a client that says so, closes after this answer
+        let close = head.lines().next().is_some_and(|l| l.ends_with("HTTP/1.0"))
+            || head.lines().any(|l| l.to_ascii_lowercase().replace(' ', "") == "connection:close");
+        answer(&mut c, &head, &body, close, token, v)?;
+        if close { return Ok(()) }
+    }
+}
+
+fn answer(c: &mut std::net::TcpStream, head: &str, body: &[u8], close: bool, token: &str, v: &Vaults) -> std::io::Result<()> {
+    let body = body.to_vec();
     let target = head.split_whitespace().nth(1).unwrap_or("/");
     let (route, query) = target.split_once('?').unwrap_or((target, ""));
     let param = |k: &str| query.split('&').find_map(|p| p.strip_prefix(&format!("{k}="))).map(percent_decode).unwrap_or_default();
@@ -59,7 +75,8 @@ fn request(mut c: std::net::TcpStream, token: &str, v: &Vaults) -> std::io::Resu
     };
     let reason = match code { 200 => "OK", 403 => "Forbidden", 404 => "Not Found", 423 => "Locked", _ => "Bad Request" };
     let kind = if out.first().is_some_and(|b| *b == b'{' || *b == b'[') { "application/json" } else { "text/plain; charset=utf-8" };
-    c.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", out.len()).as_bytes())?;
+    let conn = if close { "close" } else { "keep-alive" };
+    c.write_all(format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: {conn}\r\n\r\n", out.len()).as_bytes())?;
     c.write_all(&out)
 }
 
@@ -104,8 +121,22 @@ mod tests {
         static V: super::Vaults = super::Vaults { file: |_| None, open: |_| Err(None), who: || Some("octo".into()), more: |_, _, _| None };
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         assert!(super::serve(port, "t0k", &V));
-        let get = |q: &str| { let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap(); write!(c, "GET /whoami?{q} HTTP/1.1\r\n\r\n").unwrap(); let mut s = String::new(); c.read_to_string(&mut s).unwrap(); s };
+        let get = |q: &str| { let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap(); write!(c, "GET /whoami?{q} HTTP/1.1\r\nConnection: close\r\n\r\n").unwrap(); let mut s = String::new(); c.read_to_string(&mut s).unwrap(); s };
         let ok = get("token=t0k"); assert!(ok.starts_with("HTTP/1.1 200") && ok.ends_with("\r\n\r\nocto"), "{ok}");
         assert!(get("token=nope").starts_with("HTTP/1.1 403"));
+    }
+
+    #[test]
+    fn one_connection_answers_request_after_request() {
+        use std::io::{Read, Write};
+        static V: super::Vaults = super::Vaults { file: |_| None, open: |_| Err(None), who: || Some("octo".into()), more: |_, _, b| Some((200, b.to_vec())) };
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        assert!(super::serve(port, "t0k", &V));
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        // a body, then a second request on the same connection: each answer is its own, and the second closes
+        write!(c, "POST /echo?token=t0k HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcGET /whoami?token=t0k HTTP/1.1\r\nConnection: close\r\n\r\n").unwrap();
+        let mut s = String::new(); c.read_to_string(&mut s).unwrap();
+        assert_eq!(s.matches("HTTP/1.1 200").count(), 2, "{s}");
+        assert!(s.contains("Connection: keep-alive\r\n\r\nabc") && s.ends_with("Connection: close\r\n\r\nocto"), "{s}");
     }
 }

@@ -885,7 +885,7 @@ pub fn work_file() -> String { work_path().to_string_lossy().into_owned() }
 // ponytail: the owner of the phone (user 0); a work profile has its own /storage/emulated/<n>. Ask Android
 // (Environment.getExternalStorageDirectory) when someone keeps the vault in a work profile.
 #[cfg(target_os = "android")]
-const SHARED: &str = "/storage/emulated/0/Documents/aIwalk";
+pub const SHARED: &str = "/storage/emulated/0/Documents/aIwalk";
 
 /// The vault copies on this phone (each folder under SHARED with a git repository).
 #[cfg(target_os = "android")]
