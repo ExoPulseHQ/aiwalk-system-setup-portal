@@ -52,6 +52,9 @@ mod vaultcheck;
 #[cfg(any(target_os = "android", feature = "phone-git"))]
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 mod phonegit;
+// Claude for Obsidian in Android's Linux Terminal: setup.sh and aiwalk-claude-vm, put where the Terminal sees them
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod linuxterm;
 #[cfg(target_os = "linux")]
 mod android;
 #[cfg(target_os = "linux")]

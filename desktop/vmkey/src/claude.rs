@@ -149,9 +149,10 @@ mod vm {
         *t = Some(Term { master: pty.master, input, child });
         Ok(())
     }
-    /// The bytes after `from`, waiting up to a second for some: "<offset of the first byte>\n<bytes>".
-    fn term_out(from: u64) -> Vec<u8> {
-        let until = Instant::now() + Duration::from_secs(1);
+    /// The bytes after `from`, waiting up to `wait` for some: "<offset of the first byte>\n<bytes>". A pane with nothing
+    /// new to show asks again only every few seconds, so a quiet Claude costs few requests.
+    fn term_out(from: u64, wait: Duration) -> Vec<u8> {
+        let until = Instant::now() + wait;
         loop {
             {
                 let o = OUT.lock().unwrap();
@@ -200,7 +201,7 @@ mod vm {
                 }
                 (200, end.to_string().into_bytes())
             }
-            "/term/out" => (200, term_out(param("from").parse().unwrap_or(0))),
+            "/term/out" => (200, term_out(param("from").parse().unwrap_or(0), Duration::from_secs(8))),
             "/term/in" => {
                 let mut t = TERM.lock().unwrap();
                 // Claude was quit: the next key starts it again, as Enter does in a closed pane on a computer
@@ -221,7 +222,11 @@ mod vm {
         std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
         let here = bin.join("aiwalk-claude-vm");
-        if me != here { std::fs::copy(&me, &here).map_err(|e| format!("copying to {}: {e}", here.display()))?; }
+        // a running service holds the old file open ("text file busy" when written over): a new file renamed onto it
+        if me != here {
+            let next = bin.join(".aiwalk-claude-vm.new");
+            std::fs::copy(&me, &next).and_then(|_| std::fs::rename(&next, &here)).map_err(|e| format!("copying to {}: {e}", here.display()))?;
+        }
         let q = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
         let script = format!("#!/bin/sh\n# Claude for this vault, in the tmux session Obsidian's Claude pane shows too. Ctrl-b d leaves it running.\nexec tmux new-session -A -s {SESSION} -c {} claude \"$@\"\n", q(&root.to_string_lossy()));
         let exo = bin.join("exo-claude");
@@ -229,14 +234,16 @@ mod vm {
         { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&exo, std::fs::Permissions::from_mode(0o755)); }
         let unit = home().join(".config/systemd/user/aiwalk-claude-vm.service");
         std::fs::create_dir_all(unit.parent().unwrap()).map_err(|e| e.to_string())?;
-        // claude is in ~/.local/bin, which a service's PATH does not have
-        std::fs::write(&unit, format!("[Unit]\nDescription=Claude for Obsidian on this phone (aiwalk-claude-vm)\n\n[Service]\nExecStart={} {}\nEnvironment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+        // claude is in ~/.local/bin, which a service's PATH does not have. KillMode=process: a restart (an update) stops
+        // this program only, not the tmux server it started, so Claude and its conversation keep running
+        std::fs::write(&unit, format!("[Unit]\nDescription=Claude for Obsidian on this phone (aiwalk-claude-vm)\n\n[Service]\nExecStart={} {}\nEnvironment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\nRestart=on-failure\nKillMode=process\n\n[Install]\nWantedBy=default.target\n",
             here.display(), q(&root.to_string_lossy()))).map_err(|e| e.to_string())?;
         let run = |c: &[&str]| std::process::Command::new(c[0]).args(&c[1..]).status().is_ok_and(|s| s.success());
         // linger: the service starts with the VM, before anyone opens a tab
         let user = std::env::var("USER").unwrap_or_else(|_| "droid".into());
         if !run(&["sudo", "-n", "loginctl", "enable-linger", &user]) { eprintln!("Could not keep the service running without a tab open (sudo loginctl enable-linger {user}); it runs once a tab is open."); }
-        if !(run(&["systemctl", "--user", "daemon-reload"]) && run(&["systemctl", "--user", "enable", "--now", "aiwalk-claude-vm.service"])) {
+        // restart, not start: after an update the old program is still the one running
+        if !(run(&["systemctl", "--user", "daemon-reload"]) && run(&["systemctl", "--user", "enable", "aiwalk-claude-vm.service"]) && run(&["systemctl", "--user", "restart", "aiwalk-claude-vm.service"])) {
             return Err("systemctl --user could not start the service".into());
         }
         Ok(())
@@ -284,10 +291,11 @@ mod vm {
         #[test]
         fn the_terminal_hands_out_bytes_from_an_offset() {
             { let mut o = super::OUT.lock().unwrap(); o.start = 10; o.bytes = b"hello".to_vec(); }
-            assert_eq!(super::term_out(12), b"12\nllo");
+            let w = std::time::Duration::from_millis(50);
+            assert_eq!(super::term_out(12, w), b"12\nllo");
             // an offset from before what is kept starts at the oldest byte kept; one past the end waits, then is empty
-            assert_eq!(super::term_out(0), b"10\nhello");
-            assert_eq!(super::term_out(99), b"15\n");
+            assert_eq!(super::term_out(0, w), b"10\nhello");
+            assert_eq!(super::term_out(99, w), b"15\n");
         }
     }
 }
