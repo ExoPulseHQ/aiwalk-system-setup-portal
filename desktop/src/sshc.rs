@@ -219,7 +219,6 @@ impl Drop for Raw {
 
 /// A terminal on the machine in this one: its shell, or `command` with a terminal (`ssh -t`). Follows this window's
 /// size. Ok(the exit code).
-#[cfg(not(target_os = "android"))]
 pub fn shell(user: &str, tunnel: &str, command: Option<&str>) -> Result<i32, String> {
     use std::io::{Read, Write};
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().map_err(|e| e.to_string())?;
