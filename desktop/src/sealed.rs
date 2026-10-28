@@ -552,7 +552,8 @@ fn phone_open(f: &Path) -> Result<Vec<u8>, Option<String>> { open(f).map_err(|r|
 
 #[cfg(target_os = "android")]
 pub fn serve_phone() {
-    static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file: phone_file, open: phone_open, who: crate::login::active_login, more: crate::phonegit::phone_sync };
+    static VAULTS: crate::phonehttp::Vaults = crate::phonehttp::Vaults { file: phone_file, open: phone_open, who: crate::login::active_login, more: phone_more };
+    fn phone_more(r: &str, p: &dyn Fn(&str) -> String, b: &[u8]) -> Option<(u16, Vec<u8>)> { crate::phonegit::phone_sync(r, p, b).or_else(|| crate::machines::phone_exec(r, p, b)) }
     crate::phonehttp::serve(PHONE_PORT, phone_token(), &VAULTS);
     crate::phonegit::copies().iter().for_each(|d| ticket_to(d));
     crate::linuxterm::put(&Path::new(crate::phonegit::SHARED).join("linux-terminal"));

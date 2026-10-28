@@ -12,6 +12,7 @@ use tauri::Emitter;
 
 // The phone and VM modules drive a Linux desktop (adb, scrcpy, docker, GNOME keyring).
 mod access;
+mod sshc;
 mod admin;
 mod cloudflare;
 mod github;
@@ -672,6 +673,10 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("ssh") {
         std::process::exit(machines::ssh_main(&std::env::args().skip(2).collect::<Vec<_>>()));
     }
+    // `exec [--stdin] [account@]<machine> <command>`: one command through the SSH client built into the app
+    if std::env::args().nth(1).as_deref() == Some("exec") {
+        std::process::exit(machines::exec_main(&std::env::args().skip(2).collect::<Vec<_>>()));
+    }
     if std::env::args().nth(1).as_deref() == Some("vault") {
         vaultcli::main(&std::env::args().skip(2).collect::<Vec<_>>());
         return;
@@ -769,7 +774,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "ssh": true, "github": true, "repos": true, "sealed": cfg!(unix), "hooks": hooks::NAMES }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "ssh": true, "exec": true, "github": true, "repos": true, "sealed": cfg!(unix), "hooks": hooks::NAMES }));
         return;
     }
     // --cf-selfcheck: token on stdin; see cloudflare::selfcheck

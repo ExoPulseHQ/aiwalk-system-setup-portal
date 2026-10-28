@@ -1,14 +1,13 @@
 //! Machines through Cloudflare: members never reach a machine's address directly
 //! (Machine_Login_Identity_Summary §二). Access lets in members of the GitHub org; the tunnel carries SSH.
 
-use crate::{home, sh};
+use crate::home;
 use exo_core::{ssh_block, with_ssh_block, Machine};
 use std::collections::BTreeMap;
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Child, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 /// This program as ssh sees it in a ProxyCommand. None when its path cannot be written there.
 fn app() -> Option<String> {
@@ -64,9 +63,7 @@ fn state(tunnel: Option<&str>) -> &'static str {
         Err(_) => "down",
     };
     #[allow(unreachable_code)]
-    let Some(app) = app() else { return "down" };
-    let (_, out) = sh("ssh", &["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", &format!("ProxyCommand=\"{}\" --ssh-proxy %h", app.replace('%', "%%")), &format!("probe@{t}"), "true"], 30);
+    let out = match crate::sshc::exec("probe", t, "true", None, std::time::Duration::from_secs(30)) { Ok(_) => "Permission denied".to_string(), Err(e) => e };
     // sshd asking who we are means the whole path works; it refuses "probe", which is fine. Access turning the
     // kept sign-in away (the person was never let in, or was taken out) is not the machine being down
     if out.contains("Permission denied") || out.contains("Too many authentication failures") { "up" }
@@ -281,20 +278,18 @@ pub fn ssh_main(args: &[String]) -> i32 {
     };
     let (opts, dest, command) = match exo_core::ssh_args(args) { Ok(x) => x, Err(e) => return fail(e) };
     if session.is_some() && !command.is_empty() { return fail("--session opens a shell; it takes no command to run".into()) }
-    let (user, tunnel) = match exo_core::ssh_destination(&dest, crate::access::ZONE) { Ok(x) => x, Err(e) => return fail(e) };
-    let user = user.unwrap_or_else(|| exo_core::default_account(rules_from_anywhere().as_deref(), &tunnel));
-    if crate::access::token(&tunnel).is_err() {
-        // a name with no machine behind it is said plainly, not as a failed sign-in
-        match crate::access::is_team_app(&tunnel) {
-            Ok(true) => {}
-            Ok(false) => return fail(format!("there is no machine called {}", dest.rsplit('@').next().unwrap_or(&dest))),
-            Err(e) => { eprintln!("aiwalk-setup ssh: {e}"); return 1 }
-        }
-        eprintln!("This computer has no Cloudflare sign-in for {tunnel} yet; signing in.");
-        if let Err(e) = crate::access::sign_in(&tunnel) { eprintln!("aiwalk-setup ssh: {e}"); return 1 }
+    let (user, tunnel) = match ready(&dest) { Ok(x) => x, Err(e) => { eprintln!("aiwalk-setup ssh: {e}"); return 1 } };
+    // the client built into the app (sshc.rs) unless ssh options were given (-L, -v...): then this computer's ssh
+    if opts.is_empty() {
+        use std::io::IsTerminal;
+        let cmd = session.as_ref().map(|n| exo_core::session_command(n)).or_else(|| (!command.is_empty()).then(|| command.join(" ")));
+        let r = match &cmd {
+            Some(c) if !std::io::stdout().is_terminal() => crate::sshc::exec(&user, &tunnel, c, None, std::time::Duration::from_secs(24 * 3600)).map(|o| {
+                use std::io::Write; let _ = std::io::stdout().write_all(&o.out); let _ = std::io::stderr().write_all(&o.err); o.code }),
+            c => crate::sshc::shell(&user, &tunnel, c.as_deref()),
+        };
+        return r.unwrap_or_else(|e| { eprintln!("aiwalk-setup ssh: {e}"); 255 })
     }
-    // the certificate is the only credential the machines take; without one ssh would only say "Permission denied"
-    if let Err(e) = crate::access::ssh_cert_if_stale(&tunnel) { eprintln!("aiwalk-setup ssh: no SSH certificate for {tunnel}: {e}"); return 1 }
     let Some(via) = through(&tunnel) else { return fail("this app's own path cannot be used by ssh".into()) };
     // not crate::cmd: on Windows that hides the console ssh needs. `--` ends ssh's options, so a remote command that
     // starts with "-" stays the command
@@ -307,6 +302,78 @@ pub fn ssh_main(args: &[String]) -> i32 {
     { use std::os::unix::process::CommandExt; let e = c.exec(); eprintln!("aiwalk-setup ssh: could not start ssh: {e}"); 127 }
     #[cfg(not(unix))]
     match c.status() { Ok(s) => s.code().unwrap_or(1), Err(e) => { eprintln!("aiwalk-setup ssh: could not start ssh: {e}"); 127 } }
+}
+
+/// One command on a machine through sshc, as (exit code, stdout then stderr), the shape `sh` gives; 255 and the reason
+/// when the machine could not be reached.
+fn on_machine(user: &str, tunnel: &str, command: &str, stdin: Option<&[u8]>, secs: u64) -> (i32, String) {
+    if let Err(e) = crate::access::ssh_cert_if_stale(tunnel) { return (255, e) }
+    match crate::sshc::exec(user, tunnel, command, stdin, std::time::Duration::from_secs(secs)) {
+        Ok(o) => (o.code, format!("{}{}", String::from_utf8_lossy(&o.out), String::from_utf8_lossy(&o.err))),
+        Err(e) => (255, e),
+    }
+}
+
+/// `[account@]<machine>` as the account and the tunnel hostname, signed in to Cloudflare (the browser when there is no
+/// kept sign-in) and with a fresh SSH certificate. Err with a sentence.
+fn ready(dest: &str) -> Result<(String, String), String> {
+    let (user, tunnel) = exo_core::ssh_destination(dest, crate::access::ZONE)?;
+    let user = user.unwrap_or_else(|| exo_core::default_account(rules_from_anywhere().as_deref(), &tunnel));
+    if crate::access::token(&tunnel).is_err() {
+        // a name with no machine behind it is said plainly, not as a failed sign-in
+        if !crate::access::is_team_app(&tunnel)? { return Err(format!("there is no machine called {}", dest.rsplit('@').next().unwrap_or(dest))) }
+        eprintln!("This computer has no Cloudflare sign-in for {tunnel} yet; signing in.");
+        crate::access::sign_in(&tunnel)?;
+    }
+    // the certificate is the only credential the machines take; without one the machine would only say "Permission denied"
+    crate::access::ssh_cert_if_stale(&tunnel).map_err(|e| format!("no SSH certificate for {tunnel}: {e}"))?;
+    Ok((user, tunnel))
+}
+
+/// `aiwalk-setup exec [--stdin] [account@]<machine> <command>...`: runs one command on a machine with the SSH client
+/// built into the app (sshc.rs), no OpenSSH needed. Its stdout and stderr come out here and its exit code is this
+/// one's, as with `ssh host command`; 255 when the connection failed. `--stdin` hands this program's stdin to it.
+pub fn exec_main(args: &[String]) -> i32 {
+    use std::io::{Read, Write};
+    let (feed, args) = match args.first().map(String::as_str) { Some("--stdin") => (true, &args[1..]), _ => (false, args) };
+    let Some((dest, command)) = args.split_first().filter(|(_, c)| !c.is_empty()) else { eprintln!("usage: aiwalk-setup exec [--stdin] [account@]<machine> <command>..."); return 2 };
+    let (user, tunnel) = match ready(dest) { Ok(x) => x, Err(e) => { eprintln!("aiwalk-setup exec: {e}"); return 255 } };
+    let mut input = Vec::new();
+    if feed && std::io::stdin().read_to_end(&mut input).is_err() { eprintln!("aiwalk-setup exec: could not read stdin"); return 2 }
+    match crate::sshc::exec(&user, &tunnel, &command.join(" "), feed.then_some(&input[..]), std::time::Duration::from_secs(3600)) {
+        Ok(o) => { let _ = std::io::stdout().write_all(&o.out); let _ = std::io::stderr().write_all(&o.err); o.code }
+        Err(e) => { eprintln!("aiwalk-setup exec: {e}"); 255 }
+    }
+}
+
+/// `/exec` for the vault plugin on a phone (phonehttp, 127.0.0.1 with the app's token): one `exo code` command on a
+/// machine through sshc (the body: its arguments as a JSON list), answered as {"code", "out", "err"}. Only `exo code`: the page needs no more, and the token
+/// sits in the vault where other plugins can read it. A machine not signed in to yet is said, not signed in to from
+/// here: the Machines page does that, where the person can see it happen.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn phone_exec(route: &str, param: &dyn Fn(&str) -> String, body: &[u8]) -> Option<(u16, Vec<u8>)> {
+    if route != "/exec" { return None }
+    // the body is exo code's arguments, quoted here one by one, so nothing in them reaches the shell as a command
+    let Ok(args) = serde_json::from_slice::<Vec<String>>(body) else { return Some((400, b"the body is a JSON list of exo code's arguments".to_vec())) };
+    let cmd = exo_command(&args);
+    let dest = if param("user").is_empty() { param("host") } else { format!("{}@{}", param("user"), param("host")) };
+    let run = || -> Result<crate::sshc::Out, String> {
+        let (user, tunnel) = exo_core::ssh_destination(&dest, crate::access::ZONE)?;
+        let user = user.unwrap_or_else(|| "ntk".into());
+        crate::access::token(&tunnel).map_err(|_| format!("Sign in to {} on the Machines page of aIwalk System Setup first", param("host")))?;
+        crate::access::ssh_cert_if_stale(&tunnel)?;
+        let secs = param("timeout").parse::<u64>().unwrap_or(60).clamp(5, 3600);
+        crate::sshc::exec(&user, &tunnel, &cmd, None, std::time::Duration::from_secs(secs))
+    };
+    Some(match run() {
+        Ok(o) => (200, serde_json::json!({ "code": o.code, "out": String::from_utf8_lossy(&o.out), "err": String::from_utf8_lossy(&o.err) }).to_string().into_bytes()),
+        Err(e) => (200, serde_json::json!({ "code": 255, "out": "", "err": e }).to_string().into_bytes()),
+    })
+}
+
+/// `exo code` with each argument single-quoted for the machine's shell.
+fn exo_command(args: &[String]) -> String {
+    std::iter::once("~/.local/bin/exo code".to_string()).chain(args.iter().map(|a| format!("'{}'", a.replace('\'', "'\\''")))).collect::<Vec<_>>().join(" ")
 }
 
 /// The SSH button: a terminal window on this computer running `<this app> ssh <user>@<tunnel>`, so the certificate is
@@ -386,7 +453,7 @@ fn private_file(ext: &str, text: &str) -> Result<(PathBuf, PathBuf), String> {
 // SSH through Cloudflare, so the person's own VNC viewer connects to 127.0.0.1:<local port> and nothing else is open.
 
 /// "host:display" -> (ssh process, local port). Closed when the person stops it or the app quits.
-static FORWARDS: Mutex<BTreeMap<String, (Child, u16)>> = Mutex::new(BTreeMap::new());
+static FORWARDS: Mutex<BTreeMap<String, (crate::sshc::Forward, u16)>> = Mutex::new(BTreeMap::new());
 
 fn free_port(preferred: u16) -> u16 {
     if TcpListener::bind(("127.0.0.1", preferred)).is_ok() { return preferred }
@@ -407,54 +474,35 @@ pub fn open_forward(host: String, tunnel: String, user: String, display: u8, soc
     {
         let mut f = FORWARDS.lock().unwrap();
         if let Some((child, port)) = f.get_mut(&key) {
-            if child.try_wait().ok().flatten().is_none() { return Ok(*port) }
+            if child.alive() { return Ok(*port) }
             f.remove(&key);
         }
     }
-    let via = through(&tunnel).ok_or("This app's own path cannot be used by ssh")?;
+    crate::access::ssh_cert_if_stale(&tunnel)?;
     let local = free_port(15900 + display as u16);
-    let mut child = crate::cmd("ssh")
-        .args(["-N", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
-               "-o", "StrictHostKeyChecking=accept-new"]).args(via)
-        .args(["-L", &format!("127.0.0.1:{local}:{target}"), &format!("{user}@{tunnel}")])
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
-    let addr: SocketAddr = ([127, 0, 0, 1], local).into();
-    let start = Instant::now();
-    // the forward is ready once the local port answers; ssh exiting first means it could not get in
-    while start.elapsed() < Duration::from_secs(25) {
-        if let Ok(Some(_)) = child.try_wait() {
-            let err = child.wait_with_output().map(|o| String::from_utf8_lossy(&o.stderr).into_owned()).unwrap_or_default();
-            let last = err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("SSH ended").to_string();
-            return Err(if last.contains("Permission denied") {
-                format!("{user}@{host} did not accept this computer's key. Until SSH certificates arrive, ask an owner to add your key.")
-            } else { last });
-        }
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
-            FORWARDS.lock().unwrap().insert(key, (child, local));
-            return Ok(local);
-        }
-        std::thread::sleep(Duration::from_millis(400));
-    }
-    let _ = child.kill();
-    Err("The machine did not answer in time".into())
+    let fwd = crate::sshc::forward(&user, &tunnel, &target, local).map_err(|e| if e.contains("Permission denied") {
+        format!("{user}@{host} did not accept this computer's certificate or key; ask an owner to check the machine's SSH certificate rules")
+    } else { e })?;
+    FORWARDS.lock().unwrap().insert(key, (fwd, local));
+    Ok(local)
 }
 
 #[tauri::command]
 pub fn close_forward(host: String, display: u8) {
-    if let Some((mut child, _)) = FORWARDS.lock().unwrap().remove(&format!("{host}:{display}")) { let _ = child.kill(); }
+    FORWARDS.lock().unwrap().remove(&format!("{host}:{display}"));
 }
 
 /// Open forwards as "host:display" -> local port, for the page to show after a redraw.
 #[tauri::command]
 pub fn forwards() -> BTreeMap<String, u16> {
     let mut f = FORWARDS.lock().unwrap();
-    f.retain(|_, (child, _)| child.try_wait().ok().flatten().is_none());
+    f.retain(|_, (fwd, _)| fwd.alive());
     f.iter().map(|(k, (_, p))| (k.clone(), *p)).collect()
 }
 
 /// Closes every forward; the app calls it when it quits so no ssh is left running.
 pub fn close_all() {
-    for (_, (mut child, _)) in std::mem::take(&mut *FORWARDS.lock().unwrap()) { let _ = child.kill(); }
+    FORWARDS.lock().unwrap().clear();
 }
 
 /// Hands the forwarded desktop to a viewer this computer has. VNC: vnc://127.0.0.1:<port> (Screen Sharing on a
@@ -481,13 +529,8 @@ pub fn open_viewer(port: u16, kind: Option<String>) {
 #[tauri::command(async)]
 pub fn desktop(tunnel: String, user: String, action: String, display: u8) -> Result<String, String> {
     if action != "start" && action != "stop" { return Err(format!("unknown action {action}")) }
-    let via = through(&tunnel).ok_or("This app's own path cannot be used by ssh")?;
     let arg = if display == 0 { String::new() } else { display.to_string() };
-    let (target, run) = (format!("{user}@{tunnel}"), format!("~/.local/bin/exo-desktop {action} {arg}"));
-    let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
-    args.extend(via.iter().map(String::as_str));
-    args.extend([target.as_str(), run.as_str()]);
-    let (code, out) = sh("ssh", &args, 60);
+    let (code, out) = on_machine(&user, &tunnel, &format!("~/.local/bin/exo-desktop {action} {arg}"), None, 60);
     let last = out.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or_default().to_string();
     if code == 0 { Ok(last) } else if last.contains("Permission denied") {
         Err(format!("{user} on this machine did not accept this computer's key"))
@@ -532,12 +575,7 @@ pub fn update_host_tools(tunnel: String, user: String) -> Result<String, String>
                            if text.ends_with('\n') { "" } else { "\n" });
     }
     script += RESTART;
-    let via = through(&tunnel).ok_or("This app's own path cannot be used by ssh")?;
-    let target = format!("{user}@{tunnel}");
-    let mut args = vec!["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"];
-    args.extend(via.iter().map(String::as_str));
-    args.extend([target.as_str(), "bash -s"]);
-    let (code, out) = crate::sh_stdin("ssh", &args, Some(&script), 90);
+    let (code, out) = on_machine(&user, &tunnel, "bash -s", Some(script.as_bytes()), 90);
     let last = out.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or_default().to_string();
     if code == 0 { Ok("Host tools updated and the status page restarted".into()) } else if last.contains("Permission denied") {
         Err(format!("{user} on this machine did not accept this computer's key"))
@@ -596,6 +634,16 @@ fn base64url(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(unix)]
+    fn exo_arguments_reach_the_machine_as_arguments() {
+        // run what the machine's shell would run, with echo in place of exo: each argument comes back whole
+        let args: Vec<String> = ["commit", "it's; rm -rf ~", "two\nlines", "$(id)"].map(String::from).into();
+        let cmd = super::exo_command(&args).replacen("~/.local/bin/exo code", "printf '%s|'", 1);
+        let out = std::process::Command::new("sh").arg("-c").arg(&cmd).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "commit|it's; rm -rf ~|two\nlines|$(id)|");
+    }
+
     #[test]
     fn forgetting_access_removes_only_this_teams_sign_ins() {
         let home = std::env::temp_dir().join(format!("aiwalk-forget-{}", std::process::id()));

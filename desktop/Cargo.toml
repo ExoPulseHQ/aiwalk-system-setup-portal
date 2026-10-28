@@ -1,6 +1,6 @@
 [package]
 name = "aiwalk-setup"
-version = "0.3.39"
+version = "0.3.40"
 edition = "2021"
 description = "aIwalk System Setup, Tauri edition (desktop)"
 
@@ -28,6 +28,12 @@ ureq = "3"
 # Cloudflare Access without cloudflared (access.rs): SSH over a WebSocket, Access's RS256 signatures, JWTs
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 ring = "0.17"
+# sshc.rs: the SSH client built into the app, over the same WebSocket, so no computer or phone needs OpenSSH
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
+tokio = { version = "1", features = ["rt", "net", "time", "io-util", "sync", "macros"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rand = "0.10"
 # fidokey.rs: AES-256 for the security key's PIN protocol (already in the tree through another crate)
 aes = "0.9"
 # a sign-in on a computer is approved from a phone: the code or address to open is shown as a QR code to scan
