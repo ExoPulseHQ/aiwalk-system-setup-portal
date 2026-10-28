@@ -3,7 +3,7 @@
 # Debian (aarch64 Linux) with a plain cross compiler.
 [package]
 name = "aiwalk-sealed-vm"
-version = "0.3.40"
+version = "0.3.41"
 edition = "2021"
 publish = false
 
