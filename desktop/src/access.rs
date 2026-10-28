@@ -216,7 +216,7 @@ pub(crate) fn write_private(path: &std::path::Path, data: &[u8]) -> Result<(), S
 
 /// The certificate Access signs for `host` (minutes long, key ID = the person's email), in the three files
 /// cloudflared's ssh-gen writes: ~/.cloudflared/<host>-cf_key, -cf_key.pub, -cf_key-cert.pub. The key pair is kept
-/// and reused, as cloudflared does; ssh-keygen makes it, so no key code lives here. Ok((key file, certificate file)).
+/// and reused, as cloudflared does; sshc makes it, so no OpenSSH is needed. Ok((key file, certificate file)).
 pub fn ssh_cert(host: &str) -> Result<(PathBuf, PathBuf), String> {
     let host = team_host(host)?;
     let token = token(&host)?;
@@ -228,8 +228,7 @@ pub fn ssh_cert(host: &str) -> Result<(PathBuf, PathBuf), String> {
         // half a pair is useless; ssh-keygen would stop to ask about overwriting it
         let _ = std::fs::remove_file(&key);
         let _ = std::fs::remove_file(&pub_file);
-        let (code, out) = crate::sh("ssh-keygen", &["-q", "-t", "ecdsa", "-b", "256", "-N", "", "-C", "", "-f", &key.to_string_lossy()], 20);
-        if code != 0 { return Err(format!("ssh-keygen could not make a key: {out}")) }
+        crate::sshc::new_key(&key, &pub_file)?;
     }
     #[cfg(unix)]
     { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?; }
