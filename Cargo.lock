@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aiwalk-sealed-vm"
-version = "0.3.41"
+version = "0.3.42"
 dependencies = [
  "aes",
  "age",
@@ -121,12 +121,13 @@ dependencies = [
  "ring",
  "secrecy",
  "serde",
+ "serde_json",
  "x25519-dalek",
 ]
 
 [[package]]
 name = "aiwalk-setup"
-version = "0.3.41"
+version = "0.3.42"
 dependencies = [
  "aes",
  "age",
