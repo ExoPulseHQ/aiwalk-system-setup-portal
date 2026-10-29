@@ -74,7 +74,9 @@ jobs:
   # team's release key, so each release can update the one before on a phone.
   phone-apps:
     needs: build
-    if: contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor)
+    # !cancelled(): also when one build leg did not run (macOS arm64 runners are often out of capacity and the job is
+    # cancelled unstarted); the release this uploads to exists once any leg has finished
+    if: ${{ !cancelled() && contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor) }}
     runs-on: ubuntu-22.04
     env:
       KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -115,7 +117,9 @@ jobs:
   # already has. Without the secrets this job says so and uploads nothing, so the desktop release is never held up.
   android:
     needs: build
-    if: contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor)
+    # !cancelled(): also when one build leg did not run (macOS arm64 runners are often out of capacity and the job is
+    # cancelled unstarted); the release this uploads to exists once any leg has finished
+    if: ${{ !cancelled() && contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor) }}
     runs-on: ubuntu-22.04
     env:
       KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -177,7 +181,9 @@ jobs:
   # it runs (desktop/vmkey). The Terminal is Debian on aarch64; a plain cross compiler builds it, as it has no tauri.
   vm-unlock:
     needs: build
-    if: contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor)
+    # !cancelled(): also when one build leg did not run (macOS arm64 runners are often out of capacity and the job is
+    # cancelled unstarted); the release this uploads to exists once any leg has finished
+    if: ${{ !cancelled() && contains(fromJSON('["eddLai", "gnaixihZ"]'), github.actor) }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
