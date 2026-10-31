@@ -658,6 +658,13 @@ fn main() {
         _ => {}
     }
     use_bundled_tools();
+    // `git <args>`: git for the vault plugin, which runs none of its own; the app's bundled git where there is one, and
+    // this app's GitHub sign-in as the only credential helper, so a stale helper in ~/.gitconfig is never asked
+    if std::env::args().nth(1).as_deref() == Some("git") {
+        let st = cmd("git").args(["-c", "credential.helper=", "-c", "credential.https://github.com.helper="])
+            .arg("-c").arg(format!("credential.https://github.com.helper={}", login::helper())).args(std::env::args().skip(2)).status();
+        std::process::exit(st.map(|s| s.code().unwrap_or(1)).unwrap_or_else(|e| { eprintln!("git: {e}"); 127 }));
+    }
     // `vault <cmd>`: scripts/vault_ship.py for computers without Python, run in the vault's folder
     if std::env::args().nth(1).as_deref() == Some("pty") {
         std::process::exit(ptycli::main(&std::env::args().skip(2).collect::<Vec<_>>()));
@@ -774,7 +781,7 @@ fn main() {
     // --can: what this build does from the command line, so the vault plugin uses the app where it can and its own
     // Python otherwise. A subcommand turns true here in the release it first works in.
     if std::env::args().any(|a| a == "--can") {
-        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "ssh": true, "exec": true, "github": true, "repos": true, "sealed": cfg!(unix), "hooks": hooks::NAMES }));
+        println!("{}", serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "vault": true, "pty": true, "session": true, "guard": true, "deck": true, "hook": true, "ssh": true, "exec": true, "git": true, "github": true, "repos": true, "sealed": cfg!(unix), "hooks": hooks::NAMES }));
         return;
     }
     // --cf-selfcheck: token on stdin; see cloudflare::selfcheck
@@ -823,7 +830,7 @@ fn main() {
     // not know (`aiwalk-setup help`), and opening the window for it left a shell hanging. macOS passes -psn_… to
     // an app started from Finder.
     if let Some(word) = std::env::args().nth(1).filter(|a| !a.starts_with("-psn")) {
-        eprintln!("aiwalk-setup: unknown command {word}\ncommands: vault, session, pty, ssh, deck, hook, guard, github token, git-credential (see `aiwalk-setup --can`); no argument opens the app\nssh [ssh options] [account@]<machine> [command]: ssh to a team machine through Cloudflare, no ~/.ssh/config needed");
+        eprintln!("aiwalk-setup: unknown command {word}\ncommands: vault, git, session, pty, ssh, deck, hook, guard, github token, git-credential (see `aiwalk-setup --can`); no argument opens the app\nssh [ssh options] [account@]<machine> [command]: ssh to a team machine through Cloudflare, no ~/.ssh/config needed");
         std::process::exit(2);
     }
     std::thread::spawn(login::repair_git);

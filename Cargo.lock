@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aiwalk-sealed-vm"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "aes",
  "age",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "aiwalk-setup"
-version = "0.3.43"
+version = "0.3.44"
 dependencies = [
  "aes",
  "age",
