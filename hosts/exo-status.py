@@ -14,7 +14,7 @@ for 5 seconds, so a page polling every 15 seconds costs a few /proc reads and on
 import json, os, shutil, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "5"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "6"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 PORT = 9101
 CACHE_SECONDS = 5
 CLUSTER = None          # ssh alias of a cluster this machine reaches, from --cluster
@@ -113,17 +113,35 @@ _lock = threading.Lock()
 
 
 
+def mine_parse(text):
+    """Below the two JSON lines: `squeue --me` rows (id|queue|name|state|elapsed|limit|node or reason|start|end) after
+    a "#jobs" line, then `df -kP ~` after "#disk": this account's own jobs and the shared /home it lives on."""
+    part, jobs, disk = None, [], None
+    for line in text.splitlines():
+        line = line.strip()
+        if line in ("#jobs", "#disk"): part = line; continue
+        if part == "#jobs" and line.count("|") == 8:
+            i, q, n, st, el, lim, where, start, end = line.split("|")
+            jobs.append({"id": i, "queue": q, "name": n, "state": st, "elapsed": el, "limit": lim, "where": where,
+                         "start": start, "end": end})
+        elif part == "#disk" and len((f := line.split())) >= 6 and f[1].isdigit():
+            disk = {"mount": f[5], "total_gb": round(int(f[1]) / 1e6), "free_gb": round(int(f[3]) / 1e6)}
+    return jobs, disk
+
+
 def cluster_parse(text):
     """Two JSON lines from the cluster's /nodes and /queue: nodes with CPU/GPU in use, jobs running and waiting."""
     lines = [l for l in text.splitlines() if l.strip()]
     nodes, queue = json.loads(lines[0]), json.loads(lines[1])
-    return {"time": queue.get("last_update"), "running": queue.get("running_job", 0), "pending": queue.get("pending_job", 0),
+    jobs, disk = mine_parse(text)
+    return {"jobs": jobs, "home": disk, "time": queue.get("last_update"), "running": queue.get("running_job", 0), "pending": queue.get("pending_job", 0),
             "running_by_queue": queue.get("running_by_partition", {}), "pending_by_queue": queue.get("pending_by_partition", {}),
             "nodes": [{"name": n["name"], "cpu_used": n["cpu_used"], "cpu_total": n["cpu_total"], "gpu_used": n["gpu_used"],
                        "gpu_total": n["gpu_total"], "state": "+".join(n.get("state", [])), "reason": n.get("reason", "")} for n in nodes]}
 
 
-_cluster = {"t": 0, "data": None, "busy": False}
+_cluster = {"t": 0, "data": None, "busy": False, "du_t": 0, "used_gb": None, "user": None}
+DU_SECONDS = 3600      # `du` over a big shared /home takes minutes: once an hour
 
 def cluster():
     """The last cluster reading; starts a fresh one in the background when it is older than CLUSTER_SECONDS."""
@@ -137,13 +155,31 @@ def cluster():
 def _fetch_cluster():
     try:
         out = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", CLUSTER,
-                              f"curl -s --max-time 10 {CLUSTER_API}/nodes; echo; curl -s --max-time 10 {CLUSTER_API}/queue"],
+                              f"curl -s --max-time 10 {CLUSTER_API}/nodes; echo; curl -s --max-time 10 {CLUSTER_API}/queue; echo; "
+                              # squeue lives in a module, which only a login shell can load
+                              "echo '#jobs'; bash -lc 'module load slurm 2>/dev/null; squeue --me -h -o \"%i|%P|%j|%T|%M|%l|%R|%S|%e\"'; "
+                              "echo '#disk'; df -kP ~ | tail -1; echo \"#user $USER\""],
                              capture_output=True, text=True, timeout=30).stdout
-        _cluster["data"] = cluster_parse(out)
+        d = cluster_parse(out)
+        user = next((l.split()[1] for l in out.splitlines() if l.startswith("#user ")), None)
+        if time.time() - _cluster["du_t"] > DU_SECONDS:
+            _cluster["du_t"] = time.time()
+            threading.Thread(target=_fetch_du, daemon=True).start()
+        _cluster["user"] = user
+        _cluster["data"] = {**d, "user": user, "used_gb": _cluster["used_gb"]}
     except (OSError, subprocess.TimeoutExpired, ValueError, IndexError, KeyError):
         pass   # keep the last reading; the page shows its time
     finally:
         _cluster.update(t=time.time(), busy=False)
+
+def _fetch_du():
+    try:
+        out = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", CLUSTER, "du -sk ~ 2>/dev/null | tail -1"],
+                             capture_output=True, text=True, timeout=900).stdout.split()
+        if out and out[0].isdigit(): _cluster["used_gb"] = round(int(out[0]) / 1e6, 1)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
 
 def answer():
     with _lock:

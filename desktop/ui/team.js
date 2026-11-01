@@ -1016,9 +1016,17 @@ function machinesSection(machines, org, user, guest) {
     meters[host].replaceChildren(bar("GPU", gt ? 100 * gu / gt : 0, `${gu} of ${gt} GPUs allocated`),
       bar("CPU", ct ? 100 * cu / ct : 0, `${cu} of ${ct} cores allocated`),
       el("span", "sub", `${c.running} jobs running, ${c.pending} waiting`));
+    const when = t => !t || t === "N/A" || t === "Unknown" ? "unknown" : new Date(t).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     const q = o => Object.entries(o || {}).map(([k, v]) => `${k} ${v}`).join(", ") || "none";
     const rows = [...c.nodes.map(n => [n.name, `GPU ${n.gpu_used}/${n.gpu_total}, CPU ${n.cpu_used}/${n.cpu_total}, ${n.state.toLowerCase()}${n.reason ? ` (${n.reason})` : ""}`]),
       ["Running", q(c.running_by_queue)], ["Waiting", q(c.pending_by_queue)],
+      // the account this machine signs in with: its own jobs (running ones end by their limit, waiting ones show SLURM's
+      // estimated start and why they wait) and its space on the shared /home
+      ...(c.jobs || []).map(j => [`${c.user || "Mine"} ${j.id}`, j.state === "RUNNING"
+        ? `${j.name}, ${j.queue} on ${j.where}, ${j.elapsed} of ${j.limit}, ends by ${when(j.end)}`
+        : `${j.name}, ${j.queue}, ${j.state.toLowerCase()} (${j.where}), starts ${when(j.start)}`]),
+      ...(c.user && c.jobs && !c.jobs.length ? [[c.user, "no jobs"]] : []),
+      ...(c.home ? [[`${c.home.mount}`, `${c.used_gb != null ? `${c.user || "mine"} uses ${c.used_gb} GB, ` : ""}${c.home.free_gb} of ${c.home.total_gb} GB free (shared)`]] : []),
       ["Updated", c.time ? new Date(c.time * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?"]];
     specs[host].replaceChildren(...rows.map(([k, v]) => { const r = el("div", "spec"); r.append(el("span", "k", k), el("span", null, v)); return r; }));
   }
