@@ -18,6 +18,8 @@ mod cloudflare;
 mod github;
 mod login;
 mod machines;
+#[cfg(not(target_os = "android"))]
+mod repokeys;
 mod vncshim;
 mod secrets;
 mod update;
@@ -565,7 +567,7 @@ fn sign_in(app: tauri::AppHandle, owner: Option<bool>) -> bool {
 
 #[cfg(target_os = "linux")]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
+    tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, repokeys::repo_keys, repokeys::issue_repo_key, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, sealed::sealed_new_board, sealed::sealed_setup_board, sealed::sealed_holders, sealed::sealed_reseal, sealed::sealed_add_key, sealed::sealed_key_has_pin, sealed::sealed_devices, sealed::sealed_welcome, sealed::sealed_create, set_team, request_access, approve_request, decline_request,
                              android::phones, android::phone_action, android::phone_pair_qr, android::phone_pair, android::phone_pair_stop, vm::vm_state, vm::vm_action]
@@ -594,7 +596,7 @@ pub fn run() {
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
-    tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
+    tauri::generate_handler![platform, start_page, misplaced, qr, update::open_release, tools, cloudflare::cf_state, cloudflare::cf_connect, cloudflare::cf_forget, cloudflare::cf_share, cloudflare::cf_key, cloudflare::cf_join, cloudflare::cf_renew, update::update_state, update::update_install, terms_state, terms_accept, terms_everyone, install_git, team_access, claude::claude_state, claude::claude_install, claude::gstack_state, claude::gstack_install, claude::claude_login, claude::claude_code, machines::reachable, machines::machine_status, machines::open_forward, machines::close_forward, machines::forwards, machines::open_viewer, machines::desktop, machines::update_host_tools, repokeys::repo_keys, repokeys::issue_repo_key, machines::lab_identity, machines::lab_sign_out, machines::access_login, machines::ssh_status, machines::ssh_setup, machines::find_machine, machines::my_machines, machines::publish_machines, machines::open_ssh,
                              admin::org_people, admin::invite, admin::cancel_invite, admin::invite_intern, admin::remove_intern, admin::set_role, admin::remove_member, admin::set_access, admin::machine_extra, admin::machine_guests, admin::machine_guest, admin::machine_blocks, admin::machine_block, admin::public_email, admin::pr_permissions, admin::merge_right, sign_in, sign_out, switch_account,
                              vault::vault_local, vault::vault_download, vault::vault_link, vault::pick_folder, vault::default_folder, vault::vault_update, vault::vault_open, vault::obsidian_install, sealed::sealed_state, sealed::sealed_unlock, sealed::sealed_lock, sealed::sealed_key, sealed::sealed_change_pin, sealed::sealed_new_board, sealed::sealed_setup_board, sealed::sealed_holders, sealed::sealed_reseal, sealed::sealed_add_key, sealed::sealed_key_has_pin, sealed::sealed_devices, sealed::sealed_welcome, sealed::sealed_create, set_team, request_access, approve_request, decline_request]
 }
@@ -773,6 +775,9 @@ fn main() {
         match admin::public_email(std::env::args().nth(i + 1).expect("--email-of LOGIN")) { Some(e) => println!("{e}"), None => { eprintln!("not known"); std::process::exit(1) } }
         return;
     }
+    // --repo-keys [account@]MACHINE [--org ORG] [--issue OWNER/REPO]: the Machines page's repo keys from a terminal
+    #[cfg(not(target_os = "android"))]
+    if let Some(i) = std::env::args().position(|a| a == "--repo-keys") { std::process::exit(repokeys::cli(&std::env::args().skip(i + 1).collect::<Vec<_>>())) }
     // --people ORG: what the People list gets (members, invitations, interns); reads only
     if let Some(i) = std::env::args().position(|a| a == "--people") {
         match admin::org_people(std::env::args().nth(i + 1).expect("--people ORG")) { Ok(p) => println!("{}", serde_json::to_string_pretty(&p).unwrap()), Err(e) => { eprintln!("{e}"); std::process::exit(1) } }

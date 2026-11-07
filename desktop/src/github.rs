@@ -12,7 +12,9 @@ const API: &str = "https://api.github.com";
 
 pub(crate) fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    // a moved or renamed repo answers with a redirect inside api.github.com; the token goes along (to that host only)
     AGENT.get_or_init(|| ureq::Agent::config_builder().http_status_as_error(false)
+        .redirect_auth_headers(ureq::config::RedirectAuthHeaders::SameHost)
         .timeout_global(Some(Duration::from_secs(40))).build().into())
 }
 

@@ -980,6 +980,7 @@ function machinesSection(machines, org, user, guest) {
       if (guest && !sshAcct[host]) sshAcct[host] = ((s.desktops || []).find(d => d.kind !== "rdp") || {}).user || null;
       if (sshRows[host]) { specs[host].append(sshRows[host]); paintSsh(host); }
       if (s.host_tools && !onPhone()) specs[host].append(hostTools(byHost[host], s.host_tools));
+      if (owner && !onPhone()) specs[host].append(repoKeys(byHost[host]));
       // shown with no desktop running too (a machine just restarted has none), or there is nowhere to start the first
       // one from; a guest whose account on the machine is not known yet cannot start one, so sees the row only once one runs
       if (((s.desktops || []).length || sshAcct[host]) && !onPhone()) specs[host].append(desktopList(byHost[host], s.desktops || [], open));
@@ -1007,6 +1008,52 @@ function machinesSection(machines, org, user, guest) {
       };
       r.append(b, msg);
     }
+    return r;
+  }
+  // Each team repo a machine uses (a submodule's too) has a key of its own, so the shared account fetches and pushes as
+  // the repo, not as a person (repokeys.rs). Owners check them and issue the missing ones. The last check is kept per
+  // machine, since the card is redrawn every 15 s.
+  const keyRows = {};
+  const why = k => !k.key ? "no key on the machine" : !k.alias ? "no ssh alias for its key" : !k.routed ? "its address still goes to GitHub as a person"
+    : k.registered === false ? "the key is not on GitHub" : k.registered === null ? "you cannot read this repo's keys" : "";
+  function repoKeys(m) {
+    const r = el("div"), head = el("div", "row"), title = el("span"), v = el("div"), account = m.user || "ntk";
+    const check = iconButton("refresh-cw", "Check repo keys", "small ghost", true);
+    check.onclick = async e => {
+      e.stopPropagation();
+      try { keyRows[m.host] = await working(check, "Checking", () => invoke("repo_keys", { tunnel: m.tunnel, user: account, org: org.org })); }
+      catch (err) { keyRows[m.host] = { error: String(err) }; }
+      paint();
+    };
+    const paint = () => {
+      const rows = keyRows[m.host], lines = [];
+      title.textContent = !rows || rows.error ? "Repo keys" : `Repo keys: ${rows.filter(k => k.ok).length} of ${rows.length} in place`;
+      if (!rows) lines.push(el("span", "sub", "Not checked yet"));
+      else if (rows.error) { const w = el("p", "warn"); w.append(icon("circle-alert"), rows.error); lines.push(w); }
+      else if (!rows.length) lines.push(el("span", "sub", "No team repo on this machine"));
+      else for (const k of rows) {
+        const line = el("div", "row");
+        line.append(icon(k.ok ? "circle-check" : "circle-alert"), el("span", null, k.ok ? k.repo : `${k.repo}: ${why(k)}`));
+        line.dataset.tip = k.used.join("\n");
+        if (!k.ok && k.registered !== null) {
+          const b = iconButton("key-round", "Issue key", "small ghost", false);
+          b.onclick = async e => {
+            e.stopPropagation();
+            if (await ask(`Issue a key for ${k.repo} on ${m.host}?`, `The machine makes ~/.ssh/deploy_${k.name} for ${account} if it has none, adds github-${k.name} to its ~/.ssh/config and sends ${k.repo}'s addresses through it. GitHub gets the public key as ${k.repo}'s deploy key, with write access, so work can be pushed from the machine.`,
+              [["cancel", "Cancel"], ["ok", "Issue key", true]]) !== "ok") return;
+            try { toast(await working(b, "Issuing", () => invoke("issue_repo_key", { tunnel: m.tunnel, user: account, host: m.host, repo: k.repo, urls: k.urls }))); }
+            catch (err) { toast(err); }
+            check.click();
+          };
+          line.append(b);
+        }
+        lines.push(line);
+      }
+      v.replaceChildren(...lines);
+    };
+    paint();
+    head.append(title, check);
+    r.append(head, v);
     return r;
   }
   // A SLURM cluster: totals as meters, then each node and the queues. The reading is at most a minute old.
