@@ -5,7 +5,7 @@
     exo code diff WORKTREE
     exo code commit WORKTREE --name N --email E -m SUBJECT [--body B] FILE...
     exo code push WORKTREE
-    exo code pull WORKTREE        (the main copy, on the trunk: fast-forward only)
+    exo code pull WORKTREE        (the main copy, on the trunk: fast-forward only, then its submodules to the commits it pins)
     exo code finish WORKTREE      (merged and clean: removes the worktree and its branch)
 
 `status` prints one JSON object describing every git repo in this account: its worktrees, what is changed or unpushed in each,
@@ -20,7 +20,7 @@ import argparse, json, os, re, socket, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-VERSION = "2"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "3"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 FETCH_TIMEOUT = 15   # seconds per repo; a slow GitHub must not hold the page
 
 
@@ -149,6 +149,28 @@ def feature(path):
     return repo, b, dflt, top
 
 
+def pins(top):
+    """{submodule path: checked-out commit, or None when not initialised}, from `git submodule status`."""
+    rows = {}
+    for l in (git(top, "submodule", "status", "--recursive", timeout=30) or "").splitlines():
+        sha, path = l[1:].split()[:2]
+        rows[path] = None if l.startswith("-") else sha[:7]
+    return rows
+
+
+def submodules(top):
+    """After a pull: each submodule to the commit the superproject now pins (URLs re-read from .gitmodules first, so a
+    moved repo is followed). The pull itself already happened, so a submodule that cannot be fetched is reported, not raised."""
+    before = pins(top)
+    subprocess.run(["git", "-C", top, "submodule", "sync", "-q", "--recursive"], capture_output=True, timeout=30)
+    r = subprocess.run(["git", "-C", top, "submodule", "update", "-q", "--init", "--recursive"], capture_output=True, text=True, timeout=600)
+    after = pins(top)
+    out = {"submodules": {p: {"from": before.get(p), "to": after[p]} for p in after if before.get(p) != after[p]}}
+    if r.returncode:
+        out["submodule_error"] = ((r.stderr or r.stdout).strip().splitlines() or ["git submodule update failed"])[-1]
+    return out
+
+
 def act(cmd, a):
     if cmd == "diff":
         repo, b, dflt, _, top = where(a.path)
@@ -183,7 +205,10 @@ def act(cmd, a):
         must(top, "fetch", "-q", "origin", timeout=120)
         before = git(top, "rev-parse", "--short", "HEAD")
         must(top, "merge", "-q", "--ff-only", f"origin/{dflt}")
-        return {"branch": b, "from": before, "to": git(top, "rev-parse", "--short", "HEAD")}
+        out = {"branch": b, "from": before, "to": git(top, "rev-parse", "--short", "HEAD")}
+        if os.path.exists(os.path.join(top, ".gitmodules")):
+            out.update(submodules(top))
+        return out
     if cmd == "finish":
         repo, b, dflt, top = feature(a.path)
         if os.path.realpath(top) == os.path.realpath(repo):

@@ -204,6 +204,11 @@ window.__fixtures = (scenario, os) => {
         ? new Error("No terminal program was found on this computer (looked for x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, xterm). Copy the command below into a terminal.")
         : `A terminal opened: ssh ${a.user}@${(a.tunnel || "").replace(/^ssh-/, "").split(".")[0]}`; },
     open_forward: 5911, close_forward: none, open_viewer: none, desktop: ":3", update_host_tools: ok("Host tools updated"),
+    repo_keys: [
+      { repo: `${ORG}/trainer`, name: "trainer", used: ["/home/ntk/trainer"], urls: [`git@github-trainer:${ORG}/trainer.git`], key: true, alias: true, routed: true, registered: true, ok: true },
+      { repo: `${ORG}/simulator`, name: "simulator", used: ["/home/ntk/trainer (simulator)"], urls: [`git@github.com:${ORG}/simulator.git`], key: false, alias: false, routed: false, registered: false, ok: false },
+      { repo: `${ORG}/MoCap`, name: "mocap", used: ["/home/ntk/MoCap"], urls: [`git@github.com:${ORG}/MoCap.git`], key: true, alias: true, routed: false, registered: null, ok: false }],
+    issue_repo_key: ok(`${ORG}/simulator: the machine now fetches and pushes with its own key`),
     // Linux pages
     phones, phone_action: ok("Done"), vm_state: { vm, disk_used_gb: 61.4, host_gb: 32, host_cpus: 16, shortcuts: [["open", "Open Windows", "Start the Windows VM and open its desktop", true], ["stop", "Shut down Windows", "Shut down the Windows VM and free its memory", false]] },
     vm_action: ok("Done"),

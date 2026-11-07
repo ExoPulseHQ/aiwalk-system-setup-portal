@@ -306,7 +306,7 @@ pub fn ssh_main(args: &[String]) -> i32 {
 
 /// One command on a machine through sshc, as (exit code, stdout then stderr), the shape `sh` gives; 255 and the reason
 /// when the machine could not be reached.
-fn on_machine(user: &str, tunnel: &str, command: &str, stdin: Option<&[u8]>, secs: u64) -> (i32, String) {
+pub(crate) fn on_machine(user: &str, tunnel: &str, command: &str, stdin: Option<&[u8]>, secs: u64) -> (i32, String) {
     if let Err(e) = crate::access::ssh_cert_if_stale(tunnel) { return (255, e) }
     match crate::sshc::exec(user, tunnel, command, stdin, std::time::Duration::from_secs(secs)) {
         Ok(o) => (o.code, format!("{}{}", String::from_utf8_lossy(&o.out), String::from_utf8_lossy(&o.err))),
@@ -316,7 +316,7 @@ fn on_machine(user: &str, tunnel: &str, command: &str, stdin: Option<&[u8]>, sec
 
 /// `[account@]<machine>` as the account and the tunnel hostname, signed in to Cloudflare (the browser when there is no
 /// kept sign-in) and with a fresh SSH certificate. Err with a sentence.
-fn ready(dest: &str) -> Result<(String, String), String> {
+pub(crate) fn ready(dest: &str) -> Result<(String, String), String> {
     let (user, tunnel) = exo_core::ssh_destination(dest, crate::access::ZONE)?;
     let user = user.unwrap_or_else(|| exo_core::default_account(rules_from_anywhere().as_deref(), &tunnel));
     if crate::access::token(&tunnel).is_err() {
