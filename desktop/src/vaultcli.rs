@@ -351,12 +351,13 @@ fn ship_repo(vault: &Path, sub: Option<&str>, msg: &str, paths: Vec<String>, nam
     sh(root, &["git", "fetch", "-q", "origin"], true);
     for attempt in 1..=2 {
         // --autostash parks everyone else's unstaged edits around the rebase and puts them back afterwards
-        let r = run(root, &["git", "rebase", "-q", "--autostash", &format!("origin/{branch}")]);
+        // a rebase re-commits, so it gets the same identity: without it the committer was the local git config
+        let r = run(root, &["git", "-c", &format!("user.name={name}"), "-c", &format!("user.email={email}"), "rebase", "-q", "--autostash", &format!("origin/{branch}")]);
         if r.code != 0 {
             let conflicts = sh(root, &["git", "diff", "--name-only", "--diff-filter=U"], false);
             run(root, &["git", "rebase", "--abort"]);
             let files = if conflicts.is_empty() { vs::py_strip(if r.err.is_empty() { &r.out } else { &r.err }).to_string() } else { conflicts };
-            die(&vs::conflict_message(sub.map(native).as_deref(), &files, &branch))
+            die(&vs::conflict_message(sub.map(native).as_deref(), &files, &branch, name, email))
         }
         let push = run(root, &[&["git"][..], &vs::PUSH_BUFFER, &["push", "-q", "origin", &format!("HEAD:{branch}")]].concat());
         if push.code == 0 { break }

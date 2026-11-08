@@ -221,9 +221,9 @@ fn dump0(v: &Value) -> String {
     }
 }
 
-pub fn conflict_message(submodule: Option<&str>, files: &str, branch: &str) -> String {
+pub fn conflict_message(submodule: Option<&str>, files: &str, branch: &str, name: &str, email: &str) -> String {
     let at = submodule.map(|s| format!(" in submodule {s}")).unwrap_or_default();
-    format!("✗ your changes conflict with what others pushed{at}. Your commit is saved on this computer, not pushed.\nConflicting files:\n{files}\nMerge them with `git rebase origin/{branch}`, then run ship again with nothing staged to push it.")
+    format!("✗ your changes conflict with what others pushed{at}. Your commit is saved on this computer, not pushed.\nConflicting files:\n{files}\nMerge them with `git -c user.name={name} -c user.email={email} rebase origin/{branch}` (the rebase re-commits, so it needs the signed-in identity too), then run `ship -m \"…\"` again with nothing staged to push it.")
 }
 
 pub fn author_message(an: &str, ae: &str, name: &str, email: &str) -> String {
