@@ -96,6 +96,20 @@ fn identity() -> (String, String) {
     }
 }
 
+/// Writes the signed-in identity into the vault's own git config and each checked-out submodule's, so a git
+/// command typed by hand inside the vault (a manual rebase after a conflict, say) commits as the portal's account,
+/// never as whatever global identity the computer has.
+// ponytail: nested submodules (a submodule's own submodules) are left out; none of the vault's has a writable one
+pub(crate) fn pin_identity(vault: &Path, name: &str, email: &str) {
+    let mut repos = vec![vault.to_path_buf()];
+    repos.extend(submodule_paths(vault).iter().map(|s| vault.join(s)).filter(|p| p.join(".git").exists()));
+    for r in repos {
+        for (k, v) in [("user.name", name), ("user.email", email)] {
+            if vs::py_strip(&run(&r, &["git", "config", "--local", k]).out) != v { run(&r, &["git", "config", "--local", k, v]); }
+        }
+    }
+}
+
 fn submodule_paths(vault: &Path) -> Vec<String> {
     vs::submodule_paths(&run(vault, &["git", "config", "-z", "-f", ".gitmodules", "--get-regexp", r"submodule\..*\.path"]).out)
 }
@@ -236,6 +250,7 @@ fn sync_cli(vault: &Path, a: &[String]) -> i32 {
 fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     let (name, email) = identity();
     println!("identity: {name} <{email}>");
+    pin_identity(vault, &name, &email);
     let private = private_subs(vault);
     let mut book_msg = msg.to_string();
     if paths.is_empty() && !private.is_empty() {
@@ -351,12 +366,13 @@ fn ship_repo(vault: &Path, sub: Option<&str>, msg: &str, paths: Vec<String>, nam
     sh(root, &["git", "fetch", "-q", "origin"], true);
     for attempt in 1..=2 {
         // --autostash parks everyone else's unstaged edits around the rebase and puts them back afterwards
-        let r = run(root, &["git", "rebase", "-q", "--autostash", &format!("origin/{branch}")]);
+        // a rebase re-commits, so it gets the same identity: without it the committer was the local git config
+        let r = run(root, &["git", "-c", &format!("user.name={name}"), "-c", &format!("user.email={email}"), "rebase", "-q", "--autostash", &format!("origin/{branch}")]);
         if r.code != 0 {
             let conflicts = sh(root, &["git", "diff", "--name-only", "--diff-filter=U"], false);
             run(root, &["git", "rebase", "--abort"]);
             let files = if conflicts.is_empty() { vs::py_strip(if r.err.is_empty() { &r.out } else { &r.err }).to_string() } else { conflicts };
-            die(&vs::conflict_message(sub.map(native).as_deref(), &files, &branch))
+            die(&vs::conflict_message(sub.map(native).as_deref(), &files, &branch, name, email))
         }
         let push = run(root, &[&["git"][..], &vs::PUSH_BUFFER, &["push", "-q", "origin", &format!("HEAD:{branch}")]].concat());
         if push.code == 0 { break }
@@ -591,5 +607,26 @@ pub fn main(a: &[String]) {
         }
         Some("assemble" | "push" | "clone") => die(REPOS_USAGE),
         _ => die(USAGE),   // sys.exit(__doc__): the docstring and a newline
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pin_identity_writes_the_vault_and_its_submodules() {
+        let root = std::env::temp_dir().join(format!("pin-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (vault, sub) = (root.join("vault"), root.join("sub"));
+        for d in [&vault, &sub] { std::fs::create_dir_all(d).unwrap(); run(d, &["git", "init", "-q"]); }
+        run(&sub, &["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "s"]);
+        run(&vault, &["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.to_string_lossy(), "L1"]);
+        pin_identity(&vault, "eddLai", "1+eddLai@users.noreply.github.com");
+        for r in [vault.clone(), vault.join("L1")] {
+            assert_eq!(vs::py_strip(&run(&r, &["git", "config", "--local", "user.name"]).out), "eddLai");
+            assert_eq!(vs::py_strip(&run(&r, &["git", "config", "--local", "user.email"]).out), "1+eddLai@users.noreply.github.com");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
