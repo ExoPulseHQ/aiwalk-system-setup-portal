@@ -128,7 +128,8 @@ pub fn run(stdin: &[u8]) -> Out {
     // code changes are made on lab machines and leave through `exo code push`
     if let Some(out) = review_gate(stdin, &cmd, &scan, &t) { return out }
     let (push, merge, commit) = (has(&scan, "push"), has(&scan, "merge"), has(&scan, "commit"));
-    if !(push || merge || commit) { return Out::quiet() }
+    let rewrites = ["rebase", "cherry-pick", "revert", "am"].iter().any(|s| has(&scan, s));
+    if !(push || merge || commit || rewrites) { return Out::quiet() }
 
     let target = lab_target(&scan, &machines()).filter(|_| !cmd.contains("EXO_RAW=1"));
     if let Some((host, commit, push)) = target {
@@ -143,9 +144,16 @@ pub fn run(stdin: &[u8]) -> Out {
         return Out { stdout: exo_core::root_guard::deny_json(&why) + "\n", ..Out::default() };
     }
 
+    let ident = gh_identity();
+    // inside the vault every new commit is the portal's account: its git config is set before the command runs
+    if let (Some(vault), Some((login, email))) = (super::project_dir().filter(|p| p.join("System/vault_rules.json").is_file()), &ident) {
+        crate::vaultcli::pin_identity(&vault, login, email);
+    }
+    if !(push || merge || commit) { return Out::quiet() }
+
     let mut blocks = vec![text(&t, "header")];
     if push || commit {
-        blocks.push(match gh_identity() {
+        blocks.push(match ident {
             Some((login, email)) => fill(&text(&t, "identity"), &[("login", &login), ("email", &email)]),
             None => text(&t, "identity_unknown"),
         });

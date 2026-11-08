@@ -96,6 +96,20 @@ fn identity() -> (String, String) {
     }
 }
 
+/// Writes the signed-in identity into the vault's own git config and each checked-out submodule's, so a git
+/// command typed by hand inside the vault (a manual rebase after a conflict, say) commits as the portal's account,
+/// never as whatever global identity the computer has.
+// ponytail: nested submodules (a submodule's own submodules) are left out; none of the vault's has a writable one
+pub(crate) fn pin_identity(vault: &Path, name: &str, email: &str) {
+    let mut repos = vec![vault.to_path_buf()];
+    repos.extend(submodule_paths(vault).iter().map(|s| vault.join(s)).filter(|p| p.join(".git").exists()));
+    for r in repos {
+        for (k, v) in [("user.name", name), ("user.email", email)] {
+            if vs::py_strip(&run(&r, &["git", "config", "--local", k]).out) != v { run(&r, &["git", "config", "--local", k, v]); }
+        }
+    }
+}
+
 fn submodule_paths(vault: &Path) -> Vec<String> {
     vs::submodule_paths(&run(vault, &["git", "config", "-z", "-f", ".gitmodules", "--get-regexp", r"submodule\..*\.path"]).out)
 }
@@ -236,6 +250,7 @@ fn sync_cli(vault: &Path, a: &[String]) -> i32 {
 fn ship(vault: &Path, msg: &str, mut paths: Vec<String>) {
     let (name, email) = identity();
     println!("identity: {name} <{email}>");
+    pin_identity(vault, &name, &email);
     let private = private_subs(vault);
     let mut book_msg = msg.to_string();
     if paths.is_empty() && !private.is_empty() {
@@ -592,5 +607,26 @@ pub fn main(a: &[String]) {
         }
         Some("assemble" | "push" | "clone") => die(REPOS_USAGE),
         _ => die(USAGE),   // sys.exit(__doc__): the docstring and a newline
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pin_identity_writes_the_vault_and_its_submodules() {
+        let root = std::env::temp_dir().join(format!("pin-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (vault, sub) = (root.join("vault"), root.join("sub"));
+        for d in [&vault, &sub] { std::fs::create_dir_all(d).unwrap(); run(d, &["git", "init", "-q"]); }
+        run(&sub, &["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "s"]);
+        run(&vault, &["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.to_string_lossy(), "L1"]);
+        pin_identity(&vault, "eddLai", "1+eddLai@users.noreply.github.com");
+        for r in [vault.clone(), vault.join("L1")] {
+            assert_eq!(vs::py_strip(&run(&r, &["git", "config", "--local", "user.name"]).out), "eddLai");
+            assert_eq!(vs::py_strip(&run(&r, &["git", "config", "--local", "user.email"]).out), "1+eddLai@users.noreply.github.com");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
