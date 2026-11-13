@@ -8,7 +8,8 @@
 use crate::{cmd, sh};
 use exo_core::newer;
 
-pub(crate) const REPO: &str = "ExoPulseHQ/aiwalk-system-setup-portal";
+/// owner/name whose Releases hold the installers: aiwalk.config.json.
+pub(crate) fn repo() -> &'static str { &crate::config::get().update_repo }
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// How this copy was installed, which decides the file to fetch and how it goes in.
@@ -35,7 +36,7 @@ fn pattern() -> Option<&'static str> {
 /// This version, the newest release, and whether one click can install it here.
 #[tauri::command(async)]
 pub fn update_state() -> serde_json::Value {
-    let latest = crate::github::get(&format!("repos/{REPO}/releases/latest")).ok()
+    let latest = crate::github::get(&format!("repos/{}/releases/latest", repo())).ok()
         .and_then(|r| r["tag_name"].as_str().map(String::from)).unwrap_or_default();
     serde_json::json!({ "current": VERSION, "latest": latest, "newer": newer(&latest, VERSION), "can": pattern().is_some() })
 }
@@ -46,8 +47,8 @@ pub fn update_state() -> serde_json::Value {
 pub fn open_release(tag: String) -> Result<(), String> {
     if !tag.strip_prefix('v').is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit() || b == b'.')) { return Err("not a release".into()) }
     let url = if cfg!(target_os = "android") {
-        format!("https://github.com/{REPO}/releases/download/{tag}/aIwalk.System.Setup_{}_android_arm64.apk", &tag[1..])
-    } else { format!("https://github.com/{REPO}/releases/tag/{tag}") };
+        format!("https://github.com/{}/releases/download/{tag}/aIwalk.System.Setup_{}_android_arm64.apk", repo(), &tag[1..])
+    } else { format!("https://github.com/{}/releases/tag/{tag}", repo()) };
     crate::open_url(&url);
     Ok(())
 }
@@ -65,7 +66,7 @@ pub fn update_install(app: tauri::AppHandle, tag: String) -> Result<String, Stri
     #[cfg(unix)]
     { use std::os::unix::fs::DirBuilderExt; b.mode(0o700); }
     b.create(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let file = crate::github::download_asset(REPO, &tag, pattern, &dir).map_err(|e| format!("Could not download {tag}: {e}"))?;
+    let file = crate::github::download_asset(repo(), &tag, pattern, &dir).map_err(|e| format!("Could not download {tag}: {e}"))?;
     let f = file.to_string_lossy().into_owned();
     match kind() {
         // Tauri's NSIS installer: /P shows progress only, /R starts the app again when done

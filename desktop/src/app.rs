@@ -12,6 +12,7 @@ use tauri::Emitter;
 
 // The phone and VM modules drive a Linux desktop (adb, scrcpy, docker, GNOME keyring).
 mod access;
+mod config;
 mod sshc;
 mod admin;
 mod cloudflare;
@@ -193,13 +194,9 @@ fn platform() -> &'static str { std::env::consts::OS }
 #[tauri::command]
 fn start_page() -> Option<String> { std::env::var("AIWALK_START_PAGE").ok().filter(|p| !p.is_empty()) }
 
-// ponytail: vault list is hard-coded, same as the Python app; move to a config file when teams need different lists
-pub const VAULTS: [(&str, &str, &str); 2] = [
-    ("ExoPulse docs", "ExoPulseHQ/exo-book", "The team's technical documents, papers and progress notes"),
-    ("aIwalk Corp", "eddLai/aIwalk_Corp", "Company records, founders only"),
-];
+// The vault list and the requests repository come from aiwalk.config.json (config.rs).
 /// Where access requests travel, as issues; the org's members can open issues there but not write.
-const REQUESTS: &str = "exo-access-requests";
+pub(crate) fn requests() -> &'static str { &config::get().requests_repo }
 
 /// Runs gh; Ok(stdout) on exit 0, Err(stderr or why it could not start) otherwise.
 pub fn gh(args: &[&str]) -> Result<String, String> {
@@ -248,7 +245,7 @@ struct Request {
 
 /// Every open request; whose they are is the issue's author.
 fn open_requests(org: &str) -> Vec<Request> {
-    let issues = github::all(&format!("repos/{org}/{REQUESTS}/issues?state=open")).unwrap_or_default();
+    let issues = github::all(&format!("repos/{org}/{}/issues?state=open", requests())).unwrap_or_default();
     issues.iter().filter(|i| i.get("pull_request").is_none()).filter_map(|i| {
         let body = i["body"].as_str()?.to_string();
         let (repo, level) = parse_request(&body)?;
@@ -313,7 +310,7 @@ fn read_access(stage: &dyn Fn(usize, usize, &str)) -> State {
     if let Some(t) = github::current_token() { login::adopt(&user, &t) }
     // the vaults are read side by side; each vault asks its questions side by side too
     let vaults: Vec<Vault> = std::thread::scope(|s| {
-        let vaults: Vec<_> = VAULTS.iter().map(|&(name, repo, about)| { let user = &user; s.spawn(move || read_vault(name, repo, about, user)) }).collect();
+        let vaults: Vec<_> = config::get().vaults.iter().map(|v| { let user = &user; s.spawn(move || read_vault(&v.name, &v.repo, &v.about, user)) }).collect();
         vaults.into_iter().filter_map(|h| h.join().ok()).collect()
     });
     let guest = exo_core::is_guest(true, &vaults.iter().map(|v: &Vault| v.access.as_ref().map_or(0, |a| a.machines.len())).collect::<Vec<_>>());
@@ -377,7 +374,7 @@ fn set_team(org: String, team: String, login: String, member: bool) -> Result<()
 #[tauri::command(async)]
 fn request_access(org: String, repo: String, level: String, note: String) -> Result<(), String> {
     if level != "read" && level != "write" { return Err(format!("unknown level {level}")) }
-    github::send("POST", &format!("repos/{org}/{REQUESTS}/issues"), Some(serde_json::json!({
+    github::send("POST", &format!("repos/{org}/{}/issues", requests()), Some(serde_json::json!({
         "title": format!("{level} access to {repo}"), "body": request_body(&repo, &level, &note) }))).map(|_| ())
 }
 
@@ -386,7 +383,7 @@ fn request_access(org: String, repo: String, level: String, note: String) -> Res
 #[tauri::command(async)]
 fn approve_request(org: String, number: u64, repo: Option<String>, level: Option<String>) -> Result<(), String> {
     let shown = repo.zip(level);
-    let issues = format!("{org}/{REQUESTS}");
+    let issues = format!("{org}/{}", requests());
     let issue = github::get(&format!("repos/{issues}/issues/{number}"))?;
     if issue["state"] != "open" { return Err("this request is already closed".into()) }
     let login = issue["user"]["login"].as_str().ok_or("request has no author")?;
@@ -411,7 +408,7 @@ fn approve_request(org: String, number: u64, repo: Option<String>, level: Option
 
 #[tauri::command(async)]
 fn decline_request(org: String, number: u64) -> Result<(), String> {
-    close_issue(&format!("{org}/{REQUESTS}"), number, "not_planned", Some("Declined in aIwalk System Setup."))
+    close_issue(&format!("{org}/{}", requests()), number, "not_planned", Some("Declined in aIwalk System Setup."))
 }
 
 // ---------------------------------------------------------------- Terms
@@ -427,8 +424,8 @@ const TERMS: &str = "TERMS.md";
 #[tauri::command(async)]
 fn terms_state() -> Option<serde_json::Value> {
     // asked before anything else is read, so the organisation is the first vault's owner, not the vault's rules
-    let org = VAULTS[0].1.split('/').next()?.to_string();
-    let repo = format!("{org}/{REQUESTS}");
+    let org = Some(config::get().org()).filter(|o| !o.is_empty())?.to_string();
+    let repo = format!("{org}/{}", requests());
     // the text and this account's acceptances, side by side
     let (text, mine) = std::thread::scope(|s| {
         let text = s.spawn(|| github::raw(&repo, TERMS).ok());
@@ -448,7 +445,7 @@ fn terms_state() -> Option<serde_json::Value> {
 
 #[tauri::command(async)]
 fn terms_accept(org: String, version: u32) -> Result<(), String> {
-    let repo = format!("{org}/{REQUESTS}");
+    let repo = format!("{org}/{}", requests());
     let issue = github::send("POST", &format!("repos/{repo}/issues"), Some(serde_json::json!({
         "title": terms_title(version), "body": format!("terms: {version}\n\nAccepted in aIwalk System Setup.") })))?;
     // closed at once: it is a record, not something for the owners to act on
@@ -459,7 +456,7 @@ fn terms_accept(org: String, version: u32) -> Result<(), String> {
 /// Owners: everyone's newest acceptance, login -> {version, date}.
 #[tauri::command(async)]
 fn terms_everyone(org: String) -> BTreeMap<String, serde_json::Value> {
-    let rows = github::all(&format!("repos/{org}/{REQUESTS}/issues?state=all")).unwrap_or_default();
+    let rows = github::all(&format!("repos/{org}/{}/issues?state=all", requests())).unwrap_or_default();
     let mut by: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     for r in rows { if let Some(l) = r["user"]["login"].as_str() { by.entry(l.to_string()).or_default().push(r.clone()) } }
     by.into_iter().filter_map(|(login, rs)| {
@@ -539,8 +536,8 @@ fn sign_in_cli(owner: bool) -> i32 {
     github::forget_token();
     println!("Signed in to GitHub as {user}\n\nStep 2 of 2: the machines\n");
     access::on_sign_in_address(Box::new(|url| println!("Scan this with a phone, or open the address above on any device, and approve with the same GitHub account:\n\n{}\nWaiting for the approval", qr_text(url))));
-    if access::token(access::ENROLL).is_ok() { println!("Already signed in for the machines. `aiwalk-setup ssh <machine>` connects from here."); return 0 }
-    match access::login(access::ENROLL, false) {
+    if access::token(access::enroll()).is_ok() { println!("Already signed in for the machines. `aiwalk-setup ssh <machine>` connects from here."); return 0 }
+    match access::login(access::enroll(), false) {
         Ok(()) => { println!("Signed in for the machines. `aiwalk-setup ssh <machine>` connects from here."); 0 }
         Err(e) => { eprintln!("GitHub is signed in; the machines are not: {e}\nRun `aiwalk-setup sign-in` again for this step."); 1 }
     }

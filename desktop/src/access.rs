@@ -13,13 +13,13 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// ponytail: one team; move both to vault_rules.json when a second Access organisation appears
-pub(crate) const ZONE: &str = ".aiwalkcorp.com";
+// The team's zone, enrol application and Access organisation come from aiwalk.config.json (config.rs).
+pub(crate) fn zone() -> &'static str { &crate::config::get().cloudflare.zone }
 /// The Access application with no machine behind it, open to anyone who signs in with GitHub. Signing in to it is
 /// how Cloudflare comes to know a person (their email, their GitHub number) before any machine lets them in, so an
 /// owner's app can read the address a machine will know them by instead of asking for it.
-pub(crate) const ENROLL: &str = "enroll.aiwalkcorp.com";
-const TEAM: &str = "aiwalkcorp.cloudflareaccess.com";
+pub(crate) fn enroll() -> &'static str { &crate::config::get().cloudflare.enroll }
+fn team() -> &'static str { &crate::config::get().cloudflare.team }
 
 fn dir() -> PathBuf { home().join(".cloudflared") }
 fn now() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0) }
@@ -47,7 +47,7 @@ fn claims(jwt: &str) -> Option<Value> {
 fn team_host(h: &str) -> Result<String, String> {
     let h = h.trim().to_ascii_lowercase();
     let clean = !h.is_empty() && h.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-') && !h.contains("..");
-    if clean && h.ends_with(ZONE) && h.len() > ZONE.len() { Ok(h) } else { Err(format!("{h} is not one of the team's machines")) }
+    if clean && h.ends_with(zone()) && h.len() > zone().len() { Ok(h) } else { Err(format!("{h} is not one of the team's machines")) }
 }
 
 // ---------------------------------------------------------------- a. the application token
@@ -71,7 +71,7 @@ fn app_info(host: &str) -> Result<App, String> {
 fn app_from(c: &Value, host: &str, now: i64) -> Result<App, String> {
     let s = |k: &str| c[k].as_str().unwrap_or_default().to_ascii_lowercase();
     if s("hostname") != host || s("type") != "match" { return Err(format!("Access answered for another hostname than {host}")) }
-    if s("auth_domain") != TEAM { return Err(format!("{host} is guarded by another Access organisation than {TEAM}")) }
+    if s("auth_domain") != team() { return Err(format!("{host} is guarded by another Access organisation than {}", team())) }
     let iat = c["iat"].as_i64().unwrap_or(0);
     // Cloudflare stamps its answer with the time it was made; a day either way is taken. Five minutes into the
     // future was the limit before, which stopped every sign-in on a computer whose clock is hours behind (a Windows
@@ -92,7 +92,7 @@ fn app_from(c: &Value, host: &str, now: i64) -> Result<App, String> {
 pub fn is_team_app(host: &str) -> Result<bool, String> {
     let host = team_host(host)?;
     if app_info(&host).is_ok() { return Ok(true) }
-    agent().get(format!("https://{TEAM}/cdn-cgi/access/certs")).call().map(|_| false).map_err(|e| format!("Cloudflare did not answer: {e}"))
+    agent().get(format!("https://{}/cdn-cgi/access/certs", team())).call().map(|_| false).map_err(|e| format!("Cloudflare did not answer: {e}"))
 }
 
 /// The claims of a token signed by the team's Access organisation (RS256, keys from its certs page, kept for the
@@ -111,7 +111,7 @@ fn verified(jwt: &str) -> Result<Value, String> {
     let key = match kept.as_ref().and_then(find) {
         Some(k) => k,
         None => {
-            let mut resp = agent().get(format!("https://{TEAM}/cdn-cgi/access/certs")).call().map_err(|e| format!("Access did not answer: {e}"))?;
+            let mut resp = agent().get(format!("https://{}/cdn-cgi/access/certs", team())).call().map_err(|e| format!("Access did not answer: {e}"))?;
             let keys: Value = serde_json::from_str(&resp.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|_| "Access's keys are not readable")?;
             let k = find(&keys).ok_or("Access's answer is signed with a key Access does not list")?;
             *kept = Some(keys);
@@ -134,7 +134,7 @@ fn usable(jwt: &str, aud: &str, host: &str, now: i64) -> Result<(), String> {
     let c = claims(jwt).ok_or_else(|| format!("The Cloudflare sign-in kept for {host} is not readable; sign in again"))?;
     let auds: Vec<&str> = match &c["aud"] { Value::String(s) => vec![s.as_str()], Value::Array(a) => a.iter().filter_map(Value::as_str).collect(), _ => vec![] };
     if !auds.contains(&aud) { return Err(format!("The Cloudflare sign-in kept for {host} belongs to another application; sign in again")) }
-    if c["iss"].as_str() != Some(&format!("https://{TEAM}")) { return Err(format!("The Cloudflare sign-in kept for {host} is from another organisation")) }
+    if c["iss"].as_str() != Some(&format!("https://{}", team())) { return Err(format!("The Cloudflare sign-in kept for {host} is from another organisation")) }
     if c["exp"].as_i64().unwrap_or(0) <= now + 60 { return Err(format!("The Cloudflare sign-in for {host} has run out; sign in again")) }
     Ok(())
 }
@@ -234,7 +234,7 @@ pub fn ssh_cert(host: &str) -> Result<(PathBuf, PathBuf), String> {
     { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?; }
     let public_key = std::fs::read_to_string(&pub_file).map_err(|e| e.to_string())?;
     // the token's issuer is the sign endpoint's host, as cloudflared uses it; checked to be the team's in `usable`
-    let issuer = format!("https://{TEAM}");
+    let issuer = format!("https://{}", team());
     let body = serde_json::json!({ "public_key": public_key, "jwt": token, "issuer": issuer }).to_string();
     let mut resp = agent().post(format!("{issuer}/cdn-cgi/access/cert_sign")).header("Content-Type", "application/json")
         .send(body).map_err(|e| format!("Access did not answer: {e}"))?;
@@ -337,13 +337,13 @@ fn split_url(url: &str) -> Option<(&str, &str)> {
 /// the team's login page only, and take the application token from the cookie the `authorized` step sets.
 fn exchange(host: &str, app: &App) -> Result<(), String> {
     let d = dir();
-    let org = std::fs::read_to_string(d.join(format!("{TEAM}-org-token"))).map_err(|_| "no team sign-in kept here")?;
+    let org = std::fs::read_to_string(d.join(format!("{}-org-token", team()))).map_err(|_| "no team sign-in kept here")?;
     let mut url = format!("https://{host}/");
     for _ in 0..8 {
         let (at, path) = split_url(&url).ok_or("Access sent the sign-in somewhere odd")?;
-        if at != TEAM { team_host(at)?; }
+        if at != team() { team_host(at)?; }
         let mut req = ureq::http::Request::builder().method("HEAD").uri(&url).header("User-Agent", "aiwalk-system-setup");
-        if at == TEAM && path.contains("/cdn-cgi/access/login") { req = req.header("Cookie", format!("CF_Authorization={}", org.trim())) }
+        if at == team() && path.contains("/cdn-cgi/access/login") { req = req.header("Cookie", format!("CF_Authorization={}", org.trim())) }
         let resp = agent().run(req.body(()).map_err(|e| e.to_string())?).map_err(|e| format!("{at} did not answer: {e}"))?;
         if path.contains("/cdn-cgi/access/authorized") {
             let token = resp.headers().get_all("set-cookie").iter().filter_map(|v| v.to_str().ok())
@@ -415,7 +415,7 @@ pub fn login(host: &str, browser: bool) -> Result<(), String> {
     std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
     write_private(&d.join(token_file(&app)), app_token.as_bytes())?;
     if let Some(org) = got["org_token"].as_str().map(str::trim).filter(|t| claims(t).is_some()) {
-        write_private(&d.join(format!("{TEAM}-org-token")), org.as_bytes())?;
+        write_private(&d.join(format!("{}-org-token", team())), org.as_bytes())?;
     }
     Ok(())
 }
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn the_token_file_is_the_applications() {
-        let meta = json!({ "type": "match", "hostname": "status-tiger.aiwalkcorp.com", "auth_domain": TEAM, "aud": "BB70", "app_hostname": "ssh-tiger.aiwalkcorp.com", "iat": 1000 });
+        let meta = json!({ "type": "match", "hostname": "status-tiger.aiwalkcorp.com", "auth_domain": team(), "aud": "BB70", "app_hostname": "ssh-tiger.aiwalkcorp.com", "iat": 1000 });
         let app = app_from(&meta, "status-tiger.aiwalkcorp.com", 1000).unwrap();
         assert_eq!(token_file(&app), "ssh-tiger.aiwalkcorp.com-bb70-token");
         // refused: another hostname, another organisation, a stale answer, an application outside the team, no aud
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn kept_tokens_are_checked_before_use() {
-        let iss = format!("https://{TEAM}");
+        let iss = format!("https://{}", team());
         let ok = jwt(json!({ "aud": ["aa", "bb"], "exp": 2000, "iss": iss }));
         assert!(usable(&ok, "bb", "h", 1000).is_ok());
         assert!(usable(&jwt(json!({ "aud": "bb", "exp": 2000, "iss": iss })), "bb", "h", 1000).is_ok());

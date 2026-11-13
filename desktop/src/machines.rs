@@ -100,24 +100,24 @@ pub fn machine_status(tunnels: Vec<(String, String)>) -> BTreeMap<String, serde_
 /// guards it. Err with a sentence for the page when the name is not one, or there is no such machine.
 #[tauri::command(async)]
 pub fn find_machine(name: String) -> Result<String, String> {
-    let tunnel = exo_core::machine_tunnel(&name, crate::access::ZONE)?;
+    let tunnel = exo_core::machine_tunnel(&name, crate::access::zone())?;
     if crate::access::is_team_app(&tunnel)? { Ok(tunnel) } else { Err(format!("There is no machine called {}", name.trim())) }
 }
 
 // The machines' names, where a guest can read them: a guest reads no vault, so the list an owner's app keeps in the
 // requests repo (the one repo every guest is invited to, for the terms) is how their app learns which machines
 // exist. Names only; which of them let a person in is Cloudflare's to say.
-const LIST_REPO: &str = "ExoPulseHQ/exo-access-requests";
+fn list_repo() -> String { crate::config::get().requests() }
 const LIST: &str = "machines.json";
 
 /// A guest's machines without typing their names: every listed machine that lets this sign-in through, asked without
 /// the browser, as (name, tunnel). Empty before the Cloudflare sign-in, and when the list cannot be read.
 #[tauri::command(async)]
 pub fn my_machines() -> Vec<(String, String)> {
-    let Ok(text) = crate::github::raw(LIST_REPO, LIST) else { return vec![] };
+    let Ok(text) = crate::github::raw(&list_repo(), LIST) else { return vec![] };
     let names: Vec<String> = serde_json::from_str(&text).unwrap_or_default();
     // the file is only a list of names: each becomes ssh-<name> in the team's zone or is dropped
-    names.into_iter().filter_map(|n| exo_core::machine_tunnel(&n, crate::access::ZONE).ok().map(|t| (n, t)))
+    names.into_iter().filter_map(|n| exo_core::machine_tunnel(&n, crate::access::zone()).ok().map(|t| (n, t)))
         .filter(|(_, t)| crate::access::sign_in_quiet(t)).collect()
 }
 
@@ -127,9 +127,9 @@ pub fn publish_machines(mut names: Vec<String>) -> Result<bool, String> {
     use base64::Engine;
     names.sort(); names.dedup();
     let want = serde_json::to_string(&names).map_err(|e| e.to_string())?;
-    let path = format!("repos/{LIST_REPO}/contents/{LIST}");
+    let path = format!("repos/{}/contents/{LIST}", list_repo());
     let now = crate::github::get(&path).ok();
-    if crate::github::raw(LIST_REPO, LIST).is_ok_and(|t| t.trim() == want) { return Ok(false) }
+    if crate::github::raw(&list_repo(), LIST).is_ok_and(|t| t.trim() == want) { return Ok(false) }
     let mut body = serde_json::json!({ "message": "machines: the names a guest's app asks about",
                                        "content": base64::engine::general_purpose::STANDARD.encode(&want) });
     if let Some(sha) = now.as_ref().and_then(|v| v["sha"].as_str()) { body["sha"] = sha.into() }
@@ -151,7 +151,7 @@ pub fn access_login(app: tauri::AppHandle, tunnels: Vec<String>, quiet: Option<b
     // are passed in: for any other, the browser would open on a refusal and this would wait.
     let mut failed = vec![];
     // first of all, and for someone no machine lets in yet the only step: Cloudflare gets to know the person
-    let enrolled = crate::access::sign_in(crate::access::ENROLL);
+    let enrolled = crate::access::sign_in(crate::access::enroll());
     if tunnels.is_empty() { return enrolled.map(|_| "Signed in: an owner can now let you in to a machine".into()) }
     // someone who is not a member: which machines let them in is known to Cloudflare alone, so each is asked without
     // the browser, and one that says no is simply not theirs
@@ -252,7 +252,7 @@ fn rules_from_anywhere() -> Option<String> {
         .and_then(|t| serde_json::from_str::<std::collections::BTreeMap<String, String>>(&t).ok())
         .map(|m| m.into_values().map(std::path::PathBuf::from).collect()).unwrap_or_default();
     here.ancestors().map(std::path::PathBuf::from).chain(kept).find_map(|d| std::fs::read_to_string(d.join("System/vault_rules.json")).ok())
-        .or_else(|| crate::VAULTS.iter().find_map(|&(_, repo, _)| crate::github::raw(repo, "System/vault_rules.json").ok()))
+        .or_else(|| crate::config::get().vaults.iter().find_map(|v| crate::github::raw(&v.repo, "System/vault_rules.json").ok()))
 }
 
 /// `aiwalk-setup ssh [ssh options] [account@]<machine> [command…]`. With no account: the one this folder's vault rules
@@ -317,7 +317,7 @@ pub(crate) fn on_machine(user: &str, tunnel: &str, command: &str, stdin: Option<
 /// `[account@]<machine>` as the account and the tunnel hostname, signed in to Cloudflare (the browser when there is no
 /// kept sign-in) and with a fresh SSH certificate. Err with a sentence.
 pub(crate) fn ready(dest: &str) -> Result<(String, String), String> {
-    let (user, tunnel) = exo_core::ssh_destination(dest, crate::access::ZONE)?;
+    let (user, tunnel) = exo_core::ssh_destination(dest, crate::access::zone())?;
     let user = user.unwrap_or_else(|| exo_core::default_account(rules_from_anywhere().as_deref(), &tunnel));
     if crate::access::token(&tunnel).is_err() {
         // a name with no machine behind it is said plainly, not as a failed sign-in
@@ -358,7 +358,7 @@ pub fn phone_exec(route: &str, param: &dyn Fn(&str) -> String, body: &[u8]) -> O
     let cmd = exo_command(&args);
     let dest = if param("user").is_empty() { param("host") } else { format!("{}@{}", param("user"), param("host")) };
     let run = || -> Result<crate::sshc::Out, String> {
-        let (user, tunnel) = exo_core::ssh_destination(&dest, crate::access::ZONE)?;
+        let (user, tunnel) = exo_core::ssh_destination(&dest, crate::access::zone())?;
         let user = user.unwrap_or_else(|| "ntk".into());
         crate::access::token(&tunnel).map_err(|_| format!("Sign in to {} on the Machines page of aIwalk System Setup first", param("host")))?;
         crate::access::ssh_cert_if_stale(&tunnel)?;
@@ -381,7 +381,7 @@ fn exo_command(args: &[String]) -> String {
 /// is found; the page then shows the line to copy.
 #[tauri::command(async)]
 pub fn open_ssh(tunnel: String, user: String) -> Result<String, String> {
-    let (_, tunnel) = exo_core::ssh_destination(&format!("{user}@{tunnel}"), crate::access::ZONE)?;
+    let (_, tunnel) = exo_core::ssh_destination(&format!("{user}@{tunnel}"), crate::access::zone())?;
     let app = app().ok_or("This app's own path cannot be used by ssh")?;
     launch(&exo_core::ssh_argv(&app, &user, &tunnel))?;
     Ok(format!("A terminal opened on {}", tunnel.trim_start_matches("ssh-").split('.').next().unwrap_or(&tunnel)))
@@ -603,7 +603,7 @@ pub fn forget_access() {
 pub fn lab_identity(tunnels: Vec<String>) -> Option<serde_json::Value> {
     let tokens: Vec<Option<String>> = tunnels.iter().map(|t| crate::access::token(t).ok()).collect();
     let missing = tokens.iter().filter(|t| t.is_none()).count();
-    let jwt = tokens.into_iter().flatten().next().or_else(|| crate::access::token(crate::access::ENROLL).ok())?;
+    let jwt = tokens.into_iter().flatten().next().or_else(|| crate::access::token(crate::access::enroll()).ok())?;
     let payload = jwt.trim().split('.').nth(1)?;
     let claims: serde_json::Value = serde_json::from_slice(&base64url(payload)?).ok()?;
     let email = claims["email"].as_str().unwrap_or_default().to_lowercase();
