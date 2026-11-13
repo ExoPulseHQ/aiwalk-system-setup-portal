@@ -60,7 +60,7 @@ fn apk(name: &str) -> std::path::PathBuf {
 fn fetch_apk(name: &str) -> Result<std::path::PathBuf, String> {
     let have = apk(name);
     if have.exists() { return Ok(have) }
-    let (repo, dir) = (crate::update::REPO, kept_apks());
+    let (repo, dir) = (crate::update::repo(), kept_apks());
     crate::github::download_asset(repo, &format!("v{}", env!("CARGO_PKG_VERSION")), name, &dir).or_else(|first| {
         let latest = crate::github::get(&format!("repos/{repo}/releases/latest")).ok().and_then(|r| r["tag_name"].as_str().map(String::from)).ok_or(first)?;
         crate::github::download_asset(repo, &latest, name, &dir)

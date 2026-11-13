@@ -1,0 +1,16 @@
+{
+  "about": "The team this build serves. A build reads this file; a computer may lay ~/.config/aiwalk-setup/config.json (or the file AIWALK_CONFIG names) over it key by key. See desktop/src/config.rs.",
+  "github_client_id": "Ov23libbDrZ77FJNDo4L",
+  "update_repo": "ExoPulseHQ/aiwalk-system-setup-portal",
+  "requests_repo": "exo-access-requests",
+  "intern_repos": ["aiwalk-system-setup-portal", "exo-access-requests", "exo-book", "exo-papers"],
+  "cloudflare": {
+    "zone": ".aiwalkcorp.com",
+    "enroll": "enroll.aiwalkcorp.com",
+    "team": "aiwalkcorp.cloudflareaccess.com"
+  },
+  "vaults": [
+    { "name": "ExoPulse docs", "repo": "ExoPulseHQ/exo-book", "about": "The team's technical documents, papers and progress notes" },
+    { "name": "aIwalk Corp", "repo": "eddLai/aIwalk_Corp", "about": "Company records, founders only" }
+  ]
+}
