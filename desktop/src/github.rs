@@ -45,7 +45,7 @@ fn issued(r: &Value) -> Option<(String, Option<String>, i64)> {
 /// when the new token runs out)). GitHub takes each refresh token once.
 pub fn renew(refresh: &str) -> Result<(String, String, i64), String> {
     let r = oauth("https://github.com/login/oauth/access_token", serde_json::json!({
-        "client_id": CLIENT_ID, "grant_type": "refresh_token", "refresh_token": refresh }))?;
+        "client_id": client_id(), "grant_type": "refresh_token", "refresh_token": refresh }))?;
     match issued(&r) {
         Some((token, Some(next), until)) if until > 0 => Ok((token, next, until)),
         _ => Err(format!("GitHub would not renew the sign-in: {}", r["error_description"].as_str().or(r["error"].as_str()).unwrap_or("no reason given"))),
@@ -174,8 +174,8 @@ pub fn graphql(query: &str) -> Result<String, String> {
 // GitHub's device flow: the app asks for a one-time code, the person enters it at github.com/login/device in any
 // browser, and the app waits for the token. No secret is involved, so the client id below is not one.
 
-/// The team's OAuth App "aIwalk System Setup", owned by ExoPulseHQ, with the device flow switched on.
-const CLIENT_ID: &str = "Ov23libbDrZ77FJNDo4L";
+/// The team's OAuth App (ExoPulseHQ's is "aIwalk System Setup"), with the device flow switched on: aiwalk.config.json.
+fn client_id() -> &'static str { &crate::config::get().github_client_id }
 /// repo: the vaults and code. read:org: teams. user:email: to tell that the machines' sign-in is the same person.
 pub const SCOPES_MEMBER: &str = "repo read:org user:email";
 /// Owners add admin:org, for invitations, roles and team membership. Asked for only when an owner unlocks the tools.
@@ -192,7 +192,7 @@ fn oauth(url: &str, body: Value) -> Result<Value, String> {
 /// Runs the device flow for `scopes`. `show(code, url)` is called once with what the person must enter and where;
 /// then this waits, up to the code's life (15 minutes), for them to approve. Ok(token).
 pub fn device_sign_in(scopes: &str, show: &dyn Fn(&str, &str)) -> Result<String, String> {
-    let d = oauth("https://github.com/login/device/code", serde_json::json!({ "client_id": CLIENT_ID, "scope": scopes }))?;
+    let d = oauth("https://github.com/login/device/code", serde_json::json!({ "client_id": client_id(), "scope": scopes }))?;
     let (Some(device), Some(code)) = (d["device_code"].as_str(), d["user_code"].as_str()) else {
         return Err(format!("GitHub gave no sign-in code: {}", d["error_description"].as_str().or(d["error"].as_str()).unwrap_or("no reason given")))
     };
@@ -204,7 +204,7 @@ pub fn device_sign_in(scopes: &str, show: &dyn Fn(&str, &str)) -> Result<String,
         // a question that could not be asked is asked again, not the end of the sign-in: on a phone the app is in
         // the background (frozen, its network paused) for exactly as long as the person is approving in the browser
         let Ok(r) = oauth("https://github.com/login/oauth/access_token", serde_json::json!({
-            "client_id": CLIENT_ID, "device_code": device, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" })) else { continue };
+            "client_id": client_id(), "device_code": device, "grant_type": "urn:ietf:params:oauth:grant-type:device_code" })) else { continue };
         if let Some((token, refresh, until)) = issued(&r) {
             // kept aside for login::add, which stores it with the token: without it the sign-in ended every eight hours
             if let Some(refresh) = refresh { *RENEWAL.lock().unwrap() = Some((token.clone(), refresh, until)); }

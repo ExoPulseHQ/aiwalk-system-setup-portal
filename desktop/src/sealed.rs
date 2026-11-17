@@ -98,7 +98,7 @@ pub fn sealed_new_board() -> bool {
 /// one. A holder could still re-seal by hand with age; the keyring files' push rule on GitHub is what stops that copy
 /// from reaching anyone.
 fn require_owner(what: &str) -> Result<(), String> {
-    let org = crate::VAULTS[0].1.split('/').next().unwrap_or_default();
+    let org = crate::config::get().org();
     match crate::github::get(&format!("user/memberships/orgs/{org}")) {
         Ok(m) if m["role"] == "admin" && m["state"] == "active" => Ok(()),
         Ok(_) => Err(format!("Only an owner of {org} can {what}.")),
@@ -281,7 +281,7 @@ pub fn sealed_reseal(path: String, assign: Vec<(String, String)>) -> Result<Stri
         if let Some(h) = holders.iter().find(|h| h.kind != "yubikey") { return Err(format!("This vault takes YubiKeys only, and key {} is not one.", &fingerprint(&h.key)[..8])) }
     }
     // bind each chosen key to its holder: an account of the organisation, checked with GitHub
-    let org = crate::VAULTS[0].1.split('/').next().unwrap_or_default();
+    let org = crate::config::get().org();
     for (fp, login) in &assign {
         let m = crate::github::get(&format!("orgs/{org}/memberships/{login}")).map_err(|_| format!("{login} is not in {org}."))?;
         if m["state"] != "active" { return Err(format!("{login} has not joined {org} yet.")) }

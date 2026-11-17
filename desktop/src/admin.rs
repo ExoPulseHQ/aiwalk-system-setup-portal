@@ -22,8 +22,14 @@ pub struct People {
 }
 
 /// What an intern gets on invitation, all read: the app's repo (to download it), the requests repo (to read the
-/// terms, record acceptance and ask for more), the shared notes and the papers. Owners raise single repos later.
-const INTERN_REPOS: [&str; 4] = ["aiwalk-system-setup-portal", crate::REQUESTS, "exo-book", "exo-papers"];
+/// terms, record acceptance and ask for more), the shared notes and the papers (`intern_repos` in aiwalk.config.json,
+/// the requests repo always among them). Owners raise single repos later.
+fn intern_repos() -> Vec<&'static str> {
+    let c = crate::config::get();
+    let mut r: Vec<&str> = c.intern_repos.iter().map(String::as_str).collect();
+    if !r.contains(&c.requests_repo.as_str()) { r.insert(0, &c.requests_repo) }
+    r
+}
 
 /// Everyone in the organisation, for any member. Invitations and interns need an owner, so they are read only when
 /// the caller may edit (a refusal there leaves them empty, it does not fail the page).
@@ -42,7 +48,7 @@ pub fn org_people(org: String) -> Result<People, String> {
         (org_interns(&org, &a.people.keys().cloned().collect()).unwrap_or_default(), invites)
     } else { (vec![], vec![]) };
     let members = a.people.into_iter().map(|(login, p)| Member { name: p.name, owner: p.grants.is_none(), login }).collect();
-    Ok(People { members, invites, interns, can_edit, requests: crate::REQUESTS })
+    Ok(People { members, invites, interns, can_edit, requests: crate::requests() })
 }
 
 /// Interns are not in the organisation, so only their repos know them: the org's outside collaborators, and every
@@ -71,15 +77,15 @@ pub fn invite(org: String, login: String, owner: bool, teams: Vec<String>) -> Re
     Ok(format!("Invited {login}. GitHub emails them; they join once they accept."))
 }
 
-/// Invites someone as an intern: repo invitations to `INTERN_REPOS`, no organisation invitation. A machine guest
+/// Invites someone as an intern: repo invitations to `intern_repos()`, no organisation invitation. A machine guest
 /// (`guest`) gets read on the requests repo only: the terms and their acceptance, no documents.
 #[tauri::command(async)]
 pub fn invite_intern(org: String, login: String, guest: Option<bool>) -> Result<String, String> {
     let login = login.trim().trim_start_matches('@');
     github::get(&format!("users/{login}")).map_err(|_| format!("There is no GitHub account called {login}"))?;
-    let repos: &[&str] = if guest == Some(true) { &[crate::REQUESTS] } else { &INTERN_REPOS };
-    for r in repos { github::send("PUT", &format!("repos/{org}/{r}/collaborators/{login}"), Some(serde_json::json!({ "permission": "pull" })))?; }
-    if guest == Some(true) { return Ok(format!("Invited {login} as a guest, read on {} for the terms. GitHub emails them the invitation.", crate::REQUESTS)) }
+    let repos: Vec<&str> = if guest == Some(true) { vec![crate::requests()] } else { intern_repos() };
+    for r in &repos { github::send("PUT", &format!("repos/{org}/{r}/collaborators/{login}"), Some(serde_json::json!({ "permission": "pull" })))?; }
+    if guest == Some(true) { return Ok(format!("Invited {login} as a guest, read on {} for the terms. GitHub emails them the invitation.", crate::requests())) }
     Ok(format!("Invited {login} as an intern, read on {}. GitHub emails one invitation per repo. You can then raise single repos for them in the access tree.", repos.join(", ")))
 }
 
@@ -187,7 +193,7 @@ pub fn public_email(login: String) -> Option<String> {
 }
 
 /// The email Cloudflare Access knows the GitHub account numbered `github_id` by, once that person has signed in to
-/// any of the team's Access applications (access::ENROLL is the one everyone may). It is the very address a
+/// any of the team's Access applications (access::enroll() is the one everyone may). It is the very address a
 /// machine's email rule is matched against, so it cannot be the wrong one of their addresses.
 /// Everyone Cloudflare Access has seen sign in with GitHub: their GitHub number and the email it knows them by.
 fn enrolled() -> Vec<(u64, String)> {

@@ -128,7 +128,7 @@ pub fn left_since_shared() -> Vec<String> {
     exo_core::owners_gone(&then, &now)
 }
 
-fn org() -> String { crate::VAULTS[0].1.split('/').next().unwrap_or_default().to_string() }
+fn org() -> String { crate::config::get().org().to_string() }
 
 /// A fresh team key: 100 bits as five groups of four, in letters and digits that are not mistaken for one another.
 fn new_key() -> Result<String, String> {
