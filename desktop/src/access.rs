@@ -19,7 +19,7 @@ pub(crate) fn zone() -> &'static str { &crate::config::get().cloudflare.zone }
 /// how Cloudflare comes to know a person (their email, their GitHub number) before any machine lets them in, so an
 /// owner's app can read the address a machine will know them by instead of asking for it.
 pub(crate) fn enroll() -> &'static str { &crate::config::get().cloudflare.enroll }
-fn team() -> &'static str { &crate::config::get().cloudflare.team }
+pub(crate) fn team() -> &'static str { &crate::config::get().cloudflare.team }
 
 fn dir() -> PathBuf { home().join(".cloudflared") }
 fn now() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0) }

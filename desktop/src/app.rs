@@ -818,7 +818,7 @@ fn main() {
     // --download TAG PATTERN DIR: the updater's download on its own ("*_amd64.deb")
     if let Some(i) = std::env::args().position(|a| a == "--download") {
         let a: Vec<String> = std::env::args().skip(i + 1).collect();
-        match github::download_asset("ExoPulseHQ/aiwalk-system-setup-portal", &a[0], &a[1], std::path::Path::new(&a[2])) {
+        match github::download_asset(update::repo(), &a[0], &a[1], std::path::Path::new(&a[2])) {
             Ok(p) => println!("{}", p.display()),
             Err(e) => { eprintln!("{e}"); std::process::exit(1) }
         }

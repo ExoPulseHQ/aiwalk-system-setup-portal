@@ -135,7 +135,7 @@ pub fn cli(args: &[String]) -> i32 {
     let Some(dest) = args.first().filter(|a| !a.starts_with("--")) else { eprintln!("usage: aiwalk-setup --repo-keys [account@]MACHINE [--org ORG] [--issue OWNER/REPO]"); return 2 };
     let (user, tunnel) = match crate::machines::ready(dest) { Ok(x) => x, Err(e) => { eprintln!("{e}"); return 255 } };
     let host = dest.rsplit('@').next().unwrap_or(dest).to_string();
-    let org = flag("--org").unwrap_or_else(|| "ExoPulseHQ".into());
+    let org = flag("--org").unwrap_or_else(|| crate::config::get().org().to_string());
     match flag("--issue") {
         Some(repo) => {
             let urls = match repo_keys(tunnel.clone(), user.clone(), org) {

@@ -591,7 +591,7 @@ pub fn forget_access() {
     let Ok(entries) = std::fs::read_dir(&dir) else { return };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let ours = name.contains(".aiwalkcorp.com-") || name.starts_with("aiwalkcorp.cloudflareaccess.com-org-token");
+        let ours = name.contains(&format!("{}-", crate::access::zone())) || name.starts_with(&format!("{}-org-token", crate::access::team()));
         if ours && name.contains("token") { let _ = std::fs::remove_file(e.path()); }
     }
 }
