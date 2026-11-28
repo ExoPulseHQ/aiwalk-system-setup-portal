@@ -14,5 +14,6 @@
   "fact_v9a_knee3": "Expect @16M: knee trough -51.6 deg. Deployable baseline is v8@10.2M; this one is the deeper-knee variant.",
   "fact_v15a": "Expect @16M: kinematic champion (mean 5.01 / knee 6.59) but control r_ctrl ~ 0. Do not read it as best-of-both.",
   "fact_v7": "Expect @8.8M: the only multi-reference baseline inside the 3-8 deg gold band; knee 10.4/14.1 deg is the known ceiling.",
-  "fact_ev6": "Expect a correctly loaded E3: tau_R +3.4 / tau_L -15.8 (left-hip extension bias) and |dtau| ~2.9 N.m per step. A random actor gives neither -- assert on the torque signature, not on the exit code."
+  "fact_ev6": "Expect a correctly loaded E3: tau_R +3.4 / tau_L -15.8 (left-hip extension bias) and |dtau| ~2.9 N.m per step. A random actor gives neither -- assert on the torque signature, not on the exit code.",
+  "deny_raw_launch": "⛔ {host} 上不直接開訓練（2026-11-27 horse OOM 之後的規則）。lab 機器是共用的，開跑前要先查記憶體、跑的時候要有自己的上限。改用：\n  `ssh {dest} '~/.local/bin/exo train launch CONFIG.yaml LOG --py <環境的 python> --repo <Askesis checkout> [-- deprl.main 的參數]'`\n  它先跑 preflight（RAM／GPU 記憶體夠不夠，算進還在長的 run、列出閒置孤兒），不夠就拒絕並說原因；夠就放進 systemd user scope（MemoryMax 預設 RAM 一半、不用 swap）背景跑，回傳 unit 名稱。\n  • 先問有沒有空間：`exo train preflight --runs N --config CONFIG.yaml`（別的模型加 `--gb-per-run`）\n  • 停：`exo train stop <unit>.scope`（連 worker 一起停）；監看：`exo train watch ~/SCONE/results/<name>`\n  • preflight 說不夠：別硬開，回報使用者並換機器或等；孤兒只列不殺（可能是別人的）。\n  • `exo train` 回 usage 而沒有 train：那台的 exo 是舊版，請使用者在 app 的 Machines 頁按 Update host tools。\n  • 真的要繞過（例如測 exo 本身）先問使用者，再在指令裡加 `EXO_RAW=1`。"
 }

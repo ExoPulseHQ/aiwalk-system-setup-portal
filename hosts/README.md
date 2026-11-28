@@ -33,10 +33,14 @@ to the outside; if it is not running, nobody reaches the machine and someone has
 - `exo-status.py`: what the machine has and how busy it is, for the app's Machines page.
 - `exo-desktop`: start, list and stop VNC desktops.
 - `exo-term`: terminal sessions that outlive the connection (`aiwalk-setup ssh --session`).
-- `exo`: the vault plugin's Sync code page: the repos on the machine, their worktrees, commit and push.
+- `exo`: the vault plugin's Sync code page: the repos on the machine, their worktrees, commit and push. And
+  `exo train preflight|launch|stop|watch`: a training starts only when RAM and GPU memory have room for it, runs in a
+  systemd user scope with its own memory limit, and stops with all its workers; the vault's training hook denies an
+  ssh `python -m deprl.main` on a lab machine and points at `exo train launch` (since 2026-11-27, when horse ran out
+  of memory). `launch` needs the account's user systemd with lingering on.
 
 Each has a `VERSION`; the app's Machines page compares it with its own copy and offers **Update host tools**.
-`test_exo.py` checks `exo`.
+`test_exo.py` checks `exo code`, `test_exo_train.py` checks `exo train`.
 
 ## Checking a machine after a restart
 

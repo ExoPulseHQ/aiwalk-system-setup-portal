@@ -41,7 +41,7 @@ fn has(cmd: &str, sub: &str) -> bool {
 }
 
 /// The lab machines by name: the vault's System/vault_rules.json "machines", or the three the Python falls back to.
-fn machines() -> Vec<String> {
+pub(super) fn machines() -> Vec<String> {
     let read = || -> Option<Vec<String>> {
         let f = super::project_dir()?.join("System").join("vault_rules.json");
         let v: Value = serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()?;
@@ -51,7 +51,7 @@ fn machines() -> Vec<String> {
 }
 
 /// The first lab machine an `ssh` in the command goes to.
-fn lab_host(cmd: &str, hosts: &[String]) -> Option<String> {
+pub(super) fn lab_host(cmd: &str, hosts: &[String]) -> Option<String> {
     let b = b();
     let alts = hosts.iter().map(|h| fancy_regex::escape(h).into_owned()).collect::<Vec<_>>().join("|");
     let m = re(&format!(r"{b}ssh{b}[^\n;|&]*?{b}(?:[\p{{L}}\p{{N}}_.-]+@)?({alts}){b}")).captures(cmd).ok()??;
@@ -84,7 +84,7 @@ fn exo_push(scan: &str, hosts: &[String]) -> Option<(String, String, String)> {
 }
 
 /// `user@host` as the ssh command wrote it, else the bare host.
-fn dest(seg: &str, host: &str) -> String {
+pub(super) fn dest(seg: &str, host: &str) -> String {
     re(&format!(r"([\p{{L}}\p{{N}}_.-]+)@{}{}", fancy_regex::escape(host), b())).captures(seg).ok().flatten()
         .and_then(|c| c.get(1)).map_or(host.to_string(), |u| format!("{}@{host}", u.as_str()))
 }

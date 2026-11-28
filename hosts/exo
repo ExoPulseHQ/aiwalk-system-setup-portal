@@ -8,6 +8,21 @@
     exo code pull WORKTREE        (the main copy, on the trunk: fast-forward only, then its submodules to the commits it pins)
     exo code finish WORKTREE      (merged and clean: removes the worktree and its branch)
 
+    exo train preflight [--runs N] [--config CONFIG.yaml] [--gb-per-run G] [--gpu-gb-per-run G] [--cpus-per-run C]
+                        [--margin-gb 4] [--strict-cpu]
+    exo train launch CONFIG.yaml LOG --py PYTHON [--repo DIR] [--taskset 16-31] [--memory-max-gb G] [--gb-per-run G]
+                     [--foreground] [-- ARGS for deprl.main]
+    exo train stop UNIT
+    exo train watch RUN_DIR... [--stale-min 30] [--grace-min 20] [--min-free-gb 4] [--since "1 hour ago"]
+
+`train` keeps one training from taking a shared machine down (2026-11-27 horse ran out of memory: two runs, 7 GB of
+processes left by trainings that had ended weeks before, and nothing checked or noticed). `preflight` says whether more
+runs fit in RAM and GPU memory, counting the growth still ahead of runs already going, and lists idle orphans (it never
+kills them: they may be another person's). `launch` runs the preflight, then starts `PYTHON -m deprl.main CONFIG` in a
+systemd user scope with MemoryMax (default half the RAM) and no swap, detached, so past its limit the kernel kills that
+run only; `stop` stops a scope with all its workers. `watch` reports stale runs, low memory and kernel OOM / Xid lines.
+Each prints one JSON object and exits 1 when the answer is no. The vault's training hook sends ssh launches through here.
+
 `status` prints one JSON object describing every git repo in this account: its worktrees, what is changed or unpushed in each,
 how far `main` is behind GitHub, and the branches that have no worktree. It only reads; nothing is changed except
 `git fetch`. With no paths it looks for repos (a `.git` folder, so not worktrees) up to two levels below $HOME and below each data disk mounted under /media or /mnt;
@@ -16,11 +31,11 @@ The other commands change one worktree and print {"ok": true, ...}; each checks 
 trunk, never finish a worktree with work not in git) instead of trusting the caller, and refuses with {"ok": false, "error"}.
 The plugin runs it over ssh; a person can run it too. Design: vault Project_Management/Code_Repo_Sync_PR_Plugin_Design_Summary.md
 """
-import argparse, json, os, re, socket, subprocess, sys
+import argparse, glob, json, os, re, socket, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-VERSION = "3"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
+VERSION = "4"   # raise by hand when a change here should reach the machines; the app's Machines page compares it
 FETCH_TIMEOUT = 15   # seconds per repo; a slow GitHub must not hold the page
 
 
@@ -224,7 +239,320 @@ def act(cmd, a):
         return {"branch": b, "removed": top}
 
 
+# ---- exo train ---------------------------------------------------------------------------------------------------
+# RAM of one H2190 VT-MPO run (5 x 40 envs, 1M-transition replay), measured on horse 2026-11-27: the main process and
+# each environment worker. Other models give --gb-per-run; the estimate's source is always printed.
+MAIN_GB, WORKER_GB = 5.5, 0.35
+TRAINING_MARKERS = ("deprl", "multiprocessing.spawn", "multiprocessing.forkserver", "sconegym", "tonic")
+STEPS_RE = re.compile(r"[(,\s]steps\s*=\s*(?:int\()?\s*([0-9.eE+_]+)")
+
+
+def meminfo(path="/proc/meminfo"):
+    out = {}
+    with open(path) as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            out[k] = int(v.split()[0]) / 1024 / 1024   # GiB
+    return out
+
+
+def gpus():
+    """[(index, free_gb, total_gb)]; [] without a working nvidia-smi."""
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.free,memory.total", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    rows = []
+    for line in (r.stdout.strip().splitlines() if r.returncode == 0 else []):
+        try:
+            i, free, total = [x.strip() for x in line.split(",")]
+            rows.append((int(i), float(free) / 1024, float(total) / 1024))
+        except ValueError:   # "[N/A]" or a driver message
+            continue
+    return rows
+
+
+def tonic_config(path):
+    """(parallel, name) of a deprl training yaml. PyYAML when this python has it; otherwise the two keys are read from
+    the `tonic:` block line by line (the system python on a lab machine may have no yaml)."""
+    try:
+        import yaml
+        t = (yaml.safe_load(open(path)) or {}).get("tonic") or {}
+        return int(t.get("parallel", 1)), str(t.get("name", "run"))
+    except ImportError:
+        pass
+    parallel, name, inside = 1, "run", False
+    for line in open(path):
+        if re.match(r"tonic\s*:", line):
+            inside = True; continue
+        if inside and line.strip() and not line[0].isspace():
+            break
+        m = re.match(r"\s+(parallel|name)\s*:\s*['\"]?([^'\"#\n]*?)['\"]?\s*(#.*)?$", line) if inside else None
+        if m and m.group(1) == "parallel":
+            parallel = int(float(m.group(2)))
+        elif m:
+            name = m.group(2)
+    return parallel, name
+
+
+def per_run_from_config(path):
+    """(estimated GB, worker processes + 1) for one run of this training yaml."""
+    workers = tonic_config(path)[0]
+    return MAIN_GB + WORKER_GB * workers, workers + 1
+
+
+def _ps(fields):
+    try:
+        r = subprocess.run(["ps", "-u", str(os.getuid()), "-o", fields], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [line.split(None, fields.count(",")) for line in r.stdout.splitlines()]
+
+
+def _cpu_ticks(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            parts = f.read().rsplit(")", 1)[1].split()
+        return int(parts[11]) + int(parts[12])   # utime + stime
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def orphans(min_age_s=86400):
+    """This user's idle training processes left behind: python, parent init or the user's systemd (a subreaper under
+    desktop sessions), older than a day, no CPU used over one second. [(pid, age_days, rss_gb, cmd)]; never killed here."""
+    reapers = {1} | {int(p[0]) for p in _ps("pid=,args=") if len(p) == 2 and p[1].startswith("/lib/systemd/systemd --user")}
+    cand = [(int(pid), int(et), int(rss), args) for pid, ppid, et, rss, args in (p for p in _ps("pid=,ppid=,etimes=,rss=,args=") if len(p) == 5)
+            if int(ppid) in reapers and "python" in args.split()[0] and int(et) > min_age_s and any(m in args for m in TRAINING_MARKERS)]
+    t0 = {pid: _cpu_ticks(pid) for pid, *_ in cand}
+    if cand:
+        time.sleep(1.0)
+    return [(pid, et / 86400, rss / 1024 / 1024, args[:100]) for pid, et, rss, args in cand
+            if t0[pid] is not None and _cpu_ticks(pid) == t0[pid]]
+
+
+def running_growth_gb():
+    """RAM this user's running trainings will still take: per process group of a `-m deprl.main CONFIG` process, its
+    estimate from CONFIG minus what the group holds now (never negative). Counts a run launched a minute ago, before
+    its environments and replay are allocated, so a seed loop cannot start runs faster than memory fills."""
+    groups = {}
+    for p in _ps("pid=,pgid=,rss=,args="):
+        if len(p) < 4:
+            continue
+        _, pgid, rss, args = p
+        g = groups.setdefault(pgid, {"rss": 0, "config": None})
+        g["rss"] += int(rss)
+        words = args.split()
+        if "deprl.main" in words:
+            i = words.index("deprl.main")
+            if i + 1 < len(words) and words[i + 1].endswith((".yaml", ".yml")) and os.path.exists(words[i + 1]):
+                g["config"] = words[i + 1]
+    total = 0.0
+    for g in groups.values():
+        if g["config"]:
+            try:
+                total += max(0.0, per_run_from_config(g["config"])[0] - g["rss"] / 1024 / 1024)
+            except Exception:
+                continue
+    return total
+
+
+def check(mem, gpu_rows, load1, ncpu, runs, gb, gpu_gb, cpus, margin_gb, pending_gb=0.0, strict_cpu=False):
+    """The decision alone, so it is tested without a machine: (ok, reasons, warnings, numbers). Fits = the new runs'
+    RAM is at most half the machine's and at most what is available after the margin and the growth still ahead of
+    runs already going, and the GPU with the most free memory has room. CPU oversubscription warns unless strict."""
+    need = runs * gb
+    total, avail = mem["MemTotal"], mem["MemAvailable"]
+    reasons, warnings = [], []
+    if need > total / 2:
+        reasons.append(f"RAM: {need:.1f} GB for {runs} run(s) is more than half of {total:.1f} GB")
+    if need > avail - margin_gb - pending_gb:
+        reasons.append(f"RAM: {need:.1f} GB needed, {avail:.1f} GB available, {margin_gb:.0f} GB kept free, "
+                       f"{pending_gb:.1f} GB still to come from runs already going")
+    best = max(gpu_rows, key=lambda r: r[1]) if gpu_rows else None
+    if gpu_gb > 0 and best is not None and runs * gpu_gb > best[1]:
+        reasons.append(f"GPU {best[0]}: {runs * gpu_gb:.1f} GB needed, {best[1]:.1f} GB free")
+    if load1 + runs * cpus > ncpu:
+        (reasons if strict_cpu else warnings).append(f"CPU: load {load1:.1f} + {runs * cpus} worker processes > {ncpu} logical CPUs")
+    numbers = {"ram_need_gb": round(need, 1), "ram_total_gb": round(total, 1), "ram_available_gb": round(avail, 1),
+               "ram_pending_gb": round(pending_gb, 1), "gpu": None if best is None else {"index": best[0], "free_gb": round(best[1], 1)},
+               "load1": round(load1, 2), "cpus": ncpu, "cpu_need": runs * cpus}
+    return not reasons, reasons, warnings, numbers
+
+
+def preflight(runs=1, config=None, gb=None, gpu_gb=1.0, cpus=None, margin_gb=4.0, strict_cpu=False):
+    source = "--gb-per-run"
+    if config:
+        g, c = per_run_from_config(config)
+        if gb is None:
+            gb, source = g, "H2190 VT-MPO estimate from the config's parallel (give --gb-per-run for other models)"
+        cpus = c if cpus is None else cpus
+    if gb is None or cpus is None:
+        raise Refuse("give --config, or both --gb-per-run and --cpus-per-run")
+    ok, reasons, warnings, numbers = check(meminfo(), gpus(), os.getloadavg()[0], os.cpu_count(), runs, gb, gpu_gb, cpus,
+                                           margin_gb, running_growth_gb(), strict_cpu)
+    orph = orphans()
+    return {"ok": ok, "reasons": reasons, "warnings": warnings, "runs": runs, "gb_per_run": round(gb, 2), "gb_source": source,
+            **numbers, "orphans": [{"pid": p, "days": round(d, 1), "rss_gb": round(r, 2), "cmd": c} for p, d, r, c in orph],
+            "orphans_rss_gb": round(sum(o[2] for o in orph), 1)}
+
+
+def user_bus_env():
+    """This environment with XDG_RUNTIME_DIR set when ssh left it out, so `systemctl --user` finds the user's manager."""
+    env = dict(os.environ)
+    run = f"/run/user/{os.getuid()}"
+    if not env.get("XDG_RUNTIME_DIR") and os.path.isdir(run):
+        env["XDG_RUNTIME_DIR"] = run
+    return env
+
+
+def launch(a):
+    config = os.path.realpath(os.path.expanduser(a.config))
+    if not os.path.isfile(config):
+        raise Refuse(f"config not found: {a.config}")
+    py = os.path.expanduser(a.py or os.environ.get("PY", ""))
+    if not py:
+        raise Refuse("give --py: the python of the training's environment, e.g. ~/mambaforge/envs/forward_sim/bin/python")
+    repo = os.path.realpath(os.path.expanduser(a.repo or os.getcwd()))
+    env = user_bus_env()
+    if subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, env=env, timeout=20).returncode:
+        raise Refuse("no systemd --user instance reachable (lingering off, or no user bus); not starting")
+    pre = preflight(1, config, a.gb_per_run)
+    if not pre["ok"]:
+        return {"ok": False, "error": "preflight says no; not starting", "preflight": pre}
+    mem_max = a.memory_max_gb if a.memory_max_gb else round(meminfo()["MemTotal"] / 2, 1)
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", tonic_config(config)[1])
+    unit = f"deprl-{name}-{datetime.now().strftime('%m%d%H%M%S')}-{os.getpid()}"
+    cmd = [py, "-m", "deprl.main", config, *a.args]
+    if a.taskset:
+        cmd = ["taskset", "-c", a.taskset, *cmd]
+    cmd = ["systemd-run", "--user", "--scope", "--quiet", f"--unit={unit}", "-p", f"MemoryMax={mem_max}G", "-p", "MemorySwapMax=0",
+           "nice", "-n", "5", *cmd]
+    env["PYTHONPATH"] = repo + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    log = os.path.abspath(os.path.expanduser(a.log))
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    out = {"unit": f"{unit}.scope", "memory_max_gb": mem_max, "log": log, "repo": repo, "stop": f"exo train stop {unit}.scope",
+           "warnings": pre["warnings"], "orphans_rss_gb": pre["orphans_rss_gb"]}
+    with open(log, "ab") as f:
+        if a.foreground:
+            code = subprocess.run(cmd, cwd=repo, env=env, stdout=f, stderr=subprocess.STDOUT).returncode
+            return {**out, "ok": code == 0, "exit": code}
+        # its own session: the run outlives the ssh connection that started it
+        p = subprocess.Popen(cmd, cwd=repo, env=env, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(3)
+    if p.poll() is not None:
+        tail = open(log, errors="replace").read()[-1500:]
+        raise Refuse(f"the run ended within 3 s (exit {p.returncode}); log tail:\n{tail}")
+    return {**out, "ok": True, "pid": p.pid}
+
+
+def stop(unit):
+    if not re.fullmatch(r"deprl-[A-Za-z0-9_.-]+\.scope", unit):
+        raise Refuse("stops only the deprl-*.scope units `exo train launch` started")
+    env = user_bus_env()
+    r = subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True, text=True, env=env, timeout=120)
+    if r.returncode:
+        raise Refuse((r.stderr or r.stdout).strip() or f"systemctl stop {unit} failed")
+    left = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, env=env, timeout=20).stdout.strip()
+    return {"unit": unit, "state": left or "inactive"}
+
+
+def run_status(run_dir, stale_min, grace_min=20, now=None):
+    """A results directory (~/SCONE/results/<name>): running, stale (newest log.csv older than stale_min), finished
+    (last logged step reached the trainer's steps=), starting (young, no log yet) or no-log."""
+    now = now or time.time()
+    run_dir = os.path.expanduser(run_dir)
+    name = os.path.basename(os.path.normpath(run_dir))
+    logs = sorted(glob.glob(os.path.join(run_dir, "*", "log.csv")), key=os.path.getmtime)
+    if not logs:
+        young = os.path.isdir(run_dir) and (now - os.path.getmtime(run_dir)) / 60 < grace_min
+        return {"run": name, "state": "starting" if young else "no-log"}
+    log = logs[-1]
+    age = (now - os.path.getmtime(log)) / 60
+    steps = total = None
+    try:
+        with open(log) as f:
+            header, last = f.readline().strip().split(","), None
+            for last in f:
+                pass
+        if last:
+            steps = float(dict(zip(header, last.strip().split(","))).get("train/steps", "nan"))
+        cfg = os.path.join(os.path.dirname(log), "config.yaml")
+        m = STEPS_RE.search(open(cfg).read()) if os.path.exists(cfg) else None
+        total = float(m.group(1).replace("_", "")) if m else None
+    except (OSError, ValueError):
+        pass
+    state = "finished" if steps is not None and total is not None and steps >= total else ("stale" if age > stale_min else "running")
+    return {"run": name, "state": state, "minutes_since_log": round(age, 1), "steps": steps, "total": total}
+
+
+def kernel_events(since):
+    """Kernel OOM-killer and NVIDIA Xid lines since `since`; None when the journal cannot be read."""
+    try:
+        r = subprocess.run(["journalctl", "-k", "--no-pager", "-o", "short-iso", "--since", since], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode or re.search(r"No journal files|not seeing messages|permission", r.stderr, re.I):
+        return None
+    pat = re.compile(r"Out of memory|oom-kill|Killed process|NVRM: Xid")
+    return [line[:200] for line in r.stdout.splitlines() if pat.search(line)]
+
+
+def watch(a):
+    runs = [run_status(r, a.stale_min, a.grace_min) for r in a.runs]
+    free = meminfo().get("MemAvailable")
+    events = kernel_events(a.since)
+    alerts = [f"{r['run']}: {r['state']}" for r in runs if r["state"] in ("stale", "no-log")]
+    if free is not None and free < a.min_free_gb:
+        alerts.append(f"MemAvailable {free:.1f} GB < {a.min_free_gb} GB")
+    if events is None:
+        alerts.append("kernel: unavailable (cannot read the journal; OOM/Xid not checked)")
+    elif events:
+        alerts.append(f"{len(events)} kernel OOM/Xid message(s) since {a.since}")
+    return {"ok": not alerts, "alerts": alerts, "mem_available_gb": None if free is None else round(free, 1), "runs": runs, "kernel": events}
+
+
+def train(argv):
+    p = argparse.ArgumentParser(prog="exo train")
+    sub = p.add_subparsers(dest="cmd")
+    pf = sub.add_parser("preflight")
+    pf.add_argument("--runs", type=int, default=1); pf.add_argument("--config")
+    pf.add_argument("--gb-per-run", type=float); pf.add_argument("--gpu-gb-per-run", type=float, default=1.0)
+    pf.add_argument("--cpus-per-run", type=int); pf.add_argument("--margin-gb", type=float, default=4.0)
+    pf.add_argument("--strict-cpu", action="store_true")
+    la = sub.add_parser("launch")
+    la.add_argument("config"); la.add_argument("log"); la.add_argument("--py"); la.add_argument("--repo")
+    la.add_argument("--taskset"); la.add_argument("--memory-max-gb", type=float); la.add_argument("--gb-per-run", type=float)
+    la.add_argument("--foreground", action="store_true")
+    st = sub.add_parser("stop"); st.add_argument("unit")
+    wa = sub.add_parser("watch")
+    wa.add_argument("runs", nargs="*"); wa.add_argument("--stale-min", type=float, default=30)
+    wa.add_argument("--grace-min", type=float, default=20); wa.add_argument("--min-free-gb", type=float, default=4)
+    wa.add_argument("--since", default="1 hour ago")
+    extra = argv[argv.index("--") + 1:] if "--" in argv else []   # deprl.main's own arguments, after --
+    a = p.parse_args(argv[:argv.index("--")] if "--" in argv else argv)
+    a.args = extra
+    if not a.cmd:
+        print(__doc__.strip(), file=sys.stderr); return 2
+    try:
+        if a.cmd == "preflight":
+            out = preflight(a.runs, a.config, a.gb_per_run, a.gpu_gb_per_run, a.cpus_per_run, a.margin_gb, a.strict_cpu)
+        elif a.cmd == "launch":
+            out = launch(a)
+        elif a.cmd == "stop":
+            out = {"ok": True, **stop(a.unit)}
+        else:
+            out = watch(a)
+    except (Refuse, subprocess.TimeoutExpired, OSError, ValueError) as e:
+        out = {"ok": False, "error": str(e)}
+    print(json.dumps({"host": socket.gethostname(), "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), **out}, ensure_ascii=False))
+    return 0 if out["ok"] else 1
+
+
 def main(argv):
+    if argv[:1] == ["train"]:
+        return train(argv[1:])
     if argv[:1] != ["code"] or len(argv) < 2:
         print(__doc__.strip(), file=sys.stderr); return 2
     if argv[1] != "status":
